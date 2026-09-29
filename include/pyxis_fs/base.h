@@ -69,6 +69,17 @@ enum pfs_index_kind {
   PFS_INDEX_GRANTS = 7,
 };
 
+enum pfs_record_type {
+  PFS_RECORD_VOLUME = 1,
+  PFS_RECORD_VOLUME_NAME = 2,
+  PFS_RECORD_ALLOCATION = 3,
+  PFS_RECORD_OBJECT = 4,
+  PFS_RECORD_DIRENT = 5,
+  PFS_RECORD_EXTENT = 6,
+  PFS_RECORD_GRANT = 7,
+  PFS_INTERNAL_RECORD_TYPE = 256,
+};
+
 struct pfs_reference {
   uint64_t block;
   uint64_t birth;

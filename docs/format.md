@@ -1,7 +1,8 @@
 # Initial Pyxis filesystem format and tool contract
 
 Status: accepted task-1 specification, including follow-up decisions;
-implementation is not present yet.
+the [local encoding layer](core.md) is implemented. Pool opening, traversal and
+host tools remain later tasks.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
@@ -20,11 +21,13 @@ Implementation proceeds through separately authorized milestone tasks.
 `PyxisOS/pyxis-fs` owns the eventual format specification, shared freestanding
 GNU C23 library, formatter, inspector and Linux adapter. This repository owns the
 format contract; Pyxis OS links to it rather than maintaining another copy.
-The licensing bootstrap is present, but no filesystem implementation exists yet.
+The shared codecs and platform boundary are implemented; the core document records
+their validation limits and ownership contracts.
 
 Agreed integration is a published revision pinned at `fs/`, with the relative
 submodule URL `../pyxis-fs.git`. An opt-in parent `make fs-tools` invokes the host
-build with explicit source/output directories and `HOST_CC`; it produces
+build with explicit source/output directories and `HOST_CC`. During task 2 it
+produces `build/fs-tools/libpyxis-fs.a`; task 3 adds
 `build/fs-tools/mkpyxisfs` and `build/fs-tools/pyxisfs-inspect`. A standalone build
 in pyxis-fs produces the same tools and a freestanding core archive. Host adapters
 use host libc; the core uses neither libc services nor Pyxis kernel/ABI headers.
@@ -972,7 +975,7 @@ Writable work must settle the bounded admission and recovery costs listed above;
 does not prove the reserve defaults sufficient for writable operation.
 Repository licensing is established as MPL-2.0.
 
-This specification has no codec or tool implementation to build. Review field
-arithmetic, invariants, examples and links. Later host validation uses ordinary builds and
+The codec layer builds as a freestanding archive; host-tool execution starts with
+task 3. Review field arithmetic, invariants, examples and links. Later host validation uses ordinary builds and
 manual formatting/inspection/extraction; no tests, self-tests, damaged-image
 fixtures, fault injection or new CI are authorized by this specification.

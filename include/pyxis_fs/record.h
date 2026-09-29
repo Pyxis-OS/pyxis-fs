@@ -10,16 +10,6 @@
 #define PFS_EXTENT_RECORD_SIZE 64u
 #define PFS_GRANT_RECORD_SIZE 80u
 
-enum pfs_record_type {
-  PFS_RECORD_VOLUME = 1,
-  PFS_RECORD_VOLUME_NAME = 2,
-  PFS_RECORD_ALLOCATION = 3,
-  PFS_RECORD_OBJECT = 4,
-  PFS_RECORD_DIRENT = 5,
-  PFS_RECORD_EXTENT = 6,
-  PFS_RECORD_GRANT = 7,
-};
-
 enum pfs_object_kind {
   PFS_OBJECT_FILE = 1,
   PFS_OBJECT_DIRECTORY = 2,
@@ -143,6 +133,8 @@ struct pfs_grant_record {
  * Encoding inputs must not overlap the destination. */
 /* Volume validation exposes the fixed envelope without interpreting its feature
  * masks. Check pfs_features_read before interpreting that volume's trees. */
+/* Context features describe the containing index: pool features for catalog
+ * envelopes, volume features for records inside that volume. */
 enum pfs_status pfs_volume_record_validate(const struct pfs_volume_record *record,
                                           const struct pfs_record_context *context);
 enum pfs_status pfs_volume_record_decode(const void *data, size_t slot_length,

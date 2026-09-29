@@ -3,6 +3,10 @@
 
 #include <pyxis_fs/base.h>
 
+struct pfs_block_header;
+void pfs_block_header_encode(uint8_t *data, const struct pfs_block_header *header);
+void pfs_block_checksum_encode(uint8_t *data);
+
 uint16_t pfs_get_u16(const uint8_t *p);
 uint32_t pfs_get_u32(const uint8_t *p);
 uint64_t pfs_get_u64(const uint8_t *p);

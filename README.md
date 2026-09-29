@@ -1,9 +1,17 @@
 # pyxis-fs
 
-Shared Pyxis filesystem core and host tools. Implementation is not present yet.
+Shared Pyxis filesystem core. Requires GNU Make and a GNU C23 compiler.
+
+```sh
+make -j16  # build/libpyxis-fs.a
+```
+
+The archive provides local codecs and bounded platform interfaces. See
+[core build and API boundaries](docs/core.md). Formatter and inspector executables
+are not implemented yet.
 
 The [initial format and host-tool contract](docs/format.md) is accepted for the
-read-only milestone; implementation follows in separate tasks.
+read-only milestone; the shared encoding layer is implemented.
 
 ## License
 
