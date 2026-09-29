@@ -1,27 +1,26 @@
 # Initial Pyxis filesystem format and tool contract
 
-Status: accepted task-1 specification, including follow-up decisions;
+Status: implemented initial format and read-only host-tool contract;
 the [shared core](core.md), bounded bulk construction and source import,
 candidate selection, readonly traversal/acquisition, extraction and explicit GPT
 inspection and whole-image consistency checking are implemented.
 [Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat`, `access`,
 `extract` and `check`.
-The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
+The [integration contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
 read-only GPT inspection boundary. Original project material is covered by the
 repository's [MPL-2.0 licensing notice](../LICENSING.md).
 
-The owner accepted the contract and follow-up decisions on 2026-09-29: include an
-inline extent descriptor, use lower proportional reserve defaults and require the
-ancestor lookup chain for acquisition by object ID. Task 1 is complete. The
-architecture and host-only milestone are unchanged. The future reclamation envelope
-records design constraints; its explicit writable-implementation gates remain.
-Implementation proceeds through separately authorized milestone tasks.
+The initial format uses an inline extent descriptor, proportional reserve
+policies and the ancestor lookup chain for acquisition by object ID. The future
+reclamation envelope records design constraints; its explicit writable
+implementation gates remain. Read-only milestone completion does not authorize
+writable transactions, FUSE or kernel mounting.
 
 ## Ownership and integration
 
-`PyxisOS/pyxis-fs` owns the eventual format specification, shared freestanding
+`PyxisOS/pyxis-fs` owns the format specification, shared freestanding
 GNU C23 library, formatter, inspector and Linux adapter. This repository owns the
 format contract; Pyxis OS links to it rather than maintaining another copy.
 The core document records implemented interfaces, validation limits and ownership
@@ -29,9 +28,9 @@ contracts. Host usage and current command coverage are in the host-tools documen
 
 Agreed integration is a published revision pinned at `fs/`, with the relative
 submodule URL `../pyxis-fs.git`. An opt-in parent `make fs-tools` invokes the host
-build with explicit source/output directories and `HOST_CC`. During task 2 it
-produces `build/fs-tools/libpyxis-fs.a`; task 3 adds
-`build/fs-tools/mkpyxisfs` and `build/fs-tools/pyxisfs-inspect`. A standalone build
+build with explicit source/output directories and `HOST_CC`. It produces
+`build/fs-tools/libpyxis-fs.a`, `build/fs-tools/mkpyxisfs` and
+`build/fs-tools/pyxisfs-inspect`. A standalone build
 in pyxis-fs produces the same tools and a freestanding core archive. Host adapters
 use host libc; the core uses neither libc services nor Pyxis kernel/ABI headers.
 Normal kernel, SDK, ports and image targets acquire no filesystem dependency yet.
@@ -973,23 +972,23 @@ that file-data contents have no checksums and were not integrity-verified. Conte
 comparison is the separate extract/compare workflow. No repair, reclamation,
 automatic alternate-root retry or success after skipped required state.
 
-## Remaining implementation gates and validation
+## Writable implementation gates and validation
 
-Task 1 is complete after follow-up clarifications and owner decisions. The
-1 TiB/one-million-record profile and 128 MiB default tool budget remain unchanged.
-Tasks 3 and 5 establish the empty and populated allocation-map construction's
-termination bound in [the layout document](empty-layout.md); every metadata and
-data block is included before output creation. Task 6 implements the whole-image
-consistency operation through the diagnostic `pfs_check` API and host `check`
-command; interfaces and limits are recorded in
-[the core document](core.md#whole-image-consistency-checking).
-Writable work must settle the bounded admission and recovery costs listed above; acceptance of this contract
-does not prove the reserve defaults sufficient for writable operation.
-Repository licensing is established as MPL-2.0.
+The initial format and read-only core are implemented within the
+1 TiB/one-million-record profile and 128 MiB default tool budget. The
+[construction layout](empty-layout.md) establishes the empty and populated
+allocation-map construction bound; every metadata and data block is included
+before output creation. The diagnostic `pfs_check` API and host `check` command
+implement whole-image consistency inspection; interfaces and limits are recorded
+in [the core document](core.md#whole-image-consistency-checking).
+
+Writable work must settle the bounded admission and recovery costs listed above.
+Acceptance of this contract does not prove reserve defaults sufficient for
+writable operation. Repository licensing is established as MPL-2.0.
 
 The shared core builds as a freestanding archive. Formatting, diagnostic
-reopening, populated extraction round trips and structural checking are recorded in
-[host validation](host-tools.md#task-6-validation). Review field arithmetic,
-invariants, examples and links. Host validation uses ordinary builds and manual
-formatting/inspection/extraction/checking; no tests, self-tests, damaged-image
-fixtures, fault injection or new CI are authorized by this specification.
+reopening, populated extraction round trips and structural checking are recorded
+in [host validation](host-tools.md#validation), including source-review-only
+coverage. Validation uses ordinary builds and manual host commands; no tests,
+self-tests, damaged-image fixtures, fault injection or new CI are authorized by
+this specification.
