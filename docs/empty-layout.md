@@ -1,48 +1,83 @@
-# Empty-image construction
+# Bulk-image construction
 
-The empty builder constructs one through 256 volumes using the shared codecs.
-The host supplies nonzero pool, volume and root-object IDs generated with strong
-randomness, valid names and explicit owner principals. Planning copies the input
-and charges its bookkeeping and construction buffers to `pfs_memory`; it performs
-no I/O. No source import or later mutation is implemented.
+The bulk builder constructs one through 256 volumes using the shared codecs.
+The host supplies nonzero pool, volume and object IDs generated with strong
+randomness, valid names and explicit owner principals. Every volume has at least
+its root directory. Planning copies all object metadata and charges bookkeeping,
+sorting arrays, node layouts and construction buffers to `pfs_memory`; it performs
+no I/O. File bytes remain with the host until construction.
 
 ## Allocation-map termination bound
 
 Blocks 0 and B-1 hold superblocks. Starting at block 1, all pool-owned metadata
 forms one contiguous prefix: the pool root, both catalog trees and the allocation
-map tree. Each volume then owns exactly two contiguous blocks, its root-object
-leaf and owner-grant leaf. All remaining allocatable blocks form one free suffix.
-Every metadata birth is 1 and every live allocation has permanent charge.
+map tree. Each volume then owns one contiguous range containing its object and
+grant trees, nonempty-directory trees, and file data. All remaining allocatable
+blocks form one free suffix. Every metadata birth is 1 and every live allocation
+has permanent charge.
 
 For N volumes the map therefore has exactly N+2 records: one pool prefix, N
-distinct volume ranges and one free suffix. Including the map's own blocks only
-changes the pool prefix's length, never the number or encoded lengths of records.
-A map leaf holds 46 fixed 80-byte records (including four-byte slots and aligned
+volume ranges and one free suffix. Including the map's own blocks changes only
+the pool prefix's length, never the number or encoded lengths of records. A map
+leaf holds 46 fixed 80-byte records (including four-byte slots and aligned
 packing); an internal node holds 65 fixed 56-byte records. For N <= 256 there are
 at most six leaves and one internal root, hence at most seven map blocks and two
 levels. One leaf is used when all records fit; a single-child root is never built.
-Map sizing is thus one finite calculation, with no fixed-point iteration.
+Map sizing is one finite calculation, with no fixed-point iteration.
 
-Catalog leaves and internal nodes are greedily packed using their exact shared
-codec lengths. Internal levels group at least two children; a trailing singleton
-is moved into the preceding group or paired by moving its preceding sibling.
-Each level reduces node count, establishing termination. At worst volume-ID
-leaves hold eight records, name leaves hold thirteen maximum-length records,
-ID internal nodes hold 57 children and name internal nodes hold twelve children.
-Each catalog uses fewer than 64 nodes and fewer than eight levels. The planner
-checks these bounds and allocatable geometry before assigning physical blocks.
+Catalog, object and directory leaves are greedily packed using exact shared codec
+lengths. Internal levels group at least two children; a trailing singleton is
+paired by moving one child from its preceding sibling. Internal nodes have room
+for at least twelve maximum-length name separators, so this adjustment leaves
+both nodes valid. Each level reduces node count. The planner checks the
+8-node tree-depth limit and geometry before assigning data ranges.
 
-## Promises and publication
+For M objects, object-tree leaves require at most M nodes, and directory leaves
+at most M-N nodes: every non-root object has exactly one naming entry. A tree
+with L leaves and internal fanout at least two has at most 2L-1 nodes. The plan
+therefore reserves at most 4M+N+192 node descriptors, including one grant leaf per
+volume and fewer than 64 nodes for each of the three pool trees. The descriptor
+reservation is a conservative memory bound, not occupied image space. Only
+actually packed nodes consume blocks. Checked sizes and the memory cap precede
+allocation; there is no recursive construction or unbounded C stack.
 
-Each volume's permanent allocation is two blocks. Reserves follow the format's
-proportional defaults and explicit-override floors. After reserving budgets and
-explicit unused guarantees, half the remaining space is distributed among
-volumes without explicit guarantees, with remainder assigned in name order.
-Quotas and the complete capacity inequality are checked before output creation.
+## Objects, data and accounting
 
-Construction uses the already allocated workspace to emit catalog, allocation,
-object and grant trees, then the pool root. It flushes before publishing either
-superblock, writes both generation-1 slots with the same state, and flushes again.
-The host owns exclusive output creation, sparse extent sizing, partial-output
-reporting and parent-directory durability. The builder performs no recovery,
-source import or incremental update.
+The supplied root is object index zero, with no parent and an empty name. Each
+other object's parent precedes it and names a directory. This establishes one
+reachable parent chain without cycles. Directory depth is limited to 256 objects
+including the root. Iterative heapsort establishes object-ID order and
+parent/name order; duplicate IDs, persistent-ID collisions and duplicate sibling
+names are rejected. Total objects are limited to the committed-state profile;
+directory entries and initial file extents are bounded by that count.
+
+All objects have the volume's selected owner. Each volume receives exactly one
+explicit owner subtree grant on its root, carrying all initial rights. Empty
+files and directories have no storage root. Nonempty directories have their own
+name-keyed trees with volume and directory ownership in every node. Every
+nonempty file receives one contiguous inline extent; the final block's padding
+is zero. Source holes are materialized by the host's ordinary reads.
+
+Each volume's permanent allocation includes all its tree nodes and data blocks.
+Reserves follow the proportional defaults and explicit-override floors. After
+reserving budgets, existing allocations and explicit unused guarantees, half the
+remaining space is distributed among volumes without explicit guarantees, with
+remainder assigned in name order. Quotas cover both actual allocations and
+guarantees. Capacity and quota failures are reported during planning, before
+output creation.
+
+## Publication
+
+Construction uses the allocated workspace to emit every metadata tree and stream
+file data in transfers of at most 64 KiB, respecting the output adapter's smaller
+transfer limit. The source callbacks identify files by original volume/object
+index; planning's sort order does not change these selectors. Each requested
+source read is exact. After copying, the source adapter revalidates all sources.
+A callback failure stops construction without publishing either superblock.
+
+The builder then writes the pool root, flushes metadata and data, publishes both
+generation-1 slots with the same state, and flushes again. The host owns exclusive
+output creation, source traversal and change detection, sparse output sizing,
+partial-output reporting and parent-directory durability. Construction performs
+no output reads, further allocation, recovery or incremental update. Empty
+volumes use this same builder without file reads.
