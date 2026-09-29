@@ -6,7 +6,7 @@ candidate selection, readonly traversal/acquisition, extraction and explicit GPT
 inspection and whole-image consistency checking are implemented.
 [Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat`, `access`,
 `extract` and `check`.
-The [integration contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/filesystem-readonly.md)
+The [integration contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/devices/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
 read-only GPT inspection boundary. Original project material is covered by the
@@ -895,7 +895,7 @@ Standalone pool images are the default, with no probing for a filesystem at
 arbitrary offsets. For an existing whole-disk regular image, require explicit
 `--gpt-partition N --sector-size 512|4096`; N is a one-based used entry number.
 The host adapter validates GPT under the existing
-[bounded GPT contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/gpt.md),
+[bounded GPT contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/devices/gpt.md),
 including both copies and the protective MBR. No automatic partition/type/name
 selection, GPT repair, external tool subprocess or raw block-device access.
 Selecting a partition explicitly permits inspecting its contents regardless of
