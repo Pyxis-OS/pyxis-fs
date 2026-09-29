@@ -13,6 +13,7 @@ enum inspect_command {
   INSPECT_STAT,
   INSPECT_ACCESS,
   INSPECT_EXTRACT,
+  INSPECT_CHECK,
 };
 
 struct inspect_options {
@@ -35,6 +36,9 @@ struct inspect_options {
 };
 
 void inspect_usage(FILE *stream);
+void inspect_selection_print(const struct pfs_pool_diagnostic *diagnostic, uint64_t blocks);
+enum pfs_status inspect_check(const struct pfs_block_reader *reader,
+                               struct pfs_memory *memory);
 enum pfs_status inspect_options_parse(int argc, char **argv, struct inspect_options *options);
 enum pfs_status inspect_objects(struct pfs_pool *pool,
                                 const struct inspect_options *options,

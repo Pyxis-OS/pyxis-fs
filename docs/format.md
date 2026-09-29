@@ -3,8 +3,9 @@
 Status: accepted task-1 specification, including follow-up decisions;
 the [shared core](core.md), bounded bulk construction and source import,
 candidate selection, readonly traversal/acquisition, extraction and explicit GPT
-inspection are implemented. [Host commands](host-tools.md) cover `info`, `volumes`,
-`list`, `stat`, `access` and `extract`. Complete checking remains task 6.
+inspection and whole-image consistency checking are implemented.
+[Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat`, `access`,
+`extract` and `check`.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
@@ -860,7 +861,7 @@ same bounds as the formatter, and one command:
 | `list --volume NAME --path PATH` | Directory entries, metadata and identities |
 | `stat --volume NAME --path PATH` | Object identity, owner, type, size and grants |
 | `extract --volume NAME --path PATH --output NEW_PATH` | One file or a complete directory subtree |
-| `check` (task 6, not implemented) | Complete supported inspection of both retained states |
+| `check` | Complete supported inspection of both retained states |
 | `access --volume NAME --root PATH --principal ID --target PATH --scope object\|subtree --rights LIST --ceiling LIST` | Explain read/list/policy-inspection acquisition under an explicit subtree ceiling; no persistent changes |
 
 Rights lists are comma-separated domain-qualified tokens, or `none`. File tokens
@@ -978,15 +979,17 @@ Task 1 is complete after follow-up clarifications and owner decisions. The
 1 TiB/one-million-record profile and 128 MiB default tool budget remain unchanged.
 Tasks 3 and 5 establish the empty and populated allocation-map construction's
 termination bound in [the layout document](empty-layout.md); every metadata and
-data block is included before output creation. Whole-image checking remains
-task 6.
+data block is included before output creation. Task 6 implements the whole-image
+consistency operation through the diagnostic `pfs_check` API and host `check`
+command; interfaces and limits are recorded in
+[the core document](core.md#whole-image-consistency-checking).
 Writable work must settle the bounded admission and recovery costs listed above; acceptance of this contract
 does not prove the reserve defaults sufficient for writable operation.
 Repository licensing is established as MPL-2.0.
 
 The shared core builds as a freestanding archive. Formatting, diagnostic
-reopening and populated extraction round trips are recorded in
-[host validation](host-tools.md#task-5-validation). Review field arithmetic,
+reopening, populated extraction round trips and structural checking are recorded in
+[host validation](host-tools.md#task-6-validation). Review field arithmetic,
 invariants, examples and links. Host validation uses ordinary builds and manual
-formatting/inspection/extraction; no tests, self-tests, damaged-image
+formatting/inspection/extraction/checking; no tests, self-tests, damaged-image
 fixtures, fault injection or new CI are authorized by this specification.

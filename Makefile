@@ -7,10 +7,10 @@ HOST_AR ?= ar
 CFLAGS ?= -O2 -g3
 WARNINGS := -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Werror
 CORE_FLAGS := -std=gnu23 -ffreestanding -fno-builtin -fno-stack-protector
-SOURCES := base block record tree platform build pool access
+SOURCES := base block record tree platform build pool access check check_walk check_reconcile
 OBJECTS := $(addprefix $(BUILD)/core/,$(addsuffix .o,$(SOURCES)))
 ARCHIVE := $(BUILD)/libpyxis-fs.a
-HOST_OBJECTS := $(addprefix $(BUILD)/host/,host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o extract.o)
+HOST_OBJECTS := $(addprefix $(BUILD)/host/,host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o)
 TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect
 
 .DEFAULT_GOAL := all
@@ -21,7 +21,7 @@ all: $(ARCHIVE) $(TOOLS)
 $(BUILD)/mkpyxisfs: $(addprefix $(BUILD)/host/,mkpyxisfs.o source.o host.o gpt.o) $(ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-$(BUILD)/pyxisfs-inspect: $(addprefix $(BUILD)/host/,inspect.o inspect_options.o inspect_objects.o extract.o host.o gpt.o) $(ARCHIVE)
+$(BUILD)/pyxisfs-inspect: $(addprefix $(BUILD)/host/,inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o host.o gpt.o) $(ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BUILD)/host/%.o: $(SOURCE)/host/%.c

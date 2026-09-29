@@ -4,8 +4,8 @@
 
 #include <string.h>
 
-static void
-print_selection(const struct pfs_pool_diagnostic *diagnostic, uint64_t blocks)
+void
+inspect_selection_print(const struct pfs_pool_diagnostic *diagnostic, uint64_t blocks)
 {
   printf("Geometry: %llu blocks, 4096 bytes/block\n", (unsigned long long)blocks);
   for (unsigned i = 0; i < 2; ++i) {
@@ -183,9 +183,15 @@ main(int argc, char **argv)
     result = host_exit_status(status);
     goto done;
   }
+  if (options.command == INSPECT_CHECK) {
+    operation = "check image (details above)";
+    status = inspect_check(&reader, &memory);
+    result = status == PFS_ABSENT ? 4 : host_exit_status(status);
+    goto done;
+  }
   operation = "select pool state (slot diagnostics above)";
   status = pfs_pool_open(&pool, &reader, &memory, &diagnostic);
-  print_selection(&diagnostic, reader.geometry.block_count);
+  inspect_selection_print(&diagnostic, reader.geometry.block_count);
   result = selection_exit(status, &diagnostic);
   if (status != PFS_OK) {
     goto done;

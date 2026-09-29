@@ -9,7 +9,7 @@ inspect_usage(FILE *stream)
   fputs("Usage: pyxisfs-inspect --image PATH [--memory-limit SIZE]\n"
         "  [--gpt-partition N --sector-size 512|4096] COMMAND\n"
         "Commands:\n"
-        "  info | volumes\n"
+        "  info | volumes | check\n"
         "  list | stat --volume NAME --path PATH\n"
         "  extract --volume NAME --path PATH --output NEW_PATH\n"
         "  access --volume NAME --root PATH --principal ID --target PATH\n"
@@ -115,6 +115,8 @@ inspect_options_parse(int argc, char **argv, struct inspect_options *options)
     enum inspect_command command = INSPECT_NONE;
     if (strcmp(argument, "info") == 0) {
       command = INSPECT_INFO;
+    } else if (strcmp(argument, "check") == 0) {
+      command = INSPECT_CHECK;
     } else if (strcmp(argument, "volumes") == 0) {
       command = INSPECT_VOLUMES;
     } else if (strcmp(argument, "list") == 0) {
@@ -234,7 +236,8 @@ inspect_options_parse(int argc, char **argv, struct inspect_options *options)
     return PFS_INVALID;
   }
   options->gpt = (seen & OPT_PARTITION) != 0;
-  if (options->command == INSPECT_INFO || options->command == INSPECT_VOLUMES) {
+  if (options->command == INSPECT_INFO || options->command == INSPECT_VOLUMES ||
+      options->command == INSPECT_CHECK) {
     return (seen & ~common) == 0 ? PFS_OK : PFS_INVALID;
   }
   if (((seen & OPT_VOLUME) != 0) == ((seen & OPT_VOLUME_ID) != 0)) {
