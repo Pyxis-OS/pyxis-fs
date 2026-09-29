@@ -86,6 +86,8 @@ enum pfs_status pfs_view_inspect(struct pfs_view *view,
                                 struct pfs_principal_id *owner,
                                 struct pfs_grant_record *grants,
                                 size_t capacity, size_t *count);
+/* Invalid calls leave read_count unchanged. Valid calls report the proved
+ * prefix, including zero on permission denial; remaining bytes are unspecified. */
 enum pfs_status pfs_view_read(struct pfs_view *view, uint64_t offset,
                              void *buffer, size_t length, size_t *read_count);
 

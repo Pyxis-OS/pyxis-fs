@@ -99,8 +99,8 @@ chain_allocate(struct pfs_volume *volume, const struct pfs_object_id *target,
   return status;
 }
 
-enum pfs_status
-pfs_access_evaluate(struct pfs_volume *volume,
+static enum pfs_status
+access_evaluate(struct pfs_volume *volume,
                     const struct pfs_trusted_context *context,
                     const struct pfs_object_id *target,
                     enum pfs_grant_scope scope,
@@ -213,6 +213,40 @@ done:
   return status;
 }
 
+enum pfs_status
+pfs_access_evaluate(struct pfs_volume *volume,
+                    const struct pfs_trusted_context *context,
+                    const struct pfs_object_id *target,
+                    enum pfs_grant_scope scope,
+                    const struct pfs_rights *requested,
+                    struct pfs_access_result *result)
+{
+  if (volume == NULL || context == NULL || target == NULL || result == NULL ||
+      !scope_valid(scope) || !scope_valid(context->scope) ||
+      !rights_valid(requested) || !rights_valid(&context->ceiling) ||
+      pfs_bytes_are_zero(context->principal.bytes, PFS_ID_SIZE) ||
+      pfs_bytes_are_zero(context->root.bytes, PFS_ID_SIZE) ||
+      pfs_bytes_are_zero(target->bytes, PFS_ID_SIZE)) {
+    return PFS_INVALID;
+  }
+  if (!id_equal(target, &context->root)) {
+    struct pfs_access_result root_result = {0};
+    enum pfs_status status = PFS_DENIED;
+    if (context->scope == PFS_SCOPE_SUBTREE) {
+      const struct pfs_rights lookup = {.directory = PFS_DIR_LOOKUP};
+      status = access_evaluate(volume, context, &context->root,
+                                PFS_SCOPE_OBJECT, &lookup, &root_result);
+    }
+    if (status != PFS_OK) {
+      if (status == PFS_DENIED) {
+        pfs_bytes_zero(result, sizeof(*result));
+      }
+      return status;
+    }
+  }
+  return access_evaluate(volume, context, target, scope, requested, result);
+}
+
 static enum pfs_status
 view_create(struct pfs_volume *volume, const struct pfs_object_record *object,
             enum pfs_grant_scope scope, const struct pfs_rights *rights,
@@ -279,6 +313,34 @@ pfs_view_acquire(struct pfs_volume *volume,
   return view_create(volume, &object, scope, requested, out);
 }
 
+static enum pfs_status
+path_validate(const uint8_t *path, size_t length)
+{
+  if (path == NULL && length != 0) {
+    return PFS_INVALID;
+  }
+  size_t offset = 0;
+  size_t components = 0;
+  while (offset < length) {
+    size_t end = offset;
+    while (end < length && path[end] != '/') {
+      end++;
+    }
+    size_t component_length = end - offset;
+    if (pfs_name_validate(path + offset, component_length) != PFS_OK ||
+        (component_length == 1 && path[offset] == '.') ||
+        (component_length == 2 && path[offset] == '.' && path[offset + 1] == '.') ||
+        (end < length && end + 1 == length)) {
+      return PFS_INVALID;
+    }
+    if (++components >= PFS_ANCESTRY_MAX) {
+      return PFS_LIMIT;
+    }
+    offset = end < length ? end + 1 : end;
+  }
+  return PFS_OK;
+}
+
 enum pfs_status
 pfs_view_acquire_path(struct pfs_volume *volume,
                       const struct pfs_trusted_context *context,
@@ -286,20 +348,49 @@ pfs_view_acquire_path(struct pfs_volume *volume,
                       enum pfs_grant_scope scope,
                       const struct pfs_rights *requested, struct pfs_view **out)
 {
-  if (context == NULL || out == NULL || *out != NULL ||
+  if (volume == NULL || context == NULL || out == NULL || *out != NULL ||
       !scope_valid(scope) || !scope_valid(context->scope) ||
       !rights_valid(requested) || !rights_valid(&context->ceiling) ||
       pfs_bytes_are_zero(context->principal.bytes, PFS_ID_SIZE) ||
       pfs_bytes_are_zero(context->root.bytes, PFS_ID_SIZE)) {
     return PFS_INVALID;
   }
-  struct pfs_object_record object;
-  enum pfs_status status = pfs_volume_diagnostic_resolve(volume, &context->root,
-                                                        path, length, &object);
+  enum pfs_status status = path_validate(path, length);
   if (status != PFS_OK) {
     return status;
   }
-  return pfs_view_acquire(volume, context, &object.id, scope, requested, out);
+  if (length != 0 && context->scope == PFS_SCOPE_OBJECT) {
+    return PFS_DENIED;
+  }
+
+  struct pfs_object_id current;
+  pfs_bytes_copy(&current, &context->root, sizeof(current));
+  const struct pfs_rights lookup = {.directory = PFS_DIR_LOOKUP};
+  size_t offset = 0;
+  while (offset < length) {
+    /* Authorize the containing directory before consulting its child names.
+     * Keep the original root/ceiling so object-only lookup grants apply without
+     * turning them into retained descendant authority. */
+    struct pfs_access_result result;
+    status = pfs_access_evaluate(volume, context, &current, PFS_SCOPE_OBJECT,
+                                 &lookup, &result);
+    if (status != PFS_OK) {
+      return status;
+    }
+    size_t end = offset;
+    while (end < length && path[end] != '/') {
+      end++;
+    }
+    struct pfs_object_record object;
+    status = pfs_volume_diagnostic_resolve(volume, &current, path + offset,
+                                           end - offset, &object);
+    if (status != PFS_OK) {
+      return status;
+    }
+    pfs_bytes_copy(&current, &object.id, sizeof(current));
+    offset = end < length ? end + 1 : end;
+  }
+  return pfs_view_acquire(volume, context, &current, scope, requested, out);
 }
 
 enum pfs_status
@@ -392,6 +483,7 @@ pfs_view_read(struct pfs_view *view, uint64_t offset, void *buffer, size_t lengt
   if (view->identity.kind != PFS_OBJECT_FILE) {
     return PFS_INVALID;
   }
+  *read_count = 0;
   if ((view->rights.file & PFS_FILE_READ) == 0) {
     return PFS_DENIED;
   }
