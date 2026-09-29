@@ -1813,6 +1813,21 @@ pfs_directory_next(struct pfs_directory_cursor *cursor, struct pfs_dirent_record
     operation_destroy(operation, &storage);
     return status;
   }
+  struct pfs_allocation identities;
+  pfs_bytes_zero(&identities, sizeof(identities));
+  size_t identity_capacity = 2;
+  while (identity_capacity < capacity * 2) {
+    identity_capacity *= 2;
+  }
+  status = pfs_memory_allocate(cursor->volume->pool->memory,
+    identity_capacity * sizeof(uint32_t), _Alignof(uint32_t), &identities);
+  if (status != PFS_OK) {
+    pfs_memory_free(cursor->volume->pool->memory, &page);
+    operation_destroy(operation, &storage);
+    return status;
+  }
+  uint32_t *identity_table = identities.data;
+  pfs_bytes_zero(identity_table, identities.size);
   struct pfs_dirent_record *entries = page.data;
   status = ancestry_collect(operation, &state->object);
   struct pfs_object_record directory;
@@ -1837,6 +1852,21 @@ pfs_directory_next(struct pfs_directory_cursor *cursor, struct pfs_dirent_record
     if (status != PFS_OK) {
       break;
     }
+    uint64_t identity = pfs_get_u64(entries[used].object.bytes) ^
+      pfs_get_u64(entries[used].object.bytes + sizeof(uint64_t));
+    size_t identity_slot = node_hash(identity, identity_capacity);
+    while (identity_table[identity_slot]) {
+      size_t previous_index = identity_table[identity_slot] - 1;
+      if (!pfs_bytes_compare(entries[previous_index].object.bytes, PFS_ID_SIZE,
+                             entries[used].object.bytes, PFS_ID_SIZE)) {
+        status = PFS_CORRUPT;
+        break;
+      }
+      identity_slot = (identity_slot + 1) & (identity_capacity - 1);
+    }
+    if (status != PFS_OK) {
+      break;
+    }
     struct pfs_object_record child;
     status = object_lookup(operation, &entries[used].object, &child, NULL);
     if (status == PFS_NOT_FOUND) {
@@ -1849,6 +1879,7 @@ pfs_directory_next(struct pfs_directory_cursor *cursor, struct pfs_dirent_record
     if (status != PFS_OK) {
       break;
     }
+    identity_table[identity_slot] = (uint32_t)used + 1;
     ++used;
     pfs_bytes_copy(&previous, &key, sizeof(previous));
     started = true;
@@ -1870,6 +1901,7 @@ pfs_directory_next(struct pfs_directory_cursor *cursor, struct pfs_dirent_record
     state->done = exhausted;
     state->emitted += used;
   }
+  pfs_memory_free(cursor->volume->pool->memory, &identities);
   pfs_memory_free(cursor->volume->pool->memory, &page);
   operation_destroy(operation, &storage);
   return status;
