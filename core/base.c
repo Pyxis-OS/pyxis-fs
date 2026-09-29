@@ -17,6 +17,9 @@ pfs_status_string(enum pfs_status status)
   case PFS_IO: return "I/O failure";
   case PFS_NO_MEMORY: return "allocation failure";
   case PFS_READ_ONLY: return "read only";
+  case PFS_BUSY: return "busy";
+  case PFS_DENIED: return "permission denied";
+  case PFS_NOT_FOUND: return "not found";
   }
   return "unknown status";
 }
