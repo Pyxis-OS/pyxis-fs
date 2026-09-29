@@ -12,16 +12,20 @@ below is illustrative; the tool does not provision identities.
 
 ```sh
 build/mkpyxisfs --image /tmp/pool.raw --size 256MiB \
-  --volume home --owner 0a32efc079ed4c7bab58e224cf119315 --plan
+  --volume home --source /tmp/source-home \
+  --owner 0a32efc079ed4c7bab58e224cf119315 --plan
 build/mkpyxisfs --image /tmp/pool.raw --size 256MiB \
-  --volume home --owner 0a32efc079ed4c7bab58e224cf119315
+  --volume home --source /tmp/source-home \
+  --owner 0a32efc079ed4c7bab58e224cf119315
 build/pyxisfs-inspect --image /tmp/pool.raw info
 build/pyxisfs-inspect --image /tmp/pool.raw volumes
 ```
 
-Repeat `--volume NAME --owner ID` for up to 256 volumes. Each starts with an empty
-root directory and an owner subtree grant covering all defined rights.
-Pool, volume and root-object IDs use OS
+Repeat `--volume NAME [--source DIRECTORY] --owner ID` for up to 256 volumes.
+Each group imports its source directory's contents into the volume root; omitting
+`--source` creates an empty volume. Nested and empty directories and regular files
+are supported. Every object receives the selected owner; the root's explicit
+owner subtree grant covers all defined rights. Pool, volume and object IDs use OS
 strong randomness, with at most 16 attempts per identity to avoid zero/collisions.
 
 `--guarantee SIZE` and `--quota SIZE` apply to the preceding volume. Global
@@ -30,7 +34,8 @@ reserve defaults, subject to their floors. Sizes are unsigned decimal bytes with
 optional `KiB`, `MiB`, `GiB` or `TiB`; capacity values must be multiples of 4096.
 The [format contract](format.md#accounting-and-defaults) defines the
 capacity policy. The [construction layout](empty-layout.md) accounts for every
-metadata block, including the allocation map itself, before creating output.
+metadata and data block, including the allocation map itself, before creating
+output.
 
 The plan reports allocations, guarantees, unused guarantees, quotas, reserves and
 unpromised space in blocks. `--plan` creates no file; a real invocation also prints
@@ -40,11 +45,41 @@ Its logical size is pool capacity; host disk space is not preallocated. Host spa
 exhaustion remains an I/O failure. Existing output is never overwritten.
 
 Creation traverses parent directories through retained descriptors without
-following symlinks, rejects `..`, and uses exclusive creation. It holds an
-exclusive advisory lock, writes metadata, flushes, writes both generation-1
-superblocks, flushes the file and containing directory, then closes. Failure after
-creation leaves an explicitly reported incomplete image for the owner to remove.
+following symlinks, rejects `..`, and uses exclusive creation. An output parent
+inside any imported source is refused by directory identity. It holds an
+exclusive advisory lock, writes metadata and file contents, revalidates sources,
+flushes, writes both generation-1 superblocks, flushes the file and containing
+directory, then closes. Failure after creation leaves an explicitly reported
+incomplete image for the owner to remove.
 Readable slots alone do not establish that formatting completed successfully.
+
+## Source import
+
+The formatter retains source-root descriptors and bounded manifests of object
+metadata and host identities. It scans entries relative to retained directory
+descriptors, without following symlinks, including in the selected root's path.
+Reject `..`, invalid UTF-8 names, symlinks and all entries other than regular files
+or directories. Hard links become independent files with separate IDs and data
+allocations. Host ownership, permissions and timestamps are not imported.
+
+The scan records device/inode, type, size, mtime and ctime. Reopening checks each
+ancestor against that manifest; copying checks the opened file after each read.
+All source objects are revalidated before output creation and again after data
+copying, before publishing slots. Detected changes, replacements, short reads or
+host I/O failures abort construction. Sources must be quiescent; this is change
+detection rather than an atomic source snapshot. Source-root descriptors remain
+open until cleanup. Other open source descriptors are bounded by directory depth
+and one streamed file, rather than the total manifest size.
+
+Each nonempty file receives one contiguous inline extent; host holes are read as
+zeros and materialized as allocated data. Empty files allocate no data, and final
+block padding is zero. Planning charges all copied metadata, sorts and node
+layouts; file data streams through a bounded buffer instead of being retained in
+memory. A plan includes every occupied block and checks capacities, reserves,
+guarantees and quotas before creating output. A separate `--plan` invocation is
+not a source snapshot or authorization for a later build.
+
+## Inspect images
 
 Inspection opens an existing regular image read-only and takes a shared advisory
 lock. Lock contention fails immediately. Detectable extent-size changes fail the
@@ -102,6 +137,32 @@ selection can reveal a missing target before policy evaluation. The ordinary
 core acquisition APIs enforce lookup before resolving each path component.
 See [core interfaces](core.md#policy-acquisition-and-ordinary-views).
 
+## Extract files and subtrees
+
+```sh
+build/pyxisfs-inspect --image /tmp/pool.raw \
+  extract --volume home --path . --output /tmp/extracted-home
+build/pyxisfs-inspect --image /tmp/pool.raw \
+  extract --volume home --path notes/today.txt --output /tmp/today.txt
+```
+
+Extraction uses diagnostic authority and the shared reader. Select one file or a
+complete directory subtree with the same volume/path syntax as `stat`. `--output`
+is a fresh file or top-level directory; existing paths are refused, and trees are
+never merged. Output parent components are opened relative to retained directory
+descriptors without following symlinks or accepting `..`. Files use mode 0600 and
+directories 0700 before a stricter caller umask. Principal ownership and original
+host permissions are not restored.
+
+File reads stop at logical length and zero-fill holes. Iterative directory frames
+and 64 KiB copying buffers are charged to the memory cap. Each file is flushed
+before close, each directory after its children, and the output parent before
+success. A failure after creation leaves clearly reported partial output for
+explicit removal. Nothing is recursively deleted on failure. The inspector
+continues to hold its readonly image descriptor and shared lock until cleanup;
+extraction does not modify the image. Explicit GPT selection applies to this
+command too.
+
 ## Explicit GPT image selection
 
 ```sh
@@ -132,10 +193,13 @@ The cap charges input/planning state, construction buffers, candidate buffers,
 catalog staging, traversal frames, node caches, proof bookkeeping, live views,
 directory pages and GPT scratch. Fixed codec
 stack frames, caller handles, argv and host allocator/libc overhead are outside
-that payload counter. The empty planner currently reserves a bounded workspace
-sized for the maximum volume count even for a small pool. It fails before file
-creation if this does not fit. An inspector limit failure publishes no volume
-records for a failed catalog call, though preceding selection diagnostics or
+that payload counter. Source manifests grow within the same cap; their old and
+new arrays are both charged during growth. The bulk planner copies the manifest
+and reserves conservative node-descriptor space proportional to its object
+count, plus a fixed bounded volume/work-buffer area. These simultaneous planning
+allocations can exhaust the cap below the format's record-count maximum. A
+formatter limit failure occurs before file creation. An inspector limit failure
+publishes no volume records for a failed catalog call, though preceding selection diagnostics or
 completed directory pages can already have been printed.
 
 Exit codes are 0 for success, 1 for policy denial, 2 for invalid arguments or a
@@ -147,9 +211,10 @@ limit or operational failures in either candidate prevent selection. If multiple
 failures exist, command aggregation prioritizes I/O/allocation, proved corruption,
 then unsupported/limit, retaining both candidate diagnostics.
 
-Source import/extraction and whole-image checking remain later tasks. These tools do not
-mount, mutate, repair or establish that the recorded reserves suffice for writes.
-The core supports file reads, but this CLI does not yet export file contents.
+Whole-image checking remains task 6. These tools do not mount, mutate or repair
+existing images, or establish that recorded reserves suffice for writes.
+Imported images exercise contiguous inline extents; multi-extent and sparse-image
+runtime coverage remains limited.
 
 ## Task-3 validation
 
@@ -186,8 +251,38 @@ Healthy 96 MiB GPT images made with ordinary `sfdisk` and `dd` contained the sam
 SHA-256 values were unchanged after inspection. An unused GPT entry and a low
 memory cap were refused.
 
-Populated namespace, nested acquisition and actual file-content reads await
-task 5's agreed importer. Inline/tree extents, sparse holes, malformed metadata,
-grant-free volumes, GPT degradation/ambiguity and I/O failures have source-review
-coverage only in this slice. No custom image writer, damaged fixture, fault
-injection, kernel mount or QEMU validation was introduced.
+Task 4 did not exercise populated namespaces, nested acquisition or actual file
+contents. Its inline/tree extent, sparse-hole, malformed-metadata, grant-free
+volume, GPT degradation/ambiguity and I/O-failure coverage was source review;
+task 5 adds the populated round trips below. No custom image writer, damaged
+fixture, fault injection, kernel mount or QEMU validation was introduced.
+
+## Task-5 validation
+
+The native `make -j16 fs-tools` and Pyxis-cross archive builds passed; the combined
+cross core has no unresolved symbols. A 128 MiB image imported the current
+documentation and kernel source directories into separate volumes (88 and 104
+objects), alongside an empty volume. Reopening and extraction of both source
+trees completed, and ordinary recursive `diff` reported identical contents.
+These object counts exercise object trees with multiple levels.
+
+A separate 64 MiB image imported a nine-object source containing Unicode/space
+names, nested and empty directories, an empty file, binary files of 4097 and
+476776 bytes, a sparse host file of 8193 bytes, and a hard-linked source copy.
+Extraction matched the source with recursive `diff`. The hard-linked inputs
+received different object IDs and extracted host inodes. A single 4097-byte file
+also extracted byte-for-byte. The source hole was materialized as zero data;
+this does not exercise a sparse filesystem extent layout.
+
+Manual refusals covered source/output containment, a source symlink, insufficient
+planning memory and a quota below the import's allocation, all before image
+creation. Existing extraction output was left untouched. Nested owner acquisition
+succeeded; missing lookup rights and a different principal were denied. Debugger
+inspection derived a file view under held subtree `file.read` and `dir.lookup`
+authority, read 64 matching bytes and refused metadata without `file.metadata`.
+Plan-only and file-extraction cleanup left zero charged memory.
+
+A healthy GPT image with 512-byte sectors containing a populated pool extracted a binary
+file with identical contents; its whole-image SHA-256 was unchanged. Whole-image
+checking, file-data integrity checksums, multi-extent runtime coverage and
+kernel/QEMU validation are outside this task's validation.

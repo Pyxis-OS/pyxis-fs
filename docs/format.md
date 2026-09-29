@@ -1,10 +1,10 @@
 # Initial Pyxis filesystem format and tool contract
 
 Status: accepted task-1 specification, including follow-up decisions;
-the [shared core](core.md), empty-image construction, candidate selection,
-readonly traversal/acquisition and explicit GPT inspection are implemented.
-[Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat` and `access`.
-Source import, extraction and complete checking remain later tasks.
+the [shared core](core.md), bounded bulk construction and source import,
+candidate selection, readonly traversal/acquisition, extraction and explicit GPT
+inspection are implemented. [Host commands](host-tools.md) cover `info`, `volumes`,
+`list`, `stat`, `access` and `extract`. Complete checking remains task 6.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
@@ -682,11 +682,11 @@ Overrides use whole blocks and cannot lower the policy floors. Reject
 any plan violating the inequality, count limits or requested quotas. Report all
 computed allocations, unused guarantees, reserve budgets and unpromised space
 before creating the image. Planning allocation-map space includes the map's own
-blocks; no hidden unaccounted metadata reservation is allowed. Task 3 must use a
-bounded fixed-point or conservative reservation construction and document its
-termination bound before implementation. The implemented empty builder uses the
-[accepted contiguous layout](empty-layout.md#allocation-map-termination-bound):
-N+2 records and at most seven map blocks, with no iteration.
+blocks; no hidden unaccounted metadata reservation is allowed. The implemented
+bulk builder uses the [accepted contiguous layout](empty-layout.md#allocation-map-termination-bound):
+one pool metadata prefix, one metadata/data range per volume, and one free suffix.
+N+2 records require at most seven map blocks, with no iteration, for both empty
+and populated images.
 
 ## Future publication and reclamation envelope
 
@@ -860,7 +860,7 @@ same bounds as the formatter, and one command:
 | `list --volume NAME --path PATH` | Directory entries, metadata and identities |
 | `stat --volume NAME --path PATH` | Object identity, owner, type, size and grants |
 | `extract --volume NAME --path PATH --output NEW_PATH` | One file or a complete directory subtree |
-| `check` | Complete supported inspection of both retained states |
+| `check` (task 6, not implemented) | Complete supported inspection of both retained states |
 | `access --volume NAME --root PATH --principal ID --target PATH --scope object\|subtree --rights LIST --ceiling LIST` | Explain read/list/policy-inspection acquisition under an explicit subtree ceiling; no persistent changes |
 
 Rights lists are comma-separated domain-qualified tokens, or `none`. File tokens
@@ -884,8 +884,10 @@ without opening normal access, but must label unvalidated fields accordingly.
 Extraction creates a new file or new top-level directory, never merges into an
 existing tree. Open each output component relative to a retained directory
 descriptor, rejecting symlinks and `..`; use exclusive creation and modes 0600
-for files, 0700 for directories. Do not restore host ownership or modes from
-principal IDs. A failure may leave a partial output tree, clearly reported; do
+for files, 0700 for directories, before a stricter caller umask. Flush files and
+completed directories, then the containing parent before success. Do not restore
+host ownership or modes from principal IDs. A failure may leave a partial output
+tree, clearly reported; do
 not recursively delete it automatically. File reads clamp to logical length and
 zero-fill holes. Extraction is diagnostic authority, not policy-based acquisition.
 
@@ -974,15 +976,17 @@ automatic alternate-root retry or success after skipped required state.
 
 Task 1 is complete after follow-up clarifications and owner decisions. The
 1 TiB/one-million-record profile and 128 MiB default tool budget remain unchanged.
-Task 3 establishes the empty allocation-map construction's termination bound in
-[the layout document](empty-layout.md). Populated construction must separately
-account for its map storage when task 5 extends that layout.
+Tasks 3 and 5 establish the empty and populated allocation-map construction's
+termination bound in [the layout document](empty-layout.md); every metadata and
+data block is included before output creation. Whole-image checking remains
+task 6.
 Writable work must settle the bounded admission and recovery costs listed above; acceptance of this contract
 does not prove the reserve defaults sufficient for writable operation.
 Repository licensing is established as MPL-2.0.
 
-The shared core builds as a freestanding archive; task 3 provides empty formatting
-and diagnostic reopening. Review field arithmetic, invariants, examples and links.
-Later host validation uses ordinary builds and
-manual formatting/inspection/extraction; no tests, self-tests, damaged-image
+The shared core builds as a freestanding archive. Formatting, diagnostic
+reopening and populated extraction round trips are recorded in
+[host validation](host-tools.md#task-5-validation). Review field arithmetic,
+invariants, examples and links. Host validation uses ordinary builds and manual
+formatting/inspection/extraction; no tests, self-tests, damaged-image
 fixtures, fault injection or new CI are authorized by this specification.
