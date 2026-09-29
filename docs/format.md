@@ -1,17 +1,18 @@
 # Initial Pyxis filesystem format and tool contract
 
-Status: accepted task-1 specification; implementation is not present yet.
+Status: task-1 specification under follow-up review; implementation is not present yet.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
 read-only GPT inspection boundary. Original project material is covered by the
 repository's [MPL-2.0 licensing notice](../LICENSING.md).
 
-The owner reviewed and accepted this contract on 2026-09-29, completing task 1.
-The byte layouts, numerical limits, rights assignments and budget defaults below
-are agreed for the initial read-only milestone. The future reclamation envelope
-records design constraints; its explicit writable-implementation gates remain.
-Implementation proceeds through separately authorized milestone tasks.
+The owner accepted the initial contract on 2026-09-29, then reopened review for
+targeted clarifications, an inline extent descriptor and revised reserve defaults.
+Task 1 remains open until that follow-up is resolved. The architecture and host-only
+milestone are unchanged. The future reclamation envelope records design constraints;
+its explicit writable-implementation gates remain. Implementation proceeds through
+separately authorized milestone tasks.
 
 ## Ownership and integration
 
@@ -127,6 +128,9 @@ must target an allocatable block, have nonzero birth generation and match the
 referenced header exactly. A required root cannot be null. Reusing a physical
 address gives it a new birth generation, preventing an old reference from naming
 the replacement accidentally. Repeated references must describe the same block.
+Every non-null reference also obeys
+`child_birth <= referring_block_birth <= selected_generation`, including references
+inside packed records. An immutable older block cannot name a child born later.
 
 Packed leaf and internal records have their own header, with offsets relative
 to the record: type `u16` at 0, incompatible version `u16` at 2, total length
@@ -145,6 +149,13 @@ writers must preserve unknown extension bytes and their semantics or refuse
 mutation. Merely knowing a mask bit is optional does not prove that a particular
 writer can preserve it. Unknown required record types in a supported tree are
 `UNSUPPORTED`, never skipped as though absent.
+
+Read compatibility does not imply complete-check compatibility. The initial checker
+reports incomplete/unsupported for any unknown enabled pool or volume feature in
+any of the three masks. It may validate known structures, but cannot call the image
+clean or call unexplained allocation corrupt solely because the feature's semantics
+are unknown. No new feature-mask category is needed. Defects independently proved
+under known semantics remain corruption and are reported alongside incompleteness.
 
 ## Superblock and pool root
 
@@ -189,12 +200,20 @@ additional accounting dimension, not another allocation-state total.
 
 ## Candidate validation and selection
 
-Opening reads both slots independently. A candidate is valid for selection only
-after validating its superblock, pool-root block, the three catalog/map root
-nodes and their context, counts and reference envelopes. This is deliberately
-bounded root validation, not a whole-image consistency claim. It does not walk
-every volume or every descendant. Lazy reads validate the path and records they
-use; the explicit checker establishes global consistency.
+Validation has three distinct levels:
+
+| Level | What it establishes |
+| --- | --- |
+| Candidate selection | Supported superblock/pool-root envelopes, three catalog/map root nodes and their local contexts, reference generations, checked arithmetic and internal consistency of recorded counts. No allocation-map or volume walk. |
+| Ordinary access | Structure, reference context and allocation ownership for every range consulted by that operation. No claim about unvisited records or global counts. |
+| Complete `check` | Both retained states' global reachability, ownership, feature interpretation and accounting reconciled with all allocation records. |
+
+Opening reads both slots independently and applies the selection level before
+classifying them. Check recorded pool counts sum to `U` without overflow, and
+recorded occupied budgets do not exceed budgets; these local checks do not prove
+the counts reflect the map. `info` reports them as recorded, not globally verified.
+It does not silently run a complete accounting walk. Only successful `check`
+reports globally verified accounting for its validated, unchanged states.
 
 Before ordinary operations expose metadata or file bytes, every consulted range
 must also match the selected allocation map: pool metadata is live-pool; volume
@@ -204,14 +223,33 @@ Split ranges across allocation records as necessary and validate every segment.
 Superblock slots are outside the map and follow their fixed-location rules.
 
 Allocation-map lookups bootstrap from structurally checked map nodes (header,
-checksum, bounds, key range and reference context). Before publishing a result,
-close the ownership proof over every map node consulted, including nodes used
-to prove other map nodes. Track a deduplicated, bounded worklist; revisiting a
-node for ownership proof is not a tree cycle. An actual cyclic tree reference
-is corruption. Resource exhaustion returns an incomplete/limit result rather
-than accepting an unproved range. Cache completed proofs only within the same
-selected generation. This permits lazy access without a whole-map scan; only
-the complete checker proves global absence of overlapping or duplicate claims.
+checksum, bounds, key range and reference context). Deduplicate nodes by physical
+identity and retain every incoming context constraint. Track three states:
+
+- Structurally validated: bytes and traversal context are checked; ownership is
+  not yet proved and the node's own allocation lookup has not completed.
+- Proof-pending: its allocation lookup is queued or processed, with an explicit
+  local-match flag and dependencies on every map node consulted by that lookup.
+- Proof-completed: the node belongs to a closed set for which all structural and
+  local allocation checks succeeded, with no unresolved dependency or I/O.
+
+Seed the worklist with the operation's consulted metadata and file ranges.
+For each range, traverse the selected map to obtain live state, owner and birth;
+add every newly consulted map node and schedule its own allocation lookup once.
+Work iteratively: a pending dependency is recorded, never recursively awaited or
+treated as completed. When the queue is empty, complete the pending set together
+only if every member's lookup finished with a matching live allocation and every
+dependency is either inside that fully checked set or already completed. This
+allows mutual allocation-proof dependencies without using pending status as proof.
+An actual cycle in parent/child tree references remains corruption.
+
+Publish no result or read prefix until its proof closure completes. Cache completed
+proofs only within the same selected generation. Bound storage by the memory cap;
+cap exhaustion returns `LIMIT`, never an unproved result. Bounded memory does not
+promise a small I/O count: closure can reach much of the allocation map. The work
+is bounded by the finite supported tree/record profile and deduplicated nodes, not
+a fixed handful of reads. Only complete checking proves global absence of
+overlapping or duplicate claims.
 
 Classify each candidate as absent (no magic), corrupt (bad checksum, invalid
 geometry/encoding/context), unsupported (unknown required format), limit, I/O
@@ -228,6 +266,9 @@ One valid candidate paired with an absent/corrupt candidate is degraded read-onl
 Neither valid means no open pool. Report both candidate classifications; for
 multiple operational failures the primary result prioritizes I/O, no-memory,
 limit, unsupported, then corruption/absence, without suppressing the other detail.
+This is the core's primary selection diagnostic. Commands aggregate all reported
+outcomes under the exit rules below, including separately proved corruption;
+they do not map only that primary diagnostic to an exit status.
 
 Hold the selected root and the validated older root description for the lifetime
 of the open pool. Corruption discovered later produces an error; never switch an
@@ -254,10 +295,14 @@ Records follow the slot array, starting at its end rounded up to eight bytes.
 Slots and records have the same key order. Records are tightly packed, aligned
 to eight bytes, non-overlapping, and entirely inside used length; the last record
 ends at used length. Remaining block bytes and alignment padding start at zero.
+Each slot length must equal its record header's total length exactly.
 There are no sibling links, overflow records, inline file bytes or compression.
 Node count is also bounded by what fits in its 4096 bytes; zero-length slots,
-duplicate keys and unknown levels/kinds are invalid. Empty indexes use a null
-reference, except required pool catalog/map roots and the volume object root.
+duplicate keys are corrupt and unknown index kinds are unsupported. A structurally
+consistent tree exceeding the eight-node depth profile returns `LIMIT`; an invalid
+parent/child level relationship is `CORRUPT`, regardless of the depth limit.
+Empty indexes use a null reference, except required pool catalog/map roots and
+the volume object root.
 Those roots are nonempty because each image has a volume, allocation map and
 root-directory object. Empty non-null nodes are invalid.
 
@@ -325,13 +370,56 @@ is supported; otherwise pool catalog interpretation is unsupported.
 | --- | --- | --- |
 | 16 | 16 | Object ID/key |
 | 32 | 2 | Kind: 1 regular file, 2 directory |
-| 34 | 6 | Reserved |
+| 34 | 2 | Storage kind: 0 none, 1 inline extent, 2 tree |
+| 36 | 4 | Reserved |
 | 40 | 16 | Policy-owner principal ID |
 | 56 | 16 | Parent object ID; zero only for the volume root |
 | 72 | 8 | File byte length; zero for directories |
-| 80 | 24 | File-extent or directory-index root; nullable |
-| 104 | 8 | Directory entry count; zero for files |
+| 80 | 32 | Storage payload, interpreted by kind below |
 | 112 | 16 | Reserved |
+
+| Storage kind | Payload at +80..111 | Allowed object kinds |
+| --- | --- | --- |
+| 0 none | All zero; no physical extent or directory index | File with zero extents (including a nonempty all-hole file), or empty directory |
+| 1 inline extent | Four `u64`: logical first block at +80, count at +88, physical first block at +96, allocation birth at +104 | File with exactly one extent |
+| 2 tree | Non-null 24-byte index-root reference at +80, directory entry count `u64` at +104 (zero for files) | File with at least two extents, or nonempty directory |
+
+An unknown storage kind is `UNSUPPORTED`; a known kind used with an invalid object
+kind or payload is `CORRUPT`. Never interpret an unknown mode as a hole. Inline
+mapping metadata is covered by the object record checksum, without a nested record
+header or checksum. File contents remain in allocated data blocks. Directory count
+is implicit zero in none mode and positive in tree mode. A directory cannot use
+inline mode. An empty file uses none; a single sparse extent need not begin at zero.
+
+The formatter chooses none/inline/tree for zero/one/multiple file extents. The
+reader supports all three and applies identical range and ownership checks to
+inline and tree mappings. The checker includes inline claims in allocation and
+cross-state comparisons and in the global extent-count limit; it verifies a file
+in tree mode has at least two extents. Ordinary lazy access does not claim to have
+counted an entire unvisited extent tree. When a file needs a second extent, promote
+the inline mapping to ordinary extent records and publish the new discriminator
+and root together; the unchanged data need not move. Any later writable reduction
+to one or zero extents restores the corresponding canonical mode.
+
+The packed record remains 128 bytes. With a 192-byte node header and four-byte slots,
+`192 + align8(4*n) + 128*n` fits 29 objects in 4024 bytes; 30 require 4152 bytes.
+A separate 32-byte addition would yield 160-byte records and only 23 objects per
+leaf. The tagged payload avoids that density cost.
+
+Representative modeled imports of tracked local source sets at Pyxis OS revision
+`f2d3444b09`, excluding submodules and generated/untracked files:
+
+| Source set | Files / nonempty | Directories including root | Packed object leaves | Extent-leaf space saved |
+| --- | --- | --- | --- | --- |
+| `kernel`, `include`, `lib` | 199 / 199 | 27 | 8 | 796 KiB |
+| `docs` | 83 / 83 | 6 | 4 | 332 KiB |
+| All parent-repository tracked regular files | 375 / 375 | 51 | 15 | 1500 KiB |
+
+These are source counts and layout arithmetic, not formatted-image measurements.
+They assume each nonempty file is allocated contiguously as one extent. Directory
+indexes and data allocation are unchanged; internal-tree and allocation-map effects
+are not included. At 158,000 tiny nonempty files, inline mappings save 158,000
+extent leaves, or 617.1875 MiB, while data still needs at least that much space.
 
 Every non-root object has exactly one naming entry and that directory as parent.
 The root is a directory and has no incoming naming entry. No hard links, cycles,
@@ -347,15 +435,24 @@ record. Names are unique within the directory.
 
 ### File extent, 64 bytes
 
-`u64` logical first block at +16, block count at +24, physical first block at +32,
-allocation birth generation at +40, then 16 reserved bytes. Count and generation
+Tree extent records contain `u64` logical first block at +16, block count at +24,
+physical first block at +32, allocation birth generation at +40, then 16 reserved
+bytes. Inline extents encode the same four fields in the object storage payload.
+Both forms obey the following rules. Count and generation
 are nonzero. Both ranges are checked and physical blocks exclude superblocks.
+Allocation birth cannot exceed the birth of the metadata block containing the
+mapping, which cannot exceed the selected generation.
 Logical extents are ordered and disjoint; gaps read as zero. Extents cannot
 extend beyond `ceil(file_length / 4096)`; an empty file has none. The formatter
 zeros unused bytes in the final physical block. Reads clamp to byte length and
 never expose block padding. Separate objects cannot share data blocks in one
-state; sharing an unchanged extent between retained states is permitted only for
-the same volume/object and logical range. No file-data checksum is recorded.
+state. Across retained states, split claims at physical interval boundaries and
+compare every overlapping live interval. Require identical volume/object identity,
+allocation birth and logical-block mapping on the overlap: for physical block `p`,
+`logical_first + (p - physical_first)` must agree. Extent-record boundaries may
+differ. For example, old logical `[0,8)` at physical `[100,108)` may share unchanged
+`[0,4)` at `[100,104)` and `[5,8)` at `[105,108)` around an overwritten middle block.
+No file-data checksum is recorded.
 
 ### Grant, 80 bytes
 
@@ -443,6 +540,37 @@ alone does not confer lookup or file-read rights. There is no stored `..`; calle
 traversal contexts cannot escape the acquired root. Changes to persistent grants
 affect future policy acquisition, not retained subtree authority.
 
+Ordinary operation checks are explicit; none of the metadata operations disclose
+policy-owner or grant records without `admin.inspect`:
+
+| Operation | Required held authority | Returned information |
+| --- | --- | --- |
+| File metadata | `file.metadata` on that file | Pool/volume/object identity, kind and byte length |
+| Directory metadata | `dir.metadata` on that directory | Pool/volume/object identity, kind and entry count |
+| File read | `file.read` on that file | Requested in-range bytes; no implicit metadata or administration rights |
+| List directory | `dir.list` on that directory | Entry names and kinds only; no child capability, identity, size, owner or grants |
+| Inspect policy | `admin.inspect` on that object | Policy-owner ID and explicit grants on that object; no implicit read/list rights |
+| Look up a child / derive a child view | Subtree scope, `dir.lookup` on the containing directory, requested child rights contained in held domain masks | Child identity/kind and a view restricted to the requested rights and scope |
+
+Multi-component lookup requires `dir.lookup` at every traversed directory, including
+the supplied root and excluding the final target. Derivation preserves generation
+and volume, cannot expand a subtree boundary or add rights, and cannot derive
+subtree scope for a file. Intermediate views retain only rights needed for the
+remaining traversal and result. A final object-only directory view cannot derive
+children even if its stored mask contains `dir.lookup`. No operation implicitly
+performs a fresh policy acquisition to enlarge an existing view.
+
+Proposed follow-up decision, pending owner review: policy acquisition by object ID
+must meet the same lookup checks as acquisition by path. After proving the target's
+validated parent chain reaches the supplied root, require effective `dir.lookup`
+for the principal at each intervening directory, intersected with the trusted
+context's directory ceiling. The target equal to the supplied root needs no
+traversal check. Structural parent walking uses the trusted core without disclosing
+those internal records to the caller. An ID is a selector, not extra authority.
+Diagnostic inspection remains a separate authorized entry point. This proposal
+closes the potential ID-based path-lookup bypass without adding an authentication
+service or changing retained-capability delegation.
+
 Inspection has an explicitly separate diagnostic entry point over an authorized
 image. It may reveal all recorded principals, names and bytes without pretending
 to authenticate as an owner. A command that evaluates policy is a diagnostic
@@ -450,9 +578,10 @@ simulation of supplied trusted inputs, not a login mechanism.
 
 ## Accounting and defaults
 
-For each selected state, derive counts from allocation records rather than trusting
-cached totals. Live volume storage includes data, object/directory/extent/grant
-nodes and other volume-owned metadata. Pool catalog/map nodes and the pool root
+Complete checking derives counts from all allocation records for each retained
+state and reconciles cached totals. Candidate selection and ordinary access make
+only the narrower claims defined above. Live volume storage includes data,
+object/directory/extent/grant nodes and other volume-owned metadata. Pool catalog/map nodes and the pool root
 are pool metadata. Neither superblock slot is in `U` or any volume quota.
 Retired blocks retain ownership for reporting but are charged to their recorded
 workspace budget, not twice as live permanent allocation.
@@ -472,13 +601,53 @@ checks for a future transaction use the projected permanent result. Retired
 blocks do not inflate a volume's unused guarantee. A later allocator must enforce
 the same promises at admission; this reader only validates the recorded state.
 
-Formatter defaults in blocks, with ceiling division for percentages:
+Let `P` be permanent live pool metadata. Since every other occupied block is
+either permanent live volume allocation or charged to exactly one workspace,
+`O = P + sum(A_i) + sum(C_j)`. The capacity inequality is equivalently:
+
+```
+P + sum(max(A_i, G_i)) + sum(R_j) <= U
+```
+
+Keep the separate `C_j <= R_j` checks: cancellation in the aggregate equation
+does not permit overrunning any individual budget.
+
+The previous defaults (approximately 104 GiB combined at 1 TiB) were rejected in
+follow-up review. The owner requests roughly 16–24 GiB combined at that size, with
+32 GiB at most for the default. This is not a global cap on all pool sizes or on
+explicit overrides. The following replacement formula and split are proposed,
+pending owner review. Units are blocks, with ceiling division:
 
 | Budget | Default |
 | --- | --- |
-| Ordinary COW workspace | `max(1024, ceil(U / 32))` |
-| Migration workspace | `max(1024, ceil(U / 16))` |
-| Recovery workspace | `max(256, ceil(U / 128))` |
+| Ordinary COW workspace | `max(1024, ceil(U / 128))` |
+| Migration workspace | `max(1024, ceil(U / 128))` |
+| Recovery workspace | `max(256, ceil(U / 256))` |
+
+The proposed split gives equal capacity to ordinary COW and migration, with half
+that amount for recovery. This is a prototype capacity policy, not a measured
+operation-cost ratio. Floors remain 4 MiB, 4 MiB and 1 MiB respectively.
+
+| Pool extent | Ordinary COW | Migration | Recovery | Combined budgets |
+| --- | --- | --- | --- | --- |
+| 64 MiB | 4 MiB | 4 MiB | 1 MiB | 9 MiB |
+| 256 MiB | 4 MiB | 4 MiB | 1 MiB | 9 MiB |
+| 1 GiB | 8 MiB | 8 MiB | 4 MiB | 20 MiB |
+| 16 GiB | 128 MiB | 128 MiB | 64 MiB | 320 MiB |
+| 64 GiB | 512 MiB | 512 MiB | 256 MiB | 1.25 GiB |
+| 256 GiB | 2 GiB | 2 GiB | 1 GiB | 5 GiB |
+| 1 TiB | 8 GiB | 8 GiB | 4 GiB | 20 GiB |
+
+The table uses `U = extent_bytes / 4096 - 2` and rounds each budget up to whole
+blocks. Totals exclude both occupied permanent storage and unused volume guarantees;
+those remain separate terms in the capacity inequality and formatter plan.
+
+A compared capped alternative retains the old fractions (`U/32`, `U/16`, `U/128`)
+but caps default budgets at 8 GiB, 12 GiB and 2 GiB. It gives 22 GiB at 1 TiB,
+yet retains 26 MiB at 256 MiB, 104 MiB at 1 GiB and 6.5 GiB at 64 GiB. The lower
+proportional proposal reduces that cost across development image sizes and needs
+no arbitrary transition point. Neither policy proves recovery or migration
+sufficiency; a cap alone supplies no bound on the work it must fund.
 
 These are capacity-policy defaults and floors for the read-only prototype, not
 proven writable recovery minima. Writable admission requires a separately
@@ -532,7 +701,7 @@ another retained root can name them. This avoids treating allocator metadata as
 an exception to the allocation protocol.
 
 A future reclaim pass may mark a retired extent free only if complete supported
-validation of both currently durable states proves that neither has a live
+evidence for both currently durable states proves that neither has a live
 reference to it, and all older reader/I/O references have ended. Retired entries
 alone are ownership records, not live data references. If either retained state's
 map calls a range live, protect it even if a partial traversal found no reference.
@@ -550,6 +719,21 @@ a retirement generation alone is insufficient evidence. An old root may still
 record an extent as retired after the newer root reuses it, but it must not record
 it as live. The checker distinguishes that historical incarnation from a new live
 allocation instead of summing both state maps as current consumption.
+
+Example for physical range X, omitting unrelated allocations:
+
+| Durable pair | X in older / newer state | Consequence |
+| --- | --- | --- |
+| 10 / 11 | live / retired | Generation 10 still protects X. |
+| 11 / 12 | retired / retired | Neither durable state refers to live X, but a reader or I/O still pinning 10 prevents freeing it. |
+| 12 / 13 | retired / free | After the old reader/I/O ends and required evidence holds, a separate free-map publication records free X. That publication cannot itself reuse X. |
+| 13 / 14 | free / new-live | Only after the free publication is durable and protection is rechecked may a later publication reuse X with a new birth generation. |
+
+Allocator/map nodes obey the same sequence as data. These are evidence requirements,
+not a mandate to rescan the whole pool for every reclaim batch. A future writer
+may maintain equivalent validated summaries and reference tracking, but must
+specify how they stay complete across publication and recovery before relying
+on them. The offline checker's inability to observe runtime pins is unchanged.
 
 Before writable implementation, settle exact dirty-node/byte bounds, allocator
 self-hosting termination, orphan retention, recovery bookkeeping and numerical
@@ -582,6 +766,12 @@ never borrowed cache pointers. Reads return an explicit byte count and status;
 on failure, only the reported prefix is valid and the rest is unspecified.
 Metadata lookups publish no partially initialized result. Directory cursors are
 bound to pool generation, volume and directory; no disk pointer is a user cursor.
+
+This is the current read-only view lifetime, not a future live-capability lifetime.
+Writable integration must distinguish live file capabilities from explicit
+snapshot/read views and in-flight I/O pins. A long-lived live handle must not
+implicitly retain its opening generation forever and exhaust COW workspace.
+The live-view refresh and pin-release contract is a writable-implementation gate.
 
 An allocation cap includes cache, traversal stacks, copied records and checker/
 builder bookkeeping. Cap exhaustion is `LIMIT`; an allocator failure below the
@@ -633,6 +823,10 @@ abort construction. Sources must be quiescent; these checks do not prove an atom
 snapshot against concurrent modification. Initial population materializes source
 holes as zero data; the reader supports sparse extents, but no sparse-preservation
 or alternate-generation fixture is introduced in this milestone.
+Plan contiguous data for each imported nonempty file and use its inline descriptor;
+empty files need no data mapping. Account for extent-tree nodes when a supported
+multi-extent layout requires them. Initial contiguous population alone does not
+demonstrate traversal of multi-extent trees; that validation limit must be reported.
 
 Bound planning memory and retain sufficient identity information to detect changes
 between sizing and copying. Construct all roots and allocation ownership before
@@ -647,7 +841,7 @@ same bounds as the formatter, and one command:
 
 | Command | Result |
 | --- | --- |
-| `info` | Geometry, slot classifications/selection, IDs, features and accounting |
+| `info` | Geometry, slot classifications/selection, IDs, features and recorded accounting, explicitly not globally verified |
 | `volumes` | Catalog order by name, including unsupported-volume status |
 | `list --volume NAME --path PATH` | Directory entries, metadata and identities |
 | `stat --volume NAME --path PATH` | Object identity, owner, type, size and grants |
@@ -700,8 +894,16 @@ supplies the already selected partition extent. Refactoring shared GPT parsing
 is separate work if concrete duplication later warrants it.
 
 Exit status: 0 completed success, 1 denied policy diagnostic, 2 usage/invalid
-input, 3 corrupt or ambiguous media, 4 unsupported or incomplete/limited check,
-5 I/O or allocation failure. Every non-success diagnostic identifies the operation,
+input, 3 corrupt or ambiguous media, 4 unsupported, `READ_ONLY`, `LIMIT` from any
+command, or incomplete checking, 5 I/O or allocation failure. `access` reports
+policy denial as 1;
+if policy allows the request but its operations are unavailable, `READ_ONLY` is 4.
+A complete `check` requires two valid, fully checked slots: one valid with an
+absent peer is degraded/incomplete (4), and one valid with a corrupt peer is 3.
+Other diagnostic/read commands may succeed (0) on a selectable degraded pool,
+but must report degradation. When multiple outcomes occur, prioritize operational
+I/O/allocation failure (5), proved corruption/ambiguity (3), then incomplete (4);
+retain all individual reasons in the output. Every non-success diagnostic identifies the operation,
 available object/block context and whether partial output exists. Missing volume
 or path is an input/selection error, not a successful empty listing. Tool output
 is human-readable; stable JSON output is not part of this task.
@@ -716,13 +918,21 @@ corrupt peer is degraded, not a clean two-root image. An unsupported volume,
 unvisited subtree, memory cap or I/O failure makes the global result incomplete
 or failed, never clean.
 
+Any unknown enabled pool/volume feature makes the full result unsupported and
+incomplete, including a feature compatible with ordinary reads. Continue only
+checks meaningful under supported semantics. Do not classify unexplained live
+allocations as corruption when an unknown feature may own them, and never
+suppress independently established corruption elsewhere.
+
 Walk each supported tree with bounded depth, track visited metadata identities
 and reject cycles, duplicate parents within a tree, misordered keys, separator
 violations and context mismatches. Reconcile both volume catalogs. Check object
 IDs, parent/entry agreement, namespace reachability, root rules, depths, entry
-counts, owners and grant targets. Check file ranges, logical lengths and allocation
-incarnations. Collect extent claims for all metadata and file data, sort by physical
-range and compare them with the allocation map. No conflicting claims, missing
+counts, owners and grant targets. Check storage discriminators and canonical
+none/inline/tree modes, file ranges, logical lengths and allocation incarnations.
+Inline data claims are checked just like extent-tree claims. Collect extent claims
+for all metadata and file data, sort by physical range and compare them with the
+allocation map. No conflicting claims, missing
 owned ranges or unexplained live allocations are allowed. The allocation map and
 pool-root blocks must be accounted for too.
 
@@ -741,8 +951,10 @@ automatic alternate-root retry or success after skipped required state.
 
 ## Remaining implementation gates and validation
 
-Task 1's format and tool choices are accepted, including the 1 TiB/one-million-
-record profile and 128 MiB default tool budget. Task 3 must still establish the
+Task 1 is reopened for the follow-up review. The 1 TiB/one-million-record profile
+and 128 MiB default tool budget remain unchanged. The revised reserve formula and
+ID-acquisition lookup rule above need an explicit owner decision. Task 3 must still
+establish the
 allocation-map construction's termination bound. Writable work must settle the
 bounded admission and recovery costs listed above; acceptance of this contract
 does not prove the reserve defaults sufficient for writable operation.

@@ -2,8 +2,8 @@
 
 Shared Pyxis filesystem core and host tools. Implementation is not present yet.
 
-The [initial format and host-tool contract](docs/format.md) is accepted for the
-read-only milestone; implementation follows in separate tasks.
+The [initial format and host-tool contract](docs/format.md) is under follow-up
+review for the read-only milestone; implementation follows in separate tasks.
 
 ## License
 
