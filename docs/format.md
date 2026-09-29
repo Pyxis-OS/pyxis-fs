@@ -267,9 +267,11 @@ One valid candidate paired with an absent/corrupt candidate is degraded read-onl
 Neither valid means no open pool. Report both candidate classifications; for
 multiple operational failures the primary result prioritizes I/O, no-memory,
 limit, unsupported, then corruption/absence, without suppressing the other detail.
-This is the core's primary selection diagnostic. Commands aggregate all reported
-outcomes under the exit rules below, including separately proved corruption;
-they do not map only that primary diagnostic to an exit status.
+This is the core's primary selection diagnostic. Commands apply the per-command
+degraded-peer rules below before aggregating failures; they do not map only the
+primary diagnostic to an exit status. For a successful non-`check` operation on a
+selectable degraded pool, the tolerated absent/corrupt peer is a warning, not a
+failure included in exit aggregation. `check` includes that peer in its result.
 
 Hold the selected root and the validated older root description for the lifetime
 of the open pool. Corruption discovered later produces an error; never switch an
@@ -475,9 +477,13 @@ storage retains its former owner (possibly zero for pool metadata), nonzero
 birth and retirement generations, and a nonzero budget charge.
 
 The map partitions all of `[1, B-1)` exactly once, including its own nodes and the
-pool root. No implicit free gaps. Non-free birth is nonzero and no later than
-the selected generation. Live records have zero retirement generation. Retired
-records have `birth < retirement <= selected_generation`. Adjacent extents with
+pool root. No implicit free gaps. Every non-free record obeys
+`0 < birth <= containing_map_leaf_birth <= selected_generation`. Live records have
+zero retirement generation. Retired records additionally obey
+`birth < retirement <= containing_map_leaf_birth`. An immutable map leaf cannot
+record an allocation or retirement introduced after that leaf was born, even when
+opening a newer state. These are local record-validation rules for ordinary access
+and complete checking. Adjacent extents with
 identical state, owner, generations and charge are coalesced. The initial builder
 has no retired or budget-charged live extents: all live storage is permanent.
 Later transitional allocations may be live while charged to a workspace budget;
@@ -897,11 +903,20 @@ is separate work if concrete duplication later warrants it.
 Exit status: 0 completed success, 1 denied policy diagnostic, 2 usage/invalid
 input, 3 corrupt or ambiguous media, 4 unsupported, `READ_ONLY`, `LIMIT` from any
 command, or incomplete checking, 5 I/O or allocation failure. `access` reports
-policy denial as 1; if policy allows the request but its operations are unavailable, `READ_ONLY` is 4.
+policy denial as 1; if policy allows the request but its operations are unavailable,
+`READ_ONLY` is 4.
 A complete `check` requires two valid, fully checked slots: one valid with an
 absent peer is degraded/incomplete (4), and one valid with a corrupt peer is 3.
-Other diagnostic/read commands may succeed (0) on a selectable degraded pool,
-but must report degradation. When multiple outcomes occur, prioritize operational
+For non-`check` diagnostic/read commands on a selectable degraded pool, the tolerated
+absent/corrupt peer is reported as a warning and excluded from failure aggregation.
+A successful operation returns 0. For example, successful `stat` with a valid
+selected slot and a CRC-bad peer returns 0 with the peer warning, while `check`
+returns 3 for the same pair. Corruption on the selected operation's traversed path
+still fails with 3. An unsupported, limit, I/O or allocation failure in either
+candidate still prevents selection; it is never downgraded to a peer warning.
+
+The per-command peer rule takes precedence over generic aggregation. Among
+remaining failures, prioritize operational
 I/O/allocation failure (5), proved corruption/ambiguity (3), then incomplete (4);
 retain all individual reasons in the output. Every non-success diagnostic identifies
 the operation, available object/block context and whether partial output exists. Missing volume
