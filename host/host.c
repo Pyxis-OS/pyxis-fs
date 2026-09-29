@@ -111,11 +111,14 @@ host_exit_status(enum pfs_status status)
 {
   switch (status) {
     case PFS_OK: return 0;
+    case PFS_DENIED: return 1;
+    case PFS_NOT_FOUND:
     case PFS_INVALID: return 2;
     case PFS_ABSENT:
     case PFS_CORRUPT: return 3;
     case PFS_UNSUPPORTED:
     case PFS_LIMIT:
+    case PFS_BUSY:
     case PFS_READ_ONLY: return 4;
     case PFS_IO:
     case PFS_NO_MEMORY: return 5;
@@ -131,7 +134,8 @@ host_error(const char *operation, enum pfs_status status,
   if (image != NULL && image->operation != NULL) {
     fprintf(stderr, " (%s", image->operation);
     if (image->error_block != UINT64_MAX) {
-      fprintf(stderr, ", block %llu", (unsigned long long)image->error_block);
+      fprintf(stderr, ", %s %llu", image->error_sector ? "sector" : "block",
+              (unsigned long long)image->error_block);
     }
     if (image->error_number != 0) {
       fprintf(stderr, ": %s", strerror(image->error_number));
@@ -151,6 +155,7 @@ image_error(struct host_image *image, const char *operation, int error_number,
   image->operation = operation;
   image->error_number = error_number;
   image->error_block = block;
+  image->error_sector = false;
   return PFS_IO;
 }
 
@@ -176,15 +181,48 @@ image_read(void *context, uint64_t first, uint32_t count, void *buffer)
     return PFS_IO;
   }
   size_t length = (size_t)count * PFS_BLOCK_SIZE;
+  uint64_t blocks = image->length_bytes / PFS_BLOCK_SIZE;
+  if (first >= blocks || count > blocks - first) {
+    return image_error(image, "read outside selected extent", 0, first);
+  }
   size_t done = 0;
   while (done < length) {
     ssize_t result = pread(image->fd, (uint8_t *)buffer + done, length - done,
-                           (off_t)(first * PFS_BLOCK_SIZE + done));
+                           (off_t)(image->offset_bytes + first * PFS_BLOCK_SIZE + done));
     if (result < 0 && errno == EINTR) {
       continue;
     }
     if (result <= 0) {
       return image_error(image, "read image", result < 0 ? errno : 0, first);
+    }
+    done += (size_t)result;
+  }
+  return image_unchanged(image);
+}
+
+enum pfs_status
+host_image_read_bytes(struct host_image *image, uint64_t offset, size_t length,
+                       void *buffer, const char *operation, uint64_t sector)
+{
+  if (image_unchanged(image) != PFS_OK) {
+    return PFS_IO;
+  }
+  if (offset > image->bytes || length > image->bytes - offset) {
+    image_error(image, operation, 0, sector);
+    image->error_sector = true;
+    return PFS_IO;
+  }
+  size_t done = 0;
+  while (done < length) {
+    ssize_t result = pread(image->fd, (uint8_t *)buffer + done, length - done,
+                           (off_t)(offset + done));
+    if (result < 0 && errno == EINTR) {
+      continue;
+    }
+    if (result <= 0) {
+      image_error(image, operation, result < 0 ? errno : 0, sector);
+      image->error_sector = true;
+      return PFS_IO;
     }
     done += (size_t)result;
   }
@@ -278,11 +316,9 @@ open_parent(struct host_image *image, struct pfs_memory *memory, const char *pat
   return PFS_INVALID;
 }
 
-enum pfs_status
-host_image_open(struct host_image *image, struct pfs_memory *memory,
-                 const char *path, struct pfs_block_reader *reader)
+static enum pfs_status
+image_open_locked(struct host_image *image, const char *path)
 {
-  (void)memory;
   *image = (struct host_image){.fd = -1, .parent_fd = -1, .error_block = UINT64_MAX};
   image->fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
   if (image->fd < 0) {
@@ -293,21 +329,74 @@ host_image_open(struct host_image *image, struct pfs_memory *memory,
     return image_error(image, "stat image", errno, UINT64_MAX);
   }
   if (!S_ISREG(info.st_mode) || info.st_size < 0) {
+    image->operation = "require regular image";
     return PFS_INVALID;
   }
   if (flock(image->fd, LOCK_SH | LOCK_NB) != 0) {
-    return image_error(image, "lock image", errno, UINT64_MAX);
+    int error_number = errno;
+    image_error(image, "lock image", error_number, UINT64_MAX);
+    return error_number == EWOULDBLOCK ? PFS_BUSY : PFS_IO;
   }
   if (fstat(image->fd, &info) != 0) {
     return image_error(image, "stat locked image", errno, UINT64_MAX);
   }
   image->bytes = (uint64_t)info.st_size;
-  uint64_t blocks = image->bytes / PFS_BLOCK_SIZE;
+  return PFS_OK;
+}
+
+static enum pfs_status
+image_reader_init(struct host_image *image, struct pfs_block_reader *reader)
+{
+  uint64_t blocks = image->length_bytes / PFS_BLOCK_SIZE;
   if (blocks < PFS_POOL_BLOCKS_MIN || blocks > PFS_POOL_BLOCKS_MAX) {
     return PFS_LIMIT;
   }
   struct pfs_geometry geometry = {blocks, PFS_IO_BLOCKS_MAX};
   return pfs_block_reader_init(reader, image, &geometry, image_read);
+}
+
+enum pfs_status
+host_image_open(struct host_image *image, struct pfs_memory *memory,
+                 const char *path, struct pfs_block_reader *reader)
+{
+  (void)memory;
+  enum pfs_status status = image_open_locked(image, path);
+  if (status != PFS_OK) {
+    return status;
+  }
+  image->length_bytes = image->bytes;
+  return image_reader_init(image, reader);
+}
+
+enum pfs_status
+host_image_open_gpt(struct host_image *image, struct pfs_memory *memory,
+                     const char *path, const struct host_gpt_selection *selection,
+                     struct host_gpt_diagnostic *diagnostic,
+                     struct pfs_block_reader *reader)
+{
+  *image = (struct host_image){.fd = -1, .parent_fd = -1, .error_block = UINT64_MAX};
+  *diagnostic = (struct host_gpt_diagnostic){0};
+  if (selection == NULL || selection->partition_entry == 0 ||
+      (selection->sector_size != 512 && selection->sector_size != 4096)) {
+    return PFS_INVALID;
+  }
+  enum pfs_status status = image_open_locked(image, path);
+  if (status == PFS_OK) {
+    status = host_gpt_select(image, memory, selection, diagnostic);
+  }
+  if (status != PFS_OK) {
+    return status;
+  }
+  uint64_t blocks = diagnostic->length_bytes / PFS_BLOCK_SIZE;
+  if (blocks < PFS_POOL_BLOCKS_MIN || blocks > PFS_POOL_BLOCKS_MAX) {
+    diagnostic->offset_bytes = 0;
+    diagnostic->length_bytes = 0;
+    image->operation = "selected GPT partition size";
+    return PFS_LIMIT;
+  }
+  image->offset_bytes = diagnostic->offset_bytes;
+  image->length_bytes = diagnostic->length_bytes;
+  return image_reader_init(image, reader);
 }
 
 enum pfs_status
@@ -339,6 +428,7 @@ host_image_create(struct host_image *image, struct pfs_memory *memory,
     return image_error(image, "lock new image", errno, UINT64_MAX);
   }
   image->bytes = bytes;
+  image->length_bytes = bytes;
   if (ftruncate(image->fd, (off_t)bytes) != 0) {
     return image_error(image, "size sparse image", errno, UINT64_MAX);
   }
