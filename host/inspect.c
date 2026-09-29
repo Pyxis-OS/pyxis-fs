@@ -116,7 +116,8 @@ print_volumes(struct pfs_pool *pool, struct pfs_memory *memory, size_t capacity)
       host_name_print(stdout, volume->name.bytes, volume->name.length);
       bool supported = pfs_features_read(&volume->features) == PFS_OK &&
         volume->object_root.version == PFS_FORMAT_VERSION &&
-        volume->grant_root.version == PFS_FORMAT_VERSION;
+        (volume->grant_root.block == 0 ||
+         volume->grant_root.version == PFS_FORMAT_VERSION);
       printf(" id=%s root=%s contents=%s\n"
              "  live=%llu retired=%llu guarantee=%llu quota=%llu objects=%llu\n"
              "  features: read-required=0x%llx write-required=0x%llx optional=0x%llx\n",
