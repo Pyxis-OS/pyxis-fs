@@ -69,8 +69,8 @@ failure below the cap is `PFS_NO_MEMORY`; failed adapter I/O is `PFS_IO`.
 Readers ignore reserved extension bytes and can interpret known fields under
 unknown read-compatible features. Record growth must have a declared compatible
 extension. A volume codec exposes its supported fixed envelope even if that
-volume's own required features are unknown; callers must check those features
-before traversing volume contents. Length extensions of pool catalog records use
+volume's own required features or target-tree versions are unknown; callers must
+check both before traversing volume contents. Length extensions of pool catalog records use
 the enclosing pool's feature declarations; volume masks govern records within
 the volume. Feature checking for full consistency is
 stricter than ordinary reads. Encoders construct initial-version records with

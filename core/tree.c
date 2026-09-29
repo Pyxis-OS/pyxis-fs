@@ -53,6 +53,24 @@ pfs_key_compare(uint16_t kind, const struct pfs_key *left, const struct pfs_key 
   return pfs_bytes_compare(left->bytes, left->length, right->bytes, right->length);
 }
 
+static enum pfs_status
+key_context_validate(uint16_t kind, const struct pfs_key *key,
+                     const struct pfs_record_context *context)
+{
+  enum pfs_status status = pfs_key_validate(kind, key);
+  if (status != PFS_OK) {
+    return status;
+  }
+  if (kind == PFS_INDEX_ALLOCATION &&
+      !pfs_allocatable_range(pfs_get_u64(key->bytes), 1, context->block_count)) {
+    return PFS_CORRUPT;
+  }
+  if (kind == PFS_INDEX_EXTENTS && pfs_get_u64(key->bytes) >= PFS_FILE_SIZE_MAX / PFS_BLOCK_SIZE) {
+    return PFS_LIMIT;
+  }
+  return PFS_OK;
+}
+
 enum pfs_status
 pfs_internal_record_decode(const uint8_t *data, size_t slot_length, uint16_t kind,
                            const struct pfs_record_context *context,
@@ -74,7 +92,7 @@ pfs_internal_record_decode(const uint8_t *data, size_t slot_length, uint16_t kin
     return PFS_CORRUPT;
   }
   pfs_bytes_copy(value.minimum.bytes, data + INTERNAL_KEY_OFFSET, value.minimum.length);
-  status = pfs_key_validate(kind, &value.minimum);
+  status = key_context_validate(kind, &value.minimum, context);
   if (status != PFS_OK) {
     return status;
   }
@@ -106,7 +124,7 @@ pfs_internal_record_encode(uint8_t *data, size_t capacity, uint16_t kind,
     status = pfs_features_write(&context->features);
   }
   if (status == PFS_OK) {
-    status = pfs_key_validate(kind, &value->minimum);
+    status = key_context_validate(kind, &value->minimum, context);
   }
   if (status == PFS_OK) {
     status = pfs_reference_validate(&value->child, context, PFS_BLOCK_TREE, false);
@@ -391,14 +409,25 @@ pfs_tree_encode(uint8_t *data, size_t capacity, const struct pfs_tree_context *c
     return status == PFS_CORRUPT || status == PFS_ABSENT ? PFS_INVALID : status;
   }
   if (!checked.level && checked.kind == PFS_INDEX_VOLUMES) {
+    struct pfs_record_context record_context = {
+      .block_count = context->block.block_count,
+      .selected_generation = context->block.selected_generation,
+      .containing_birth = checked.header.birth,
+      .features = context->block.features,
+    };
     for (uint16_t i = 0; i < checked.count; ++i) {
-      const uint8_t *record = block + checked.slots[i].offset;
-      struct pfs_features features = {
-        .read_required = pfs_get_u64(record + 296),
-        .write_required = pfs_get_u64(record + 304),
-        .optional = pfs_get_u64(record + 312),
-      };
-      status = pfs_features_write(&features);
+      struct pfs_volume_record record;
+      status = pfs_volume_record_decode(block + checked.slots[i].offset,
+                                        checked.slots[i].length, &record_context, &record);
+      if (status == PFS_OK) {
+        status = pfs_features_write(&record.features);
+      }
+      if (status == PFS_OK) {
+        status = pfs_reference_validate(&record.object_root, &record_context, PFS_BLOCK_TREE, false);
+      }
+      if (status == PFS_OK) {
+        status = pfs_reference_validate(&record.grant_root, &record_context, PFS_BLOCK_TREE, true);
+      }
       if (status != PFS_OK) {
         return status;
       }

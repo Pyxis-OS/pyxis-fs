@@ -45,6 +45,42 @@ encode_prepare(void *data, size_t capacity, size_t length,
   return pfs_features_write(&context->features);
 }
 
+/* Catalog envelopes retain target versions without interpreting volume trees. */
+static enum pfs_status
+volume_reference_validate(const struct pfs_reference *reference,
+                           const struct pfs_record_context *context, bool nullable)
+{
+  if (reference->block && !reference->version) {
+    return PFS_CORRUPT;
+  }
+  struct pfs_reference envelope = *reference;
+  if (envelope.version) {
+    envelope.version = PFS_FORMAT_VERSION;
+  }
+  return pfs_reference_validate(&envelope, context, PFS_BLOCK_TREE, nullable);
+}
+
+static enum pfs_status
+volume_reference_decode(const uint8_t *bytes, const struct pfs_record_context *context,
+                         bool nullable, struct pfs_reference *out)
+{
+  struct pfs_reference value;
+  pfs_bytes_zero(&value, sizeof(value));
+  value.block = pfs_get_u64(bytes);
+  value.birth = pfs_get_u64(bytes + 8);
+  value.type = pfs_get_u16(bytes + 16);
+  value.version = pfs_get_u16(bytes + 18);
+  enum pfs_status status = volume_reference_validate(&value, context, nullable);
+  if (status != PFS_OK) {
+    return status;
+  }
+  if (!value.block && !pfs_bytes_are_zero(bytes, PFS_REFERENCE_SIZE)) {
+    return PFS_CORRUPT;
+  }
+  pfs_bytes_copy(out, &value, sizeof(value));
+  return PFS_OK;
+}
+
 enum pfs_status
 pfs_volume_record_validate(const struct pfs_volume_record *record,
                            const struct pfs_record_context *context)
@@ -72,11 +108,11 @@ pfs_volume_record_validate(const struct pfs_volume_record *record,
   if (status != PFS_OK) {
     return status;
   }
-  status = pfs_reference_validate(&record->object_root, context, PFS_BLOCK_TREE, false);
+  status = volume_reference_validate(&record->object_root, context, false);
   if (status != PFS_OK) {
     return status;
   }
-  return pfs_reference_validate(&record->grant_root, context, PFS_BLOCK_TREE, true);
+  return volume_reference_validate(&record->grant_root, context, true);
 }
 
 enum pfs_status
@@ -104,13 +140,11 @@ pfs_volume_record_decode(const void *data, size_t slot_length,
   value.features.write_required = pfs_get_u64(bytes + 304);
   value.features.optional = pfs_get_u64(bytes + 312);
   pfs_bytes_copy(value.root_object.bytes, bytes + 320, PFS_ID_SIZE);
-  status = pfs_reference_decode(bytes + 336, context, PFS_BLOCK_TREE, false,
-                                &value.object_root);
+  status = volume_reference_decode(bytes + 336, context, false, &value.object_root);
   if (status != PFS_OK) {
     return status;
   }
-  status = pfs_reference_decode(bytes + 360, context, PFS_BLOCK_TREE, true,
-                                &value.grant_root);
+  status = volume_reference_decode(bytes + 360, context, true, &value.grant_root);
   if (status != PFS_OK) {
     return status;
   }
@@ -144,6 +178,13 @@ pfs_volume_record_encode(void *data, size_t capacity,
   status = pfs_features_write(&record->features);
   if (status != PFS_OK) {
     return status;
+  }
+  status = pfs_reference_validate(&record->object_root, context, PFS_BLOCK_TREE, false);
+  if (status == PFS_OK) {
+    status = pfs_reference_validate(&record->grant_root, context, PFS_BLOCK_TREE, true);
+  }
+  if (status != PFS_OK) {
+    return status == PFS_CORRUPT ? PFS_INVALID : status;
   }
   uint8_t *bytes = data;
   pfs_bytes_zero(bytes, PFS_VOLUME_RECORD_SIZE);

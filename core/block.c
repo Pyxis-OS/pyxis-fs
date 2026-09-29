@@ -261,13 +261,19 @@ pfs_pool_root_decode(const uint8_t *data, size_t length,
     return PFS_LIMIT;
   }
   uint64_t available = value.free;
+  uint64_t occupied_remaining = context->block_count - 2 - value.free;
   const struct pfs_budget budgets[] = { value.cow, value.migration, value.recovery };
   for (size_t i = 0; i < sizeof(budgets) / sizeof(budgets[0]); ++i) {
     uint64_t unused = budgets[i].capacity - budgets[i].occupied;
-    if (unused > available) {
+    if (unused > available || budgets[i].occupied > occupied_remaining) {
       return PFS_CORRUPT;
     }
     available -= unused;
+    occupied_remaining -= budgets[i].occupied;
+  }
+  uint64_t charged = context->block_count - 2 - value.free - occupied_remaining;
+  if (value.retired > charged) {
+    return PFS_CORRUPT;
   }
   pfs_bytes_copy(out, &value, sizeof(value));
   return PFS_OK;

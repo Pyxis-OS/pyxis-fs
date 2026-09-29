@@ -132,7 +132,8 @@ struct pfs_grant_record {
  * zero extension bytes and refuses enabled features; it is for new images only.
  * Encoding inputs must not overlap the destination. */
 /* Volume validation exposes the fixed envelope without interpreting its feature
- * masks. Check pfs_features_read before interpreting that volume's trees. */
+ * masks or nonzero target-tree versions. Check features and target versions before
+ * interpreting that volume's trees; encoders require supported versions. */
 /* Context features describe the containing index: pool features for catalog
  * envelopes, volume features for records inside that volume. */
 enum pfs_status pfs_volume_record_validate(const struct pfs_volume_record *record,
