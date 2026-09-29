@@ -198,6 +198,24 @@ pfs_memory_allocate(struct pfs_memory *memory, size_t size, size_t alignment,
 }
 
 enum pfs_status
+pfs_memory_move(struct pfs_memory *memory, struct pfs_allocation *source,
+                 struct pfs_allocation *destination)
+{
+  if (!memory_valid(memory) || source == NULL || destination == NULL ||
+      source == destination || !allocation_empty(destination) ||
+      source->owner != memory || source->data == NULL ||
+      source->size == 0 || source->size > memory->used ||
+      source->alignment == 0 ||
+      (source->alignment & (source->alignment - 1)) != 0 ||
+      (uintptr_t)source->data % source->alignment != 0) {
+    return PFS_INVALID;
+  }
+  *destination = *source;
+  *source = (struct pfs_allocation){0};
+  return PFS_OK;
+}
+
+enum pfs_status
 pfs_memory_free(struct pfs_memory *memory, struct pfs_allocation *allocation)
 {
   if (!memory_valid(memory) || allocation == NULL) {

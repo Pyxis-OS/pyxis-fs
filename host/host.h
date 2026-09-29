@@ -4,6 +4,7 @@
 
 #include <pyxis_fs/platform.h>
 #include <stdio.h>
+#include "gpt.h"
 
 struct host_image {
   int fd;
@@ -12,6 +13,9 @@ struct host_image {
   const char *operation;
   uint64_t error_block;
   uint64_t bytes;
+  uint64_t offset_bytes;
+  uint64_t length_bytes;
+  bool error_sector;
   bool created;
 };
 
@@ -27,6 +31,18 @@ void host_error(const char *operation, enum pfs_status status,
  * new file in place; close never removes it. Path scratch is charged to memory. */
 enum pfs_status host_image_open(struct host_image *image, struct pfs_memory *memory,
                                 const char *path, struct pfs_block_reader *reader);
+/* Explicit whole-disk GPT selection only. Both options are mandatory; no type
+ * filtering or probing occurs. Diagnostic survives failed opens. */
+enum pfs_status host_image_open_gpt(struct host_image *image, struct pfs_memory *memory,
+                                    const char *path,
+                                    const struct host_gpt_selection *selection,
+                                    struct host_gpt_diagnostic *diagnostic,
+                                    struct pfs_block_reader *reader);
+/* Internal GPT I/O in whole-file bytes, checked against unchanged file size.
+ * Error context identifies the supplied GPT sector and operation. */
+enum pfs_status host_image_read_bytes(struct host_image *image, uint64_t offset,
+                                      size_t length, void *buffer,
+                                      const char *operation, uint64_t sector);
 enum pfs_status host_image_create(struct host_image *image, struct pfs_memory *memory,
                                   const char *path, uint64_t bytes,
                                   struct pfs_block_builder *builder);

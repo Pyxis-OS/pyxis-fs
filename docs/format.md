@@ -1,9 +1,10 @@
 # Initial Pyxis filesystem format and tool contract
 
 Status: accepted task-1 specification, including follow-up decisions;
-the [shared core](core.md), empty-image construction, candidate selection and
-[host `info`/`volumes` commands](host-tools.md) are implemented. General traversal,
-acquisition, source import, GPT selection and complete checking remain later tasks.
+the [shared core](core.md), empty-image construction, candidate selection,
+readonly traversal/acquisition and explicit GPT inspection are implemented.
+[Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat` and `access`.
+Source import, extraction and complete checking remain later tasks.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and

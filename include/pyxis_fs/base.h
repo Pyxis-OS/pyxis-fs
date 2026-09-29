@@ -14,6 +14,9 @@ enum pfs_status {
   PFS_IO,
   PFS_NO_MEMORY,
   PFS_READ_ONLY,
+  PFS_BUSY,
+  PFS_DENIED,
+  PFS_NOT_FOUND,
 };
 
 #define PFS_BLOCK_SIZE 4096u

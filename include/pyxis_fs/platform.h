@@ -70,7 +70,7 @@ struct pfs_memory {
 };
 
 /* Initialize handles to zero. Live handles and their memory owner are not copied,
- * modified or reinitialized; they outlive the allocation. Payload is caller owned
+ * modified or reinitialized except through pfs_memory_move; they outlive the allocation. Payload is caller owned
  * until free. These caller-supplied handles need no hidden heap allocation.
  * The cap charges requested bytes, not adapter-private allocator overhead. */
 struct pfs_allocation {
@@ -92,7 +92,15 @@ enum pfs_status pfs_memory_init(struct pfs_memory *memory, void *context,
 enum pfs_status pfs_memory_allocate(struct pfs_memory *memory, size_t size,
                                    size_t alignment,
                                    struct pfs_allocation *allocation);
-/* Free clears the handle. Free of an already empty handle is successful. */
+/* Transfer a live allocation to an empty, disjoint handle and clear source.
+ * This performs no allocation/free and leaves the charged size unchanged.
+ * A handle may move into its own payload, but must move out before freeing it.
+ * Both handles are unchanged on failure. */
+enum pfs_status pfs_memory_move(struct pfs_memory *memory,
+                                struct pfs_allocation *source,
+                                struct pfs_allocation *destination);
+/* Free clears the handle, which must be outside the payload being freed.
+ * Free of an already empty handle is successful. */
 enum pfs_status pfs_memory_free(struct pfs_memory *memory,
                                struct pfs_allocation *allocation);
 
