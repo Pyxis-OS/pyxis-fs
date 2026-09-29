@@ -1,17 +1,17 @@
 # Initial Pyxis filesystem format and tool contract
 
-Status: task-1 specification draft for review, not an implemented format.
+Status: accepted task-1 specification; implementation is not present yet.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
 read-only GPT inspection boundary. Original project material is covered by the
 repository's [MPL-2.0 licensing notice](../LICENSING.md).
 
-This draft makes the remaining choices concrete. The byte layouts, numerical
-limits, rights assignments, budget defaults and future reclamation procedure
-below are proposals, not decisions inferred from silence. Task 1 stays open
-until those choices are reviewed. Do not start codecs or writable operations
-from this draft alone.
+The owner reviewed and accepted this contract on 2026-09-29, completing task 1.
+The byte layouts, numerical limits, rights assignments and budget defaults below
+are agreed for the initial read-only milestone. The future reclamation envelope
+records design constraints; its explicit writable-implementation gates remain.
+Implementation proceeds through separately authorized milestone tasks.
 
 ## Ownership and integration
 
@@ -20,7 +20,7 @@ GNU C23 library, formatter, inspector and Linux adapter. This repository owns th
 format contract; Pyxis OS links to it rather than maintaining another copy.
 The licensing bootstrap is present, but no filesystem implementation exists yet.
 
-Proposed integration is a published revision pinned at `fs/`, with the relative
+Agreed integration is a published revision pinned at `fs/`, with the relative
 submodule URL `../pyxis-fs.git`. An opt-in parent `make fs-tools` invokes the host
 build with explicit source/output directories and `HOST_CC`; it produces
 `build/fs-tools/mkpyxisfs` and `build/fs-tools/pyxisfs-inspect`. A standalone build
@@ -44,7 +44,7 @@ For `B = floor(extent_bytes / 4096)`, superblock slots occupy blocks `0` and
 same layout. The initial formatter writes generation 1 to both, with identical
 committed state and different physical-location/checksum fields.
 
-Proposed implementation limits, distinct from integer encoding widths:
+Initial implementation limits, distinct from integer encoding widths:
 
 | Resource | Limit |
 | --- | --- |
@@ -387,7 +387,7 @@ they are never also counted as unused budget.
 
 ## Rights and trusted acquisition
 
-The proposed masks keep the three rights domains separate:
+The masks keep the three rights domains separate:
 
 | Domain | Bit | Meaning |
 | --- | --- | --- |
@@ -415,7 +415,7 @@ The formatter gives each volume root an explicit owner subtree grant containing
 all defined bits; descendants inherit its owner and need no repeated grants.
 This records intended future policy, not successful mutation operations today.
 
-Proposed policy acquisition takes a trusted principal context, a bounded root
+Policy acquisition takes a trusted principal context, a bounded root
 and scope, a rights ceiling in all three domains, a target, requested result scope
 and requested rights.
 The embedding authority establishes this context; untrusted callers cannot mint
@@ -448,7 +448,7 @@ image. It may reveal all recorded principals, names and bytes without pretending
 to authenticate as an owner. A command that evaluates policy is a diagnostic
 simulation of supplied trusted inputs, not a login mechanism.
 
-## Accounting and proposed defaults
+## Accounting and defaults
 
 For each selected state, derive counts from allocation records rather than trusting
 cached totals. Live volume storage includes data, object/directory/extent/grant
@@ -472,7 +472,7 @@ checks for a future transaction use the projected permanent result. Retired
 blocks do not inflate a volume's unused guarantee. A later allocator must enforce
 the same promises at admission; this reader only validates the recorded state.
 
-Proposed formatter defaults in blocks, with ceiling division for percentages:
+Formatter defaults in blocks, with ceiling division for percentages:
 
 | Budget | Default |
 | --- | --- |
@@ -497,7 +497,7 @@ Default quota is `U - live_pool_metadata - sum(R_j)`, raised to neither mask an
 error nor fit an oversized import: if it cannot cover `max(A_i, G_i)`, reject the
 plan. Quotas may collectively exceed capacity; hard guarantees may not.
 
-Overrides use whole blocks and cannot lower the proposed policy floors. Reject
+Overrides use whole blocks and cannot lower the policy floors. Reject
 any plan violating the inequality, count limits or requested quotas. Report all
 computed allocations, unused guarantees, reserve budgets and unpromised space
 before creating the image. Planning allocation-map space includes the map's own
@@ -531,7 +531,7 @@ candidate. Old map/root blocks cannot be omitted from ownership or reused while
 another retained root can name them. This avoids treating allocator metadata as
 an exception to the allocation protocol.
 
-A proposed reclaim pass may mark a retired extent free only if complete supported
+A future reclaim pass may mark a retired extent free only if complete supported
 validation of both currently durable states proves that neither has a live
 reference to it, and all older reader/I/O references have ended. Retired entries
 alone are ownership records, not live data references. If either retained state's
@@ -559,7 +559,7 @@ and ownership-transfer protocol when a real second format exists.
 
 ## Core platform and object lifetime
 
-Proposed platform operations are synchronous exact block read, builder-only exact
+Platform operations are synchronous exact block read, builder-only exact
 block write and flush, bounded allocation and free, each with an opaque adapter
 context. The adapter reports geometry and a maximum transfer of at least one
 filesystem block. Short I/O is an error. It borrows buffers only until return;
@@ -739,17 +739,16 @@ that file-data contents have no checksums and were not integrity-verified. Conte
 comparison is the separate extract/compare workflow. No repair, reclamation,
 automatic alternate-root retry or success after skipped required state.
 
-## Review gates and validation
+## Remaining implementation gates and validation
 
-Before task 1 is marked complete, review the proposed layouts/reference identity,
-feature handling, bounded root selection, rights/ceiling semantics, supported-size
-limits, memory caps, source/extraction rules, capacity formulas and future
-reclamation envelope. In particular, decide whether the first implementation's
-1 TiB/one-million-record profile and 128 MiB default tool budget are useful.
-Repository licensing is established as MPL-2.0; it is not an unresolved format
-choice.
+Task 1's format and tool choices are accepted, including the 1 TiB/one-million-
+record profile and 128 MiB default tool budget. Task 3 must still establish the
+allocation-map construction's termination bound. Writable work must settle the
+bounded admission and recovery costs listed above; acceptance of this contract
+does not prove the reserve defaults sufficient for writable operation.
+Repository licensing is established as MPL-2.0.
 
-This draft has no codec or tool implementation to build. Review field arithmetic,
-invariants, examples and links. Later host validation uses ordinary builds and
+This specification has no codec or tool implementation to build. Review field
+arithmetic, invariants, examples and links. Later host validation uses ordinary builds and
 manual formatting/inspection/extraction; no tests, self-tests, damaged-image
 fixtures, fault injection or new CI are authorized by this specification.
