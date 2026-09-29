@@ -5,18 +5,21 @@ Shared Pyxis filesystem core. Requires GNU Make and a GNU C23 compiler.
 ```sh
 make -j16
 build/mkpyxisfs --image /tmp/pool.raw --size 256MiB \
-  --volume home --owner 0a32efc079ed4c7bab58e224cf119315 --plan
+  --volume home --source /tmp/source-home \
+  --owner 0a32efc079ed4c7bab58e224cf119315 --plan
 ```
 
 The build produces `libpyxis-fs.a`, `mkpyxisfs` and `pyxisfs-inspect` under `build/`.
 The example principal ID is illustrative; supply an explicitly provisioned owner.
-Omit `--plan` to create a new sparse image containing empty volumes, then inspect it:
+Omit `--plan` to create the new sparse image; omit `--source` for an empty volume.
+Inspect or extract into a fresh destination:
 
 ```sh
 build/pyxisfs-inspect --image /tmp/pool.raw info
 build/pyxisfs-inspect --image /tmp/pool.raw volumes
 build/pyxisfs-inspect --image /tmp/pool.raw list --volume home --path .
-build/pyxisfs-inspect --image /tmp/pool.raw stat --volume home --path .
+build/pyxisfs-inspect --image /tmp/pool.raw \
+  extract --volume home --path . --output /tmp/extracted-home
 ```
 
 `access` evaluates supplied principal/root/ceiling policy without authenticating

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "inspect.h"
+#include "extract.h"
 
 #include <string.h>
 
@@ -201,8 +202,12 @@ inspect_objects(struct pfs_pool *pool, const struct inspect_options *options,
       struct pfs_object_record object;
       status = resolve(&volume, &metadata.root_object, options->path, &object);
       if (status == PFS_OK) {
-        status = options->command == INSPECT_STAT ? print_stat(&volume, &object) :
-                                                   print_list(&volume, &object);
+        if (options->command == INSPECT_EXTRACT) {
+          status = host_extract(&volume, &object, options->output);
+        } else {
+          status = options->command == INSPECT_STAT ? print_stat(&volume, &object) :
+                                                     print_list(&volume, &object);
+        }
       }
     }
   }

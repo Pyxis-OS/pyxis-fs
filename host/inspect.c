@@ -198,7 +198,8 @@ main(int argc, char **argv)
     status = print_volumes(&pool, &memory, (size_t)selected->root.volume_count);
     result = host_exit_status(status);
   } else {
-    operation = options.command == INSPECT_ACCESS ? "access" :
+    operation = options.command == INSPECT_EXTRACT ? "extract" :
+                options.command == INSPECT_ACCESS ? "access" :
                 options.command == INSPECT_STAT ? "stat" : "list";
     status = inspect_objects(&pool, &options, selected->root.volume_count);
     result = host_exit_status(status);

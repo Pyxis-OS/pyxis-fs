@@ -12,6 +12,7 @@ enum inspect_command {
   INSPECT_LIST,
   INSPECT_STAT,
   INSPECT_ACCESS,
+  INSPECT_EXTRACT,
 };
 
 struct inspect_options {
@@ -22,6 +23,7 @@ struct inspect_options {
   struct pfs_volume_id volume_id;
   bool volume_id_set;
   const char *path;
+  const char *output;
   const char *root;
   const char *target;
   struct pfs_principal_id principal;

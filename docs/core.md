@@ -1,10 +1,11 @@
 # Shared core and encoding
 
 The core implements the local encoding layer of the [format contract](format.md),
-empty-image construction, pool selection, namespace and file reads, and policy
+bulk image construction, pool selection, namespace and file reads, and policy
 acquisition. It builds as `libpyxis-fs.a` with no host-libc, kernel or Pyxis ABI
-dependency. Linux host tools create standalone sparse images with empty volumes
-and provide diagnostic `info`, `volumes`, `list`, `stat` and `access` commands.
+dependency. Linux host tools populate standalone sparse images from source
+directories and provide diagnostic `info`, `volumes`, `list`, `stat`, `access`
+and `extract` commands.
 Explicit GPT partition selection belongs to the host adapter.
 See [host-tool usage](host-tools.md).
 
@@ -49,7 +50,7 @@ Public headers are under `include/pyxis_fs/`:
 | `record.h` | Seven leaf record codecs and local validators, including none/inline/tree object storage, allocation transitions and grant-mask domains |
 | `tree.h` | Internal records, typed key order, tightly packed tree blocks, slot/record validation and supplied owner/parent-level context |
 | `platform.h` | Bounded allocation ownership and synchronous exact block reader/builder interfaces |
-| `build.h` | Owned empty-pool planning and construction into a newly created output |
+| `build.h` | Owned bulk planning and construction into a newly created output |
 | `pool.h` | Independent slot diagnostics, selected pool lifetime and copied diagnostic volume catalogs |
 | `read.h` | Diagnostic volume/object access, relative paths, ancestry, explicit grants, file reads and directory cursors |
 | `access.h` | Trusted acquisition contexts, policy evaluation and opaque views with checked ordinary operations |
@@ -108,18 +109,42 @@ an acquired capability or evidence of policy authorization.
 
 ## Construction and pool operations
 
-`pfs_empty_plan_create` copies the supplied specification and owns its accounting,
-bookkeeping and construction workspace through `pfs_memory`. Initialize the plan
-to zero; do not copy or modify a live plan. Its public summaries and volume records
-are borrowed until `pfs_empty_plan_destroy`, and its memory owner must outlive it.
-Planning performs no I/O. See [empty-image layout](empty-layout.md) for the bounded
-metadata layout and reserve/guarantee accounting.
+`pfs_build_plan_create` copies the supplied pool, volume and object specifications
+and owns its accounting, sorting arrays, node layouts and construction workspace
+through `pfs_memory`. Initialize the plan to zero; do not copy or modify a live
+plan. Its public summaries and volume records are borrowed until
+`pfs_build_plan_destroy`, and its memory owner must outlive it. Planning performs
+no I/O and retains no input-array pointers after returning. Checked count,
+geometry and memory bounds are applied before allocation. See the
+[bulk construction layout](empty-layout.md) for allocation-map termination and
+reserve/guarantee accounting.
 
-`pfs_empty_build` requires a newly created, exclusively owned empty output. It
-uses the planned buffers without reads or allocations, writes metadata and the
-pool root, flushes, writes both generation-1 slots, then flushes again. The host
-separately flushes the containing directory. A failure can leave partial output;
-retry is not recovery. Destroy releases the plan without I/O.
+Every volume supplies an object array. Index zero is a directory whose ID matches
+`root_object`, with an empty name and `UINT32_MAX` parent. Each remaining parent
+index precedes its child and identifies a directory in the same array. Names are
+unique within a directory; persistent IDs are nonzero and collision-free. The
+planner checks the global object-count profile and the 256-object ancestry limit,
+builds object and directory trees with exact codec packing, and rejects capacity
+or quota excess. All objects use the selected volume owner and inherit the root's
+one explicit owner subtree grant. Empty objects need no storage tree. Nonempty
+files each have one contiguous inline extent, with zero final-block padding.
+
+`pfs_build` requires a newly created, exclusively owned empty output. It uses the
+plan's allocated buffers without output reads or further allocation. A
+`pfs_build_source` borrows an adapter context and supplies synchronous exact-byte
+`read` and `validate` callbacks. Reads identify original volume/object indices,
+stream each nonempty file from offset zero through EOF before the next file, and
+request at most 64 KiB, respecting smaller output-transfer limits. Empty files
+produce no read callbacks. After all metadata trees and file data are written,
+`validate` checks the sources before pool-root and superblock publication.
+Callback failures propagate unchanged. Both callbacks are required for a supplied
+source; a null source is permitted only when there are no nonempty files.
+
+After successful validation, construction writes the pool root, flushes metadata
+and data, writes both generation-1 slots, then flushes again. The host separately
+flushes the containing directory. Failure leaves partial output; retry is not
+recovery. Destroy releases the plan without I/O. Empty volumes use the same
+builder and accounting path.
 
 `pfs_pool_open` examines both slots independently and publishes their diagnostics
 even on media failure. Successful candidate selection validates the superblock,
@@ -258,5 +283,23 @@ only the partition-relative 4096-byte reader; a sector-aligned start may have no
 disk-wide 4096-byte alignment, and a trailing partial pool block is ignored.
 The host reader retains the whole-file size for change detection and never reads
 outside the selected extent. No raw device access, GPT repair or writes are
-provided by inspection. Source import, extraction and full consistency checking
-are not implemented.
+provided by inspection. The host importer retains source-root descriptors and
+charged manifests of names, parent indices and file identities. It traverses and
+reopens entries relative to those descriptors without following symlinks, rejects
+special files, and gives hard-linked files independent objects and data extents.
+It checks device/inode, type, size, mtime and ctime while scanning/reopening/copying,
+revalidates all source objects before output creation and before slot publication,
+and refuses an output parent matching any imported directory identity. Sources
+must be quiescent: these checks detect changes but do not establish an atomic
+snapshot. Open traversal descriptors are bounded by ancestry, and one source
+file descriptor is retained during its streamed copy.
+
+Extraction uses diagnostic volume operations with a charged transfer buffer and
+bounded iterative directory frames. Fresh output files and directories use modes
+0600 and 0700 before a stricter umask. Output parent components are opened through
+retained descriptors without symlinks or `..`; extraction never merges into an
+existing tree. Files are flushed after copying, directories after their children,
+and the containing parent before successful completion. Failure leaves reported
+partial output for explicit removal. The host owns and closes all source/output
+descriptors; core readers and builders borrow their adapter contexts. Complete
+consistency checking remains task 6.

@@ -43,8 +43,13 @@ enum pfs_status host_image_open_gpt(struct host_image *image, struct pfs_memory 
 enum pfs_status host_image_read_bytes(struct host_image *image, uint64_t offset,
                                       size_t length, void *buffer,
                                       const char *operation, uint64_t sector);
-enum pfs_status host_image_create(struct host_image *image, struct pfs_memory *memory,
-                                  const char *path, uint64_t bytes,
+/* Prepare retains the final parent without creating output. The caller owns
+ * scratch until creation; name points into scratch. This permits source-tree
+ * exclusion against the same descriptor used for exclusive creation. */
+enum pfs_status host_image_prepare(struct host_image *image, struct pfs_memory *memory,
+                                   const char *path, struct pfs_allocation *scratch,
+                                   char **name);
+enum pfs_status host_image_create(struct host_image *image, const char *name, uint64_t bytes,
                                   struct pfs_block_builder *builder);
 enum pfs_status host_image_publish(struct host_image *image);
 enum pfs_status host_image_close(struct host_image *image);
