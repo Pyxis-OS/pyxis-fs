@@ -7,34 +7,40 @@ struct pool_state {
   struct pfs_pool_diagnostic diagnostic;
 };
 
-static struct pfs_block_context
-block_context(const struct pfs_superblock *superblock,
+struct candidate_workspace {
+  uint8_t raw[2][PFS_BLOCK_SIZE];
+  uint8_t data[PFS_BLOCK_SIZE];
+  struct pfs_tree tree;
+};
+
+static void
+block_context(struct pfs_block_context *context, const struct pfs_superblock *superblock,
               const struct pfs_reference *reference, uint64_t birth)
 {
-  return (struct pfs_block_context){
-    .block_count = superblock->block_count,
-    .selected_generation = superblock->header.birth,
-    .referring_birth = birth,
-    .pool = superblock->header.pool,
-    .reference = *reference,
-    .features = superblock->features,
-  };
+  pfs_bytes_zero(context, sizeof(*context));
+  context->block_count = superblock->block_count;
+  context->selected_generation = superblock->header.birth;
+  context->referring_birth = birth;
+  pfs_bytes_copy(&context->pool, &superblock->header.pool, sizeof(context->pool));
+  pfs_bytes_copy(&context->reference, reference, sizeof(context->reference));
+  pfs_bytes_copy(&context->features, &superblock->features, sizeof(context->features));
 }
 
-static struct pfs_record_context
-record_context(const struct pfs_superblock *superblock, uint64_t birth)
+static void
+record_context(struct pfs_record_context *context,
+               const struct pfs_superblock *superblock, uint64_t birth)
 {
-  return (struct pfs_record_context){
-    .block_count = superblock->block_count,
-    .selected_generation = superblock->header.birth,
-    .containing_birth = birth,
-    .features = superblock->features,
-  };
+  pfs_bytes_zero(context, sizeof(*context));
+  context->block_count = superblock->block_count;
+  context->selected_generation = superblock->header.birth;
+  context->containing_birth = birth;
+  pfs_bytes_copy(&context->features, &superblock->features, sizeof(context->features));
 }
 
 static enum pfs_status
 candidate_read(const struct pfs_block_reader *reader, uint64_t slot,
-               uint8_t *raw, struct pfs_pool_candidate *candidate)
+               uint8_t *raw, struct candidate_workspace *workspace,
+               struct pfs_pool_candidate *candidate)
 {
   enum pfs_status status = pfs_block_read(reader, slot, 1, raw, PFS_BLOCK_SIZE);
   if (status != PFS_OK) {
@@ -46,36 +52,35 @@ candidate_read(const struct pfs_block_reader *reader, uint64_t slot,
   if (status != PFS_OK) {
     return status;
   }
-  uint8_t data[PFS_BLOCK_SIZE];
-  status = pfs_block_read(reader, superblock.root.block, 1, data, sizeof(data));
+  uint8_t *data = workspace->data;
+  status = pfs_block_read(reader, superblock.root.block, 1, data, PFS_BLOCK_SIZE);
   if (status != PFS_OK) {
     return status;
   }
-  struct pfs_block_context context = block_context(&superblock, &superblock.root,
-                                                  superblock.header.birth);
+  struct pfs_block_context context;
+  block_context(&context, &superblock, &superblock.root, superblock.header.birth);
   struct pfs_pool_root root;
-  status = pfs_pool_root_decode(data, sizeof(data), &context, &root);
+  status = pfs_pool_root_decode(data, PFS_BLOCK_SIZE, &context, &root);
   if (status != PFS_OK) {
     return status;
   }
-  const struct pfs_reference references[] = { root.volumes, root.volume_names, root.allocation };
+  const struct pfs_reference *references[] = { &root.volumes, &root.volume_names, &root.allocation };
   for (uint16_t i = 0; i < 3; ++i) {
-    status = pfs_block_read(reader, references[i].block, 1, data, sizeof(data));
+    status = pfs_block_read(reader, references[i]->block, 1, data, PFS_BLOCK_SIZE);
     if (status != PFS_OK) {
       return status;
     }
-    struct pfs_tree_context tree_context = {
-      .block = block_context(&superblock, &references[i], root.header.birth),
-      .kind = (uint16_t)(PFS_INDEX_VOLUMES + i),
-    };
-    struct pfs_tree tree;
-    status = pfs_tree_decode(data, sizeof(data), &tree_context, &tree);
+    struct pfs_tree_context tree_context;
+    pfs_bytes_zero(&tree_context, sizeof(tree_context));
+    block_context(&tree_context.block, &superblock, references[i], root.header.birth);
+    tree_context.kind = (uint16_t)(PFS_INDEX_VOLUMES + i);
+    status = pfs_tree_decode(data, PFS_BLOCK_SIZE, &tree_context, &workspace->tree);
     if (status != PFS_OK) {
       return status;
     }
   }
-  candidate->superblock = superblock;
-  candidate->root = root;
+  pfs_bytes_copy(&candidate->superblock, &superblock, sizeof(superblock));
+  pfs_bytes_copy(&candidate->root, &root, sizeof(root));
   return PFS_OK;
 }
 
@@ -105,21 +110,30 @@ pfs_pool_open(struct pfs_pool *pool, const struct pfs_block_reader *reader,
       !memory->limit || memory->limit > PFS_MEMORY_MAX || memory->used > memory->limit) {
     return PFS_INVALID;
   }
-  struct pfs_pool_diagnostic result = { .selected = PFS_POOL_NO_SELECTION };
-  uint8_t raw[2][PFS_BLOCK_SIZE];
-  result.candidate[0].status = candidate_read(reader, 0, raw[0], &result.candidate[0]);
-  result.candidate[1].status = candidate_read(reader, reader->geometry.block_count - 1,
-                                             raw[1], &result.candidate[1]);
-  enum pfs_status first = result.candidate[0].status;
-  enum pfs_status second = result.candidate[1].status;
-  enum pfs_status status = failure_priority(first) >= failure_priority(second) ? first : second;
-  if (failure_priority(status) > failure_priority(PFS_CORRUPT)) {
-    *diagnostic = result;
+  struct pfs_pool_diagnostic result;
+  pfs_bytes_zero(&result, sizeof(result));
+  result.selected = PFS_POOL_NO_SELECTION;
+  struct pfs_allocation scratch;
+  pfs_bytes_zero(&scratch, sizeof(scratch));
+  enum pfs_status status = pfs_memory_allocate(memory, sizeof(struct candidate_workspace),
+    _Alignof(struct candidate_workspace), &scratch);
+  if (status != PFS_OK) {
+    result.candidate[0].status = status;
+    result.candidate[1].status = status;
+    pfs_bytes_copy(diagnostic, &result, sizeof(result));
     return status;
   }
-  if (first != PFS_OK && second != PFS_OK) {
-    *diagnostic = result;
-    return status;
+  struct candidate_workspace *workspace = scratch.data;
+  uint8_t (*raw)[PFS_BLOCK_SIZE] = workspace->raw;
+  result.candidate[0].status = candidate_read(reader, 0, raw[0], workspace, &result.candidate[0]);
+  result.candidate[1].status = candidate_read(reader, reader->geometry.block_count - 1,
+                                             raw[1], workspace, &result.candidate[1]);
+  enum pfs_status first = result.candidate[0].status;
+  enum pfs_status second = result.candidate[1].status;
+  status = failure_priority(first) >= failure_priority(second) ? first : second;
+  if (failure_priority(status) > failure_priority(PFS_CORRUPT) ||
+      (first != PFS_OK && second != PFS_OK)) {
+    goto done;
   }
   if (first == PFS_OK && second == PFS_OK) {
     const struct pfs_superblock *a = &result.candidate[0].superblock;
@@ -136,27 +150,31 @@ pfs_pool_open(struct pfs_pool *pool, const struct pfs_block_reader *reader,
     }
     if (disagree) {
       result.ambiguous = true;
-      *diagnostic = result;
-      return PFS_CORRUPT;
+      status = PFS_CORRUPT;
+      goto done;
     }
     result.selected = a->header.birth >= b->header.birth ? 0 : 1;
   } else {
     result.selected = first == PFS_OK ? 0 : 1;
     result.degraded = true;
   }
+  pfs_memory_free(memory, &scratch);
   status = pfs_memory_allocate(memory, sizeof(struct pool_state), _Alignof(struct pool_state),
                                &pool->state);
   if (status != PFS_OK) {
     result.selected = PFS_POOL_NO_SELECTION;
-    *diagnostic = result;
-    return status;
+    result.degraded = false;
+    goto done;
   }
   struct pool_state *state = pool->state.data;
-  state->diagnostic = result;
+  pfs_bytes_copy(&state->diagnostic, &result, sizeof(result));
   pool->reader = reader;
   pool->memory = memory;
-  *diagnostic = result;
-  return PFS_OK;
+
+done:
+  pfs_memory_free(memory, &scratch);
+  pfs_bytes_copy(diagnostic, &result, sizeof(result));
+  return status;
 }
 
 enum pfs_status
@@ -277,11 +295,11 @@ node_get(struct catalog_operation *operation, const struct pfs_reference *refere
   struct consulted_node **table = operation->tables[operation->active_table].data;
   struct consulted_node **slot = table_slot(table, operation->table_capacity, reference->block);
   struct consulted_node *node = *slot;
-  struct pfs_tree_context context = {
-    .block = block_context(operation->superblock, reference, birth),
-    .kind = kind,
-    .parent_level = parent ? parent->tree.level : 0,
-  };
+  struct pfs_tree_context context;
+  pfs_bytes_zero(&context, sizeof(context));
+  block_context(&context.block, operation->superblock, reference, birth);
+  context.kind = kind;
+  context.parent_level = parent ? parent->tree.level : 0;
   uint64_t parent_block = parent ? parent->tree.header.block : operation->root->header.block;
   if (reference->block == operation->root->header.block) {
     return PFS_CORRUPT;
@@ -337,7 +355,8 @@ node_get(struct catalog_operation *operation, const struct pfs_reference *refere
   if (upper && kind == PFS_INDEX_ALLOCATION && !node->tree.level) {
     const struct pfs_tree_slot *last = &node->tree.slots[node->tree.count - 1];
     struct pfs_allocation_record record;
-    struct pfs_record_context records = record_context(operation->superblock, node->tree.header.birth);
+    struct pfs_record_context records;
+    record_context(&records, operation->superblock, node->tree.header.birth);
     enum pfs_status status = pfs_allocation_record_decode(node->data + last->offset,
                                                          last->length, &records, &record);
     if (status != PFS_OK) {
@@ -355,7 +374,8 @@ static enum pfs_status
 internal_at(struct catalog_operation *operation, struct consulted_node *node,
             uint16_t slot, struct pfs_internal_record *record)
 {
-  struct pfs_record_context context = record_context(operation->superblock, node->tree.header.birth);
+  struct pfs_record_context context;
+  record_context(&context, operation->superblock, node->tree.header.birth);
   return pfs_internal_record_decode(node->data + node->tree.slots[slot].offset,
                                     node->tree.slots[slot].length, node->tree.kind,
                                     &context, record);
@@ -371,7 +391,8 @@ catalog_walk(struct catalog_operation *operation, const struct pfs_reference *ro
     return status;
   }
   size_t depth = 1;
-  operation->frames[0] = (struct walk_frame){ .node = node };
+  pfs_bytes_zero(&operation->frames[0], sizeof(operation->frames[0]));
+  operation->frames[0].node = node;
   node->catalog_visited = true;
   while (depth) {
     struct walk_frame *frame = &operation->frames[depth - 1];
@@ -390,7 +411,7 @@ catalog_walk(struct catalog_operation *operation, const struct pfs_reference *ro
       struct pfs_key upper;
       bool has_upper = frame->has_upper;
       if (has_upper) {
-        upper = frame->upper;
+        pfs_bytes_copy(&upper, &frame->upper, sizeof(upper));
       }
       if (slot + 1 < node->tree.count) {
         struct pfs_internal_record next;
@@ -398,7 +419,7 @@ catalog_walk(struct catalog_operation *operation, const struct pfs_reference *ro
         if (status != PFS_OK) {
           return status;
         }
-        upper = next.minimum;
+        pfs_bytes_copy(&upper, &next.minimum, sizeof(upper));
         has_upper = true;
       }
       struct consulted_node *target;
@@ -414,13 +435,16 @@ catalog_walk(struct catalog_operation *operation, const struct pfs_reference *ro
         return PFS_LIMIT;
       }
       target->catalog_visited = true;
-      operation->frames[depth] = (struct walk_frame){ .node = target, .has_upper = has_upper };
+      pfs_bytes_zero(&operation->frames[depth], sizeof(operation->frames[depth]));
+      operation->frames[depth].node = target;
+      operation->frames[depth].has_upper = has_upper;
       if (has_upper) {
-        operation->frames[depth].upper = upper;
+        pfs_bytes_copy(&operation->frames[depth].upper, &upper, sizeof(upper));
       }
       ++depth;
     } else {
-      struct pfs_record_context context = record_context(operation->superblock, node->tree.header.birth);
+      struct pfs_record_context context;
+      record_context(&context, operation->superblock, node->tree.header.birth);
       const struct pfs_tree_slot *record_slot = &node->tree.slots[slot];
       if (kind == PFS_INDEX_VOLUMES) {
         if (operation->volume_count == PFS_VOLUME_MAX) {
@@ -456,7 +480,9 @@ allocation_match(struct catalog_operation *operation, uint64_t block, uint64_t b
   if (status != PFS_OK) {
     return status;
   }
-  struct pfs_key key = { .length = sizeof(uint64_t) };
+  struct pfs_key key;
+  pfs_bytes_zero(&key, sizeof(key));
+  key.length = sizeof(uint64_t);
   pfs_put_u64(key.bytes, block);
   struct pfs_key upper;
   bool has_upper = false;
@@ -475,7 +501,8 @@ allocation_match(struct catalog_operation *operation, uint64_t block, uint64_t b
       return PFS_CORRUPT;
     }
     if (!node->tree.level) {
-      struct pfs_record_context context = record_context(operation->superblock, node->tree.header.birth);
+      struct pfs_record_context context;
+      record_context(&context, operation->superblock, node->tree.header.birth);
       for (uint16_t i = 0; i < node->tree.count; ++i) {
         struct pfs_allocation_record record;
         status = pfs_allocation_record_decode(node->data + node->tree.slots[i].offset,
@@ -501,11 +528,11 @@ allocation_match(struct catalog_operation *operation, uint64_t block, uint64_t b
         return status;
       }
       if (pfs_key_compare(PFS_INDEX_ALLOCATION, &key, &next.minimum) < 0) {
-        upper = next.minimum;
+        pfs_bytes_copy(&upper, &next.minimum, sizeof(upper));
         has_upper = true;
         break;
       }
-      chosen = next;
+      pfs_bytes_copy(&chosen, &next, sizeof(chosen));
     }
     struct consulted_node *target;
     status = node_get(operation, &chosen.child, node->tree.header.birth,
@@ -590,7 +617,8 @@ pfs_pool_diagnostic_volumes(struct pfs_pool *pool, struct pfs_volume_record *out
   if (capacity < selected->root.volume_count) {
     return PFS_LIMIT;
   }
-  struct pfs_allocation storage = {0};
+  struct pfs_allocation storage;
+  pfs_bytes_zero(&storage, sizeof(storage));
   enum pfs_status status = pfs_memory_allocate(pool->memory, sizeof(struct catalog_operation),
                                                _Alignof(struct catalog_operation), &storage);
   if (status != PFS_OK) {
@@ -636,7 +664,7 @@ pfs_pool_diagnostic_volumes(struct pfs_pool *pool, struct pfs_volume_record *out
                                 operation->volumes[j].id.bytes, PFS_ID_SIZE)) {
         ++j;
       }
-      out[i] = operation->volumes[j];
+      pfs_bytes_copy(&out[i], &operation->volumes[j], sizeof(out[i]));
     }
     *count = operation->name_count;
   }

@@ -1,8 +1,9 @@
 # Initial Pyxis filesystem format and tool contract
 
 Status: accepted task-1 specification, including follow-up decisions;
-the [local encoding layer](core.md) is implemented. Pool opening, traversal and
-host tools remain later tasks.
+the [shared core](core.md), empty-image construction, candidate selection and
+[host `info`/`volumes` commands](host-tools.md) are implemented. General traversal,
+acquisition, source import, GPT selection and complete checking remain later tasks.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
@@ -21,8 +22,8 @@ Implementation proceeds through separately authorized milestone tasks.
 `PyxisOS/pyxis-fs` owns the eventual format specification, shared freestanding
 GNU C23 library, formatter, inspector and Linux adapter. This repository owns the
 format contract; Pyxis OS links to it rather than maintaining another copy.
-The shared codecs and platform boundary are implemented; the core document records
-their validation limits and ownership contracts.
+The core document records implemented interfaces, validation limits and ownership
+contracts. Host usage and current command coverage are in the host-tools document.
 
 Agreed integration is a published revision pinned at `fs/`, with the relative
 submodule URL `../pyxis-fs.git`. An opt-in parent `make fs-tools` invokes the host
@@ -682,7 +683,9 @@ computed allocations, unused guarantees, reserve budgets and unpromised space
 before creating the image. Planning allocation-map space includes the map's own
 blocks; no hidden unaccounted metadata reservation is allowed. Task 3 must use a
 bounded fixed-point or conservative reservation construction and document its
-termination bound before implementation.
+termination bound before implementation. The implemented empty builder uses the
+[accepted contiguous layout](empty-layout.md#allocation-map-termination-bound):
+N+2 records and at most seven map blocks, with no iteration.
 
 ## Future publication and reclamation envelope
 
@@ -970,12 +973,15 @@ automatic alternate-root retry or success after skipped required state.
 
 Task 1 is complete after follow-up clarifications and owner decisions. The
 1 TiB/one-million-record profile and 128 MiB default tool budget remain unchanged.
-Task 3 must still establish the allocation-map construction's termination bound.
+Task 3 establishes the empty allocation-map construction's termination bound in
+[the layout document](empty-layout.md). Populated construction must separately
+account for its map storage when task 5 extends that layout.
 Writable work must settle the bounded admission and recovery costs listed above; acceptance of this contract
 does not prove the reserve defaults sufficient for writable operation.
 Repository licensing is established as MPL-2.0.
 
-The codec layer builds as a freestanding archive; host-tool execution starts with
-task 3. Review field arithmetic, invariants, examples and links. Later host validation uses ordinary builds and
+The shared core builds as a freestanding archive; task 3 provides empty formatting
+and diagnostic reopening. Review field arithmetic, invariants, examples and links.
+Later host validation uses ordinary builds and
 manual formatting/inspection/extraction; no tests, self-tests, damaged-image
 fixtures, fault injection or new CI are authorized by this specification.

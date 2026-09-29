@@ -372,7 +372,7 @@ pfs_empty_plan_create(struct pfs_memory *memory, const struct pfs_empty_spec *sp
   for (size_t i = 0; i < plan->volume_count; ++i) {
     struct pfs_volume_record *volume = &state->volumes[i];
     volume->id = state->specs[i].id;
-    volume->name = state->specs[i].name;
+    pfs_bytes_copy(&volume->name, &state->specs[i].name, sizeof(volume->name));
     volume->root_object = state->specs[i].root_object;
     volume->object_root = reference(next_block++, PFS_BLOCK_TREE);
     volume->grant_root = reference(next_block++, PFS_BLOCK_TREE);
@@ -388,7 +388,8 @@ pfs_empty_plan_create(struct pfs_memory *memory, const struct pfs_empty_spec *sp
     for (size_t j = 0; j < tree->count; ++j) {
       struct build_node *node = &tree->nodes[j];
       if (node->level) {
-        node->minimum = tree->nodes[node->first].minimum;
+        pfs_bytes_copy(&node->minimum, &tree->nodes[node->first].minimum,
+                        sizeof(node->minimum));
       } else {
         leaf_minimum(plan, state, tree->kind, node->first, &node->minimum);
       }
@@ -412,7 +413,10 @@ encode_leaf(const struct pfs_empty_plan *plan, struct build_state *state,
   }
   if (kind == PFS_INDEX_VOLUME_NAMES) {
     const struct pfs_volume_record *volume = &state->volumes[state->name_order[index]];
-    struct pfs_volume_name_record record = { .name = volume->name, .volume = volume->id };
+    struct pfs_volume_name_record record;
+    pfs_bytes_zero(&record, sizeof(record));
+    pfs_bytes_copy(&record.name, &volume->name, sizeof(record.name));
+    record.volume = volume->id;
     return pfs_volume_name_record_encode(data, capacity, &context, &record, written);
   }
   struct pfs_allocation_record record = {0};
@@ -483,10 +487,10 @@ write_pool_trees(const struct pfs_empty_plan *plan, struct build_state *state,
         enum pfs_status status;
         if (node->level) {
           const struct build_node *child = &tree->nodes[node->first + k];
-          struct pfs_internal_record record = {
-            .child = reference(child->block, PFS_BLOCK_TREE),
-            .minimum = child->minimum,
-          };
+          struct pfs_internal_record record;
+          pfs_bytes_zero(&record, sizeof(record));
+          record.child = reference(child->block, PFS_BLOCK_TREE);
+          pfs_bytes_copy(&record.minimum, &child->minimum, sizeof(record.minimum));
           status = pfs_internal_record_encode(state->records + offset,
             sizeof(state->records) - offset, tree->kind, &context, &record, &written);
         } else {
