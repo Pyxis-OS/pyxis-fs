@@ -1,10 +1,12 @@
 # Shared core and encoding
 
 The core implements the local encoding layer of the [format contract](format.md),
-empty-image construction, pool selection and diagnostic volume listing. It builds
-as `libpyxis-fs.a` with no host-libc, kernel or Pyxis ABI dependency. Linux host
-tools create standalone sparse images with empty volumes and inspect their pool
-information and volume catalogs. See [host-tool usage](host-tools.md).
+empty-image construction, pool selection, namespace and file reads, and policy
+acquisition. It builds as `libpyxis-fs.a` with no host-libc, kernel or Pyxis ABI
+dependency. Linux host tools create standalone sparse images with empty volumes
+and provide diagnostic `info`, `volumes`, `list`, `stat` and `access` commands.
+Explicit GPT partition selection belongs to the host adapter.
+See [host-tool usage](host-tools.md).
 
 ## Build
 
@@ -49,6 +51,8 @@ Public headers are under `include/pyxis_fs/`:
 | `platform.h` | Bounded allocation ownership and synchronous exact block reader/builder interfaces |
 | `build.h` | Owned empty-pool planning and construction into a newly created output |
 | `pool.h` | Independent slot diagnostics, selected pool lifetime and copied diagnostic volume catalogs |
+| `read.h` | Diagnostic volume/object access, relative paths, ancestry, explicit grants, file reads and directory cursors |
+| `access.h` | Trusted acquisition contexts, policy evaluation and opaque views with checked ordinary operations |
 
 The codecs do not allocate. Callers own input and output storage and must supply
 the stated accessible lengths; buffers and typed structures must be disjoint.
@@ -77,6 +81,10 @@ is `PFS_CORRUPT`; unknown required meaning is `PFS_UNSUPPORTED`; profile/cap exc
 is `PFS_LIMIT`. A missing block magic is `PFS_ABSENT` when decoding a raw header or
 superblock, but corrupt when following a required pool/tree reference. Allocation
 failure below the cap is `PFS_NO_MEMORY`; failed adapter I/O is `PFS_IO`.
+`PFS_NOT_FOUND` identifies a missing selector or path. `PFS_DENIED` is a policy
+or held-rights denial. `PFS_READ_ONLY` means policy permits the requested rights,
+but this implementation provides no mutation operation. `PFS_BUSY` preserves a
+live pool or volume when retained handles prevent close.
 
 Readers ignore reserved extension bytes and can interpret known fields under
 unknown read-compatible features. Record growth must have a declared compatible
@@ -123,8 +131,10 @@ unsupported, limit and operational failures prevent selection.
 Initialize pool handles to zero and never copy them. A pool borrows its reader,
 memory owner and adapter contexts, which remain alive and unchanged until close.
 The adapter must keep the image unchanged for this lifetime. Failed open leaves
-the handle empty. Close releases owned state without I/O; there are no persistent
-volume/object views or busy-close behavior in the current interface.
+the handle empty. Close releases owned state without I/O. `pfs_pool_close` returns
+`PFS_BUSY` while volume handles remain open.
+Volume close similarly returns `PFS_BUSY` while views or directory cursors retain
+that volume. Close the retained handles first; a busy close leaves its handle live.
 
 `pfs_pool_diagnostic_volumes` returns copied volume envelopes in unsigned name-byte
 order, including unsupported-volume features or target versions. It traverses
@@ -133,6 +143,84 @@ proof closure for all consulted pool metadata. It does not inspect object/grant
 trees or prove global accounting. Caller output capacity must cover the recorded
 volume count; output and count are unchanged on failure. Temporary traversal and
 proof storage is released before return. This diagnostic grants no object authority.
+
+## Diagnostic traversal and reads
+
+`pfs_pool_diagnostic_volume_open` selects a volume by ID after catalog agreement
+and consulted-metadata allocation proof. Traversing its contents requires
+`pfs_features_read` compatibility and a supported object-root version. Unknown
+write requirements and read-compatible optional features do not prevent reads.
+The volume retains the selected pool generation until close. Its metadata,
+objects, parent chains and explicit grants are copied into caller storage; no
+internal cache pointer is returned.
+
+Diagnostic resolution takes strict relative UTF-8 name components. Empty paths
+select the supplied root; leading/trailing slashes, empty components, `.` and
+`..` are invalid. The inspector translates its command-line `.` root syntax to
+an empty core path. Object access validates ancestry to the volume root, detects
+cycles and checks parent kind and unique naming for the consulted chain.
+Ancestry queries support a validated sizing call before copying the chain in
+root-to-target order. Selectors are not evidence of policy authority.
+
+Every incoming tree reference checks physical identity, generation, owner, kind,
+parent level and the supplied key bounds, including when its bytes were already
+consulted. Allocation proof bootstraps from structurally checked map nodes. Each
+consulted metadata block and data range must match live allocation state, owner
+and birth; split ranges are checked across map records. The operation records
+map dependencies, adds newly consulted nodes to a bounded work queue, and closes
+the fully matched pending set before publishing output. Pending dependencies are
+never used as completed proof. This establishes consulted ownership, not global
+reachability, duplicate-claim absence or accounting.
+
+File reads validate inline or tree extent bounds against file length, clamp at
+EOF and return zeros for holes. Bytes are copied only after allocation proof and
+successful I/O. Valid calls report a proved byte prefix even on later failure;
+the diagnostic interface leaves bytes beyond that prefix unchanged. Directory
+cursors return copied pages in unsigned name-byte order, checking child kind and
+parent and the recorded count at exhaustion. A failed page leaves caller output,
+count, end flag and cursor position unchanged. Cursors retain their volume and
+generation independently of other handles.
+
+Traversal and proof buffers are operation-local and charged to `pfs_memory`.
+Parent validation scans each consulted ancestor directory to establish its
+naming relation. Separate calls repeat those scans and rebuild their proof
+storage; policy evaluation also fetches ancestor grants. These costs can grow
+with directory size, ancestry depth and allocation-map closure. The memory cap
+can stop an operation with `PFS_LIMIT`; the bounded profile does not promise a
+small I/O count or constant-time lookup.
+
+## Policy acquisition and ordinary views
+
+The embedding authority supplies the trusted principal, root, scope and rights
+ceiling. The core does not authenticate IDs. `pfs_access_evaluate` checks target
+containment, applicable grants, ceilings and effective `dir.lookup` on every
+intervening directory. Object-only grants apply to that object; subtree requests
+use applicable subtree grants and require a directory target. Grants above a
+restricted root can contribute policy but cannot enlarge its boundary or ceiling.
+Path acquisition checks lookup policy before resolving the next component;
+object-ID acquisition requires the same intervening lookup rights.
+
+Acquisition requires the complete requested set and publishes no weaker view.
+Policy denial returns `PFS_DENIED`; allowed mutation rights return
+`PFS_READ_ONLY` without an operational view. Successful opaque views bind volume,
+object, generation, scope and exactly the requested rights. They retain the volume
+until explicit close and are serial, never copied. Ordinary child derivation
+uses held subtree scope and rights, without reacquiring principal policy, and
+cannot expand the boundary or create a subtree view of a file.
+
+Ordinary metadata returns identity, kind and size/count only, guarded by the
+appropriate metadata right. File reads require `file.read`; listing requires
+`dir.list` and exposes names/kinds only, without child IDs or views. Deriving a
+child requires `dir.lookup` and publishes its identity/kind with the new view.
+Only `admin.inspect` exposes owner and explicit grants. None of these rights
+implicitly adds another domain. A view directory cursor captures list authority
+and independently retains the volume, so closing its originating view does not
+invalidate the cursor.
+
+The diagnostic APIs and inspector commands operate over an already authorized
+image and may disclose identities and policy records. Their results are separate
+from ordinary view authority. The host `access` command simulates supplied trusted
+inputs; it is not authentication or a login mechanism.
 
 ## Platform ownership
 
@@ -145,17 +233,30 @@ buffer lengths, the adapter transfer bound and the 16-block core limit.
 
 Memory state tracks requested live allocation bytes against the selected cap.
 Each live allocation has one caller-owned handle recording owner, size and
-alignment; it cannot be copied, altered or reinitialized until freed. Allocator
-callbacks receive those exact values on free. Wrapper objects and fixed codec
-stack storage are outside this heap counter, as is allocator-private overhead.
-Opening scratch, retained pool state, catalog traversal and allocation-proof
-bookkeeping, plan buffers and host path/output buffers use this boundary. Instances
-are serial and provide no locking.
+alignment; it cannot be copied, altered or reinitialized outside
+`pfs_memory_move`. This operation transfers ownership to an empty, disjoint
+handle and clears the source without changing the charged bytes. A handle stored
+inside its own payload must move out before free. Allocator callbacks receive
+those exact values on free. Caller-supplied handle structs and fixed codec stack
+storage are outside this heap counter, as is allocator-private overhead.
+Opening scratch, retained pool/volume/view/cursor state, traversal and proof
+bookkeeping, plan buffers and host path/output buffers use this boundary.
+Instances are serial and provide no locking.
 
 The Linux adapter supplies exact file I/O, bounded allocation, strong randomness,
 exclusive output creation and advisory locks. Inspection takes a shared lock;
 construction owns its newly created output exclusively. Writers that ignore
 advisory locks are outside the consistency contract. Detectable extent-size
 changes fail I/O; the adapter does not promise a snapshot of changing media.
-Source import, GPT selection, object/path access, extraction and full consistency
-checking are not implemented.
+The default host reader opens a standalone pool. Explicit paired
+`--gpt-partition N --sector-size 512|4096` options select a used entry in a regular
+whole-disk image after the protective MBR validates and both bounded GPT copies
+are inspected. Healthy or selectable degraded GPT metadata supplies the extent;
+ambiguous, unsupported or failed discovery supplies none.
+GPT diagnostics remain separate from pool-slot diagnostics. The core receives
+only the partition-relative 4096-byte reader; a sector-aligned start may have no
+disk-wide 4096-byte alignment, and a trailing partial pool block is ignored.
+The host reader retains the whole-file size for change detection and never reads
+outside the selected extent. No raw device access, GPT repair or writes are
+provided by inspection. Source import, extraction and full consistency checking
+are not implemented.

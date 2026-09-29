@@ -15,7 +15,13 @@ Omit `--plan` to create a new sparse image containing empty volumes, then inspec
 ```sh
 build/pyxisfs-inspect --image /tmp/pool.raw info
 build/pyxisfs-inspect --image /tmp/pool.raw volumes
+build/pyxisfs-inspect --image /tmp/pool.raw list --volume home --path .
+build/pyxisfs-inspect --image /tmp/pool.raw stat --volume home --path .
 ```
+
+`access` evaluates supplied principal/root/ceiling policy without authenticating
+the principal. To inspect a regular whole-disk image, supply both
+`--gpt-partition N --sector-size 512|4096` explicitly.
 
 See [host-tool usage and limits](docs/host-tools.md),
 [core build and API boundaries](docs/core.md) and the

@@ -81,7 +81,8 @@ enum pfs_status pfs_view_metadata(struct pfs_view *view,
                                  struct pfs_view_metadata *out);
 /* Inspect returns only policy owner and explicit grants on this object. It
  * requires admin.inspect and does not grant read, list or metadata authority.
- * Capacity must cover all explicit grants; outputs stay unchanged on failure. */
+ * NULL grants with zero capacity returns owner and required count. Otherwise
+ * capacity must cover all explicit grants. Outputs stay unchanged on failure. */
 enum pfs_status pfs_view_inspect(struct pfs_view *view,
                                 struct pfs_principal_id *owner,
                                 struct pfs_grant_record *grants,
