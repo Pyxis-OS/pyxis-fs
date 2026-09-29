@@ -1,42 +1,8 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-#include "host.h"
+#include "inspect.h"
 #include <pyxis_fs/pool.h>
 
 #include <string.h>
-
-static void
-usage(FILE *stream)
-{
-  fputs("Usage: pyxisfs-inspect --image PATH [--memory-limit SIZE] info|volumes\n"
-        "Inspects a standalone regular pool image under a shared advisory lock.\n", stream);
-}
-
-static enum pfs_status
-parse_options(int argc, char **argv, const char **path, const char **command,
-               uint64_t *limit)
-{
-  bool memory_set = false;
-  for (int i = 1; i < argc; ++i) {
-    if (strcmp(argv[i], "--image") == 0) {
-      if (*path != NULL || i + 1 == argc || *argv[i + 1] == '\0') {
-        return PFS_INVALID;
-      }
-      *path = argv[++i];
-    } else if (strcmp(argv[i], "--memory-limit") == 0) {
-      if (memory_set || i + 1 == argc ||
-          host_size_parse(argv[++i], limit) != PFS_OK || *limit == 0) {
-        return PFS_INVALID;
-      }
-      memory_set = true;
-    } else if (*command == NULL &&
-               (strcmp(argv[i], "info") == 0 || strcmp(argv[i], "volumes") == 0)) {
-      *command = argv[i];
-    } else {
-      return PFS_INVALID;
-    }
-  }
-  return *path != NULL && *command != NULL ? PFS_OK : PFS_INVALID;
-}
 
 static void
 print_selection(const struct pfs_pool_diagnostic *diagnostic, uint64_t blocks)
@@ -157,24 +123,45 @@ selection_exit(enum pfs_status status, const struct pfs_pool_diagnostic *diagnos
   return corrupt ? 3 : host_exit_status(status);
 }
 
+static void
+print_gpt(const struct host_gpt_diagnostic *diagnostic,
+           const struct host_gpt_selection *selection)
+{
+  printf("GPT: %s; protective MBR=%s; primary=%s; backup=%s\n",
+         host_gpt_status_string(diagnostic->status),
+         host_gpt_mbr_status_string(diagnostic->mbr),
+         host_gpt_copy_status_string(diagnostic->primary),
+         host_gpt_copy_status_string(diagnostic->backup));
+  if (diagnostic->selected_copy != 0) {
+    printf("GPT selected copy %u; requested entry %u; sector bytes=%u\n",
+           diagnostic->selected_copy, selection->partition_entry, selection->sector_size);
+  }
+  if (diagnostic->length_bytes != 0) {
+    printf("Pool extent: offset=%llu bytes, length=%llu bytes\n",
+           (unsigned long long)diagnostic->offset_bytes,
+           (unsigned long long)diagnostic->length_bytes);
+  }
+  if (diagnostic->degraded) {
+    fputs("warning: GPT is degraded; inspecting selected partition read-only\n", stderr);
+  }
+}
+
 int
 main(int argc, char **argv)
 {
   if (argc == 2 && strcmp(argv[1], "--help") == 0) {
-    usage(stdout);
+    inspect_usage(stdout);
     return 0;
   }
-  const char *path = NULL;
-  const char *command = NULL;
-  uint64_t limit = 0;
+  struct inspect_options options;
   struct pfs_memory memory;
-  enum pfs_status status = parse_options(argc, argv, &path, &command, &limit);
+  enum pfs_status status = inspect_options_parse(argc, argv, &options);
   if (status == PFS_OK) {
-    status = host_memory_init(&memory, limit);
+    status = host_memory_init(&memory, options.memory_limit);
   }
   if (status != PFS_OK) {
     host_error("arguments", status, NULL);
-    usage(stderr);
+    inspect_usage(stderr);
     return host_exit_status(status);
   }
 
@@ -184,7 +171,14 @@ main(int argc, char **argv)
   struct pfs_pool_diagnostic diagnostic = {.selected = PFS_POOL_NO_SELECTION};
   const char *operation = "open image";
   int result;
-  status = host_image_open(&image, &memory, path, &reader);
+  if (options.gpt) {
+    struct host_gpt_diagnostic gpt;
+    status = host_image_open_gpt(&image, &memory, options.image, &options.partition,
+                                  &gpt, &reader);
+    print_gpt(&gpt, &options.partition);
+  } else {
+    status = host_image_open(&image, &memory, options.image, &reader);
+  }
   if (status != PFS_OK) {
     result = host_exit_status(status);
     goto done;
@@ -197,11 +191,16 @@ main(int argc, char **argv)
     goto done;
   }
   const struct pfs_pool_candidate *selected = &diagnostic.candidate[diagnostic.selected];
-  if (strcmp(command, "info") == 0) {
+  if (options.command == INSPECT_INFO) {
     print_info(selected);
-  } else {
+  } else if (options.command == INSPECT_VOLUMES) {
     operation = "list volumes (no volume records published on failure)";
     status = print_volumes(&pool, &memory, (size_t)selected->root.volume_count);
+    result = host_exit_status(status);
+  } else {
+    operation = options.command == INSPECT_ACCESS ? "access" :
+                options.command == INSPECT_STAT ? "stat" : "list";
+    status = inspect_objects(&pool, &options, selected->root.volume_count);
     result = host_exit_status(status);
   }
 
@@ -209,8 +208,12 @@ done:
   if (status != PFS_OK) {
     host_error(operation, status, &image);
   }
-  pfs_pool_close(&pool);
-  enum pfs_status close_status = host_image_close(&image);
+  enum pfs_status close_status = pfs_pool_close(&pool);
+  if (close_status != PFS_OK) {
+    host_error("close pool", close_status, &image);
+    result = host_exit_status(close_status);
+  }
+  close_status = host_image_close(&image);
   if (close_status != PFS_OK) {
     host_error("close input", close_status, &image);
     result = 5;
