@@ -11,6 +11,7 @@ inspect_usage(FILE *stream)
         "Commands:\n"
         "  info | volumes\n"
         "  list | stat --volume NAME --path PATH\n"
+        "  extract --volume NAME --path PATH --output NEW_PATH\n"
         "  access --volume NAME --root PATH --principal ID --target PATH\n"
         "    --scope object|subtree --rights LIST --ceiling LIST\n"
         "Use --volume-id ID instead of --volume NAME. Paths are root-relative; . is the root.\n"
@@ -101,6 +102,7 @@ enum option_bit {
   OPT_CEILING = 1u << 10,
   OPT_PARTITION = 1u << 11,
   OPT_SECTOR = 1u << 12,
+  OPT_OUTPUT = 1u << 13,
 };
 
 enum pfs_status
@@ -119,6 +121,8 @@ inspect_options_parse(int argc, char **argv, struct inspect_options *options)
       command = INSPECT_LIST;
     } else if (strcmp(argument, "stat") == 0) {
       command = INSPECT_STAT;
+    } else if (strcmp(argument, "extract") == 0) {
+      command = INSPECT_EXTRACT;
     } else if (strcmp(argument, "access") == 0) {
       command = INSPECT_ACCESS;
     }
@@ -140,6 +144,8 @@ inspect_options_parse(int argc, char **argv, struct inspect_options *options)
       bit = OPT_VOLUME_ID;
     } else if (strcmp(argument, "--path") == 0) {
       bit = OPT_PATH;
+    } else if (strcmp(argument, "--output") == 0) {
+      bit = OPT_OUTPUT;
     } else if (strcmp(argument, "--root") == 0) {
       bit = OPT_ROOT;
     } else if (strcmp(argument, "--target") == 0) {
@@ -188,6 +194,7 @@ inspect_options_parse(int argc, char **argv, struct inspect_options *options)
         options->volume_id_set = true;
         break;
       case OPT_PATH: options->path = value; break;
+      case OPT_OUTPUT: options->output = value; break;
       case OPT_ROOT: options->root = value; break;
       case OPT_TARGET: options->target = value; break;
       case OPT_PRINCIPAL:
@@ -236,6 +243,9 @@ inspect_options_parse(int argc, char **argv, struct inspect_options *options)
   common |= OPT_VOLUME | OPT_VOLUME_ID;
   unsigned required = options->command == INSPECT_ACCESS ?
     OPT_ROOT | OPT_TARGET | OPT_PRINCIPAL | OPT_SCOPE | OPT_RIGHTS | OPT_CEILING : OPT_PATH;
+  if (options->command == INSPECT_EXTRACT) {
+    required |= OPT_OUTPUT;
+  }
   return (seen & required) == required && (seen & ~(common | required)) == 0 ?
     PFS_OK : PFS_INVALID;
 }
