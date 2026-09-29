@@ -63,7 +63,9 @@ enum pfs_status pfs_build_plan_create(struct pfs_memory *memory,
                                       const struct pfs_build_spec *spec,
                                       struct pfs_build_plan *plan);
 /* Synchronous callbacks borrow buffers only until return. Read transfers exactly
- * length bytes (at most 64 KiB) from the selected input object at offset. Validate
+ * length bytes (at most 64 KiB) from the selected input object at offset. Files
+ * are read in original volume/object order, each from offset zero through EOF
+ * before starting another file. Empty files cause no read calls. Validate
  * checks every source after all data has been copied, before slots are published.
  * Callback failures propagate unchanged. The context outlives the build call. */
 struct pfs_build_source {

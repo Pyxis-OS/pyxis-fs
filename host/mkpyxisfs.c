@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-#include "host.h"
+#include "source.h"
 #include <pyxis_fs/build.h>
 
 #include <string.h>
@@ -8,11 +8,11 @@ static void
 usage(FILE *stream)
 {
   fputs("Usage: mkpyxisfs --image PATH --size SIZE\n"
-        "  --volume NAME --owner ID [--guarantee SIZE] [--quota SIZE] ...\n"
+        "  --volume NAME [--source DIRECTORY] --owner ID [--guarantee SIZE] [--quota SIZE] ...\n"
         "  [--cow-reserve SIZE] [--migration-reserve SIZE]\n"
         "  [--recovery-reserve SIZE] [--memory-limit SIZE] [--plan]\n"
         "Sizes: decimal bytes or KiB/MiB/GiB/TiB; capacities are whole blocks.\n"
-        "Creates a new sparse regular image with empty volumes.\n", stream);
+        "Creates a new sparse regular image from selected source directories.\n", stream);
 }
 
 static bool
@@ -20,6 +20,7 @@ value_option(const char *option)
 {
   return strcmp(option, "--image") == 0 || strcmp(option, "--size") == 0 ||
     strcmp(option, "--volume") == 0 || strcmp(option, "--owner") == 0 ||
+    strcmp(option, "--source") == 0 ||
     strcmp(option, "--guarantee") == 0 || strcmp(option, "--quota") == 0 ||
     strcmp(option, "--cow-reserve") == 0 ||
     strcmp(option, "--migration-reserve") == 0 ||
@@ -63,7 +64,7 @@ id_zero(const uint8_t *id)
 }
 
 static enum pfs_status
-new_id(uint8_t *target, struct pfs_empty_spec *spec, struct pfs_empty_volume *volumes)
+new_id(uint8_t *target, struct pfs_build_spec *spec, struct pfs_build_volume *volumes)
 {
   for (unsigned attempt = 0; attempt < 16; ++attempt) {
     enum pfs_status status = host_random_id(target);
@@ -102,12 +103,13 @@ block_option(const char *text, uint64_t *blocks)
 }
 
 static enum pfs_status
-parse_options(int argc, char **argv, struct pfs_empty_spec *spec,
-               struct pfs_empty_volume *volumes, const char **path, bool *plan_only)
+parse_options(int argc, char **argv, struct pfs_build_spec *spec,
+               struct pfs_build_volume *volumes, const char **sources,
+               const char **path, bool *plan_only)
 {
   size_t current = 0;
   bool size_set = false;
-  struct pfs_empty_volume *volume = NULL;
+  struct pfs_build_volume *volume = NULL;
   for (int i = 1; i < argc; ++i) {
     const char *option = argv[i];
     if (strcmp(option, "--plan") == 0) {
@@ -139,6 +141,11 @@ parse_options(int argc, char **argv, struct pfs_empty_spec *spec,
       volume = &volumes[current++];
       volume->name.length = (uint16_t)length;
       memcpy(volume->name.bytes, value, length);
+    } else if (strcmp(option, "--source") == 0) {
+      if (volume == NULL || sources[current - 1] != NULL || *value == '\0') {
+        return PFS_INVALID;
+      }
+      sources[current - 1] = value;
     } else if (strcmp(option, "--owner") == 0) {
       if (volume == NULL || !id_zero(volume->owner.bytes) ||
           pfs_principal_id_parse(value, strlen(value), &volume->owner) != PFS_OK) {
@@ -189,7 +196,7 @@ parse_options(int argc, char **argv, struct pfs_empty_spec *spec,
 }
 
 static void
-print_plan(const struct pfs_empty_plan *plan)
+print_plan(const struct pfs_build_plan *plan)
 {
   char id[PFS_ID_TEXT_SIZE + 1];
   pfs_pool_id_format(&plan->pool, id);
@@ -209,8 +216,9 @@ print_plan(const struct pfs_empty_plan *plan)
     fputs("  volume ", stdout);
     host_name_print(stdout, volume->name.bytes, volume->name.length);
     pfs_volume_id_format(&volume->id, id);
-    printf(" id=%s allocation=%llu guarantee=%llu unused-guarantee=%llu quota=%llu\n",
-           id, (unsigned long long)volume->live_blocks,
+    printf(" id=%s objects=%llu allocation=%llu guarantee=%llu unused-guarantee=%llu quota=%llu\n",
+           id, (unsigned long long)volume->object_count,
+           (unsigned long long)volume->live_blocks,
            (unsigned long long)volume->guarantee,
            (unsigned long long)(volume->guarantee > volume->live_blocks ?
                                 volume->guarantee - volume->live_blocks : 0),
@@ -240,27 +248,54 @@ main(int argc, char **argv)
   }
 
   struct pfs_allocation options = {0};
-  struct pfs_empty_plan plan = {0};
+  struct pfs_allocation paths = {0};
+  struct pfs_allocation output_path = {0};
+  struct pfs_build_plan plan = {0};
+  struct host_source source = {0};
   struct host_image image = {.fd = -1, .parent_fd = -1};
   const char *operation = "allocate volume options";
   const char *path = NULL;
+  char *output_name = NULL;
   bool plan_only = false;
-  status = pfs_memory_allocate(&memory, volume_count * sizeof(struct pfs_empty_volume),
-                               _Alignof(struct pfs_empty_volume), &options);
+  status = pfs_memory_allocate(&memory, volume_count * sizeof(struct pfs_build_volume),
+                               _Alignof(struct pfs_build_volume), &options);
+  if (status == PFS_OK) {
+    status = pfs_memory_allocate(&memory, volume_count * sizeof(const char *),
+                                 _Alignof(const char *), &paths);
+  }
   if (status != PFS_OK) {
     goto done;
   }
   memset(options.data, 0, options.size);
-  struct pfs_empty_spec spec = {.volume_count = volume_count, .volumes = options.data};
+  memset(paths.data, 0, paths.size);
+  struct pfs_build_spec spec = {.volume_count = volume_count, .volumes = options.data};
   operation = "parse options and generate identities";
-  status = parse_options(argc, argv, &spec, options.data, &path, &plan_only);
+  status = parse_options(argc, argv, &spec, options.data, paths.data, &path, &plan_only);
   if (status != PFS_OK) {
     usage(stderr);
     goto done;
   }
-  operation = "plan empty pool";
-  status = pfs_empty_plan_create(&memory, &spec, &plan);
+  operation = "scan source directories";
+  status = host_source_open(&source, &memory, options.data, paths.data, volume_count, &spec.pool);
+  if (status != PFS_OK) {
+    goto done;
+  }
+  operation = "prepare output parent";
+  status = host_image_prepare(&image, &memory, path, &output_path, &output_name);
+  if (status == PFS_OK) {
+    status = host_source_exclude_output(&source, image.parent_fd);
+  }
+  if (status != PFS_OK) {
+    goto done;
+  }
+  operation = "plan pool";
+  status = pfs_build_plan_create(&memory, &spec, &plan);
   pfs_memory_free(&memory, &options);
+  if (status != PFS_OK) {
+    goto done;
+  }
+  operation = "revalidate planned sources";
+  status = host_source_validate(&source);
   if (status != PFS_OK) {
     goto done;
   }
@@ -275,13 +310,18 @@ main(int argc, char **argv)
   }
   struct pfs_block_builder builder;
   operation = "create output";
-  status = host_image_create(&image, &memory, path,
+  status = host_image_create(&image, output_name,
                              plan.block_count * PFS_BLOCK_SIZE, &builder);
   if (status != PFS_OK) {
     goto done;
   }
-  operation = "construct empty pool";
-  status = pfs_empty_build(&plan, &builder);
+  const struct pfs_build_source input = {
+    .context = &source,
+    .read = host_source_read,
+    .validate = host_source_validate,
+  };
+  operation = "construct pool";
+  status = pfs_build(&plan, &builder, &input);
   if (status != PFS_OK) {
     goto done;
   }
@@ -291,16 +331,24 @@ main(int argc, char **argv)
 done:
   if (status != PFS_OK) {
     host_error(operation, status, &image);
+    host_source_error(&source);
   }
   enum pfs_status close_status = host_image_close(&image);
   if (close_status != PFS_OK) {
     host_error("close output", close_status, &image);
     status = close_status;
   }
-  pfs_empty_plan_destroy(&plan);
+  pfs_build_plan_destroy(&plan);
+  close_status = host_source_close(&source);
+  if (close_status != PFS_OK) {
+    host_error("close sources", close_status, &image);
+    status = close_status;
+  }
   pfs_memory_free(&memory, &options);
+  pfs_memory_free(&memory, &paths);
+  pfs_memory_free(&memory, &output_path);
   if (status == PFS_OK && !plan_only) {
-    fputs("Created empty pool; both generation-1 slots flushed.\n", stdout);
+    fputs("Created pool; both generation-1 slots flushed.\n", stdout);
     if (fflush(stdout) != 0) {
       host_error("report completion (image creation finished)", PFS_IO, NULL);
       status = PFS_IO;

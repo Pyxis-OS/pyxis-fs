@@ -400,30 +400,30 @@ host_image_open_gpt(struct host_image *image, struct pfs_memory *memory,
 }
 
 enum pfs_status
-host_image_create(struct host_image *image, struct pfs_memory *memory,
-                   const char *path, uint64_t bytes, struct pfs_block_builder *builder)
+host_image_prepare(struct host_image *image, struct pfs_memory *memory,
+                    const char *path, struct pfs_allocation *scratch, char **name)
 {
   *image = (struct host_image){.fd = -1, .parent_fd = -1, .error_block = UINT64_MAX};
+  return open_parent(image, memory, path, scratch, name);
+}
+
+enum pfs_status
+host_image_create(struct host_image *image, const char *name, uint64_t bytes,
+                   struct pfs_block_builder *builder)
+{
+  if (image->parent_fd < 0 || image->fd >= 0) {
+    return PFS_INVALID;
+  }
   if (bytes % PFS_BLOCK_SIZE != 0 || bytes / PFS_BLOCK_SIZE < PFS_POOL_BLOCKS_MIN ||
       bytes / PFS_BLOCK_SIZE > PFS_POOL_BLOCKS_MAX) {
     return PFS_INVALID;
   }
-  struct pfs_allocation scratch = {0};
-  char *final = NULL;
-  enum pfs_status status = open_parent(image, memory, path, &scratch, &final);
-  if (status == PFS_OK) {
-    image->fd = openat(image->parent_fd, final,
+  image->fd = openat(image->parent_fd, name,
                        O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (image->fd < 0) {
-      status = image_error(image, "create image", errno, UINT64_MAX);
-    } else {
-      image->created = true;
-    }
+  if (image->fd < 0) {
+    return image_error(image, "create image", errno, UINT64_MAX);
   }
-  pfs_memory_free(memory, &scratch);
-  if (status != PFS_OK) {
-    return status;
-  }
+  image->created = true;
   if (flock(image->fd, LOCK_EX | LOCK_NB) != 0) {
     return image_error(image, "lock new image", errno, UINT64_MAX);
   }
