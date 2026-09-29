@@ -396,8 +396,7 @@ state_complete(const struct check_state *state)
 }
 
 static bool
-compatible_claims(const struct check_claim *first, const struct check_claim *second,
-                  uint64_t block)
+compatible_claims(const struct check_claim *first, const struct check_claim *second)
 {
   if (first->type != second->type || first->birth != second->birth ||
       !same_volume(&first->volume, &second->volume) ||
@@ -407,8 +406,54 @@ compatible_claims(const struct check_claim *first, const struct check_claim *sec
   if (first->type != 0) {
     return first->kind == second->kind && first->level == second->level;
   }
-  return first->logical + (block - first->first) ==
-         second->logical + (block - second->first);
+  /* Compare the signed logical-minus-physical offset by sign and magnitude;
+   * the interpretation remains comparable even when the intervals are disjoint. */
+  bool first_positive = first->logical >= first->first;
+  bool second_positive = second->logical >= second->first;
+  if (first_positive != second_positive) {
+    return false;
+  }
+  if (first_positive) {
+    return first->logical - first->first == second->logical - second->first;
+  }
+  return first->first - first->logical == second->first - second->logical;
+}
+
+struct claim_window {
+  const struct check_claim *longest;
+  const struct check_claim *other;
+};
+
+/* Keep the furthest end, plus the furthest end with a different interpretation.
+ * If one interpretation remains active its longest interval is retained. If
+ * several remain active, two distinct representatives ensure every incoming
+ * interpretation disagrees with one. Starts are nondecreasing, even for nesting. */
+static void
+retain_claim(struct claim_window *window, const struct check_claim *claim)
+{
+  if (!window->longest || claim_end(claim) > claim_end(window->longest)) {
+    if (window->longest && !compatible_claims(window->longest, claim)) {
+      window->other = window->longest;
+    }
+    window->longest = claim;
+  } else if (!compatible_claims(window->longest, claim) &&
+             (!window->other || claim_end(claim) > claim_end(window->other))) {
+    window->other = claim;
+  }
+}
+
+static void
+compare_window(struct check_state *diagnostic, const struct claim_window *window,
+               const struct check_claim *claim)
+{
+  const struct check_claim *active[] = {window->longest, window->other};
+  for (size_t i = 0; i < 2; ++i) {
+    if (active[i] && claim_end(active[i]) > claim->first &&
+        !compatible_claims(active[i], claim)) {
+      check_problem(diagnostic, PFS_CORRUPT, "retained live claim identity/interpretation",
+                    claim->first, &claim->volume, &claim->object);
+    }
+  }
 }
 
 static void
@@ -417,22 +462,18 @@ compare_claims(struct check_state *diagnostic, const struct check_state *first,
 {
   const struct check_claim *left = first->claims.data;
   const struct check_claim *right = second->claims.data;
+  struct claim_window left_window = {0};
+  struct claim_window right_window = {0};
   size_t i = 0;
   size_t j = 0;
-  while (i < first->claim_count && j < second->claim_count) {
-    uint64_t left_end = claim_end(&left[i]);
-    uint64_t right_end = claim_end(&right[j]);
-    uint64_t block = left[i].first > right[j].first ? left[i].first : right[j].first;
-    if (block < left_end && block < right_end &&
-        !compatible_claims(&left[i], &right[j], block)) {
-      check_problem(diagnostic, PFS_CORRUPT, "retained live claim identity/interpretation",
-                    block, &left[i].volume, &left[i].object);
-    }
-    if (left_end <= right_end) {
-      ++i;
-    }
-    if (right_end <= left_end) {
-      ++j;
+  while (i < first->claim_count || j < second->claim_count) {
+    if (j == second->claim_count ||
+        (i < first->claim_count && left[i].first <= right[j].first)) {
+      compare_window(diagnostic, &right_window, &left[i]);
+      retain_claim(&left_window, &left[i++]);
+    } else {
+      compare_window(diagnostic, &left_window, &right[j]);
+      retain_claim(&right_window, &right[j++]);
     }
   }
 }
@@ -474,6 +515,97 @@ compare_claim_protection(struct check_state *diagnostic, const struct check_stat
       }
       first = allocation_end(record) < end ? allocation_end(record) : end;
       ++index;
+    }
+  }
+}
+
+static bool
+same_claim_incarnation(const struct check_claim *first, const struct check_claim *second)
+{
+  return first->birth == second->birth && same_volume(&first->volume, &second->volume);
+}
+
+/* Allocation records distinguish owner/birth, while claim interpretation also
+ * distinguishes object and logical offset. Keep representatives for this narrower
+ * comparison separately so nested claims cannot hide an incarnation conflict. */
+static void
+retain_incarnation(struct claim_window *window, const struct check_claim *claim)
+{
+  if (!window->longest || claim_end(claim) > claim_end(window->longest)) {
+    if (window->longest && !same_claim_incarnation(window->longest, claim)) {
+      window->other = window->longest;
+    }
+    window->longest = claim;
+  } else if (!same_claim_incarnation(window->longest, claim) &&
+             (!window->other || claim_end(claim) > claim_end(window->other))) {
+    window->other = claim;
+  }
+}
+
+static void
+check_newer_claim(struct check_state *diagnostic,
+                  const struct pfs_allocation_record *record,
+                  const struct check_claim *claim, uint64_t block, uint64_t generation)
+{
+  bool conflict;
+  if (record->state == PFS_ALLOCATION_POOL || record->state == PFS_ALLOCATION_VOLUME) {
+    uint8_t expected = pfs_bytes_are_zero(claim->volume.bytes, PFS_ID_SIZE) ?
+                       PFS_ALLOCATION_POOL : PFS_ALLOCATION_VOLUME;
+    conflict = record->state != expected || record->birth != claim->birth ||
+               !same_volume(&record->owner, &claim->volume);
+  } else {
+    /* A free or historical retired range may hold a later incarnation, but the
+     * new birth must postdate the state that no longer records it live. */
+    conflict = claim->birth <= generation;
+  }
+  if (conflict) {
+    check_problem(diagnostic, PFS_CORRUPT, "newer live claim versus retained incarnation",
+                  block, &claim->volume, &claim->object);
+  }
+}
+
+static void
+compare_claim_incarnations(struct check_state *diagnostic, const struct check_state *older,
+                           const struct check_state *newer)
+{
+  const struct pfs_allocation_record *records = older->allocations.data;
+  const struct check_claim *claims = newer->claims.data;
+  const struct pfs_allocation_record *active_record = NULL;
+  const struct check_claim *historical = NULL;
+  struct claim_window window = {0};
+  uint64_t generation = older->candidate->superblock.header.birth;
+  size_t i = 0;
+  size_t j = 0;
+  /* Sweep starts rather than every overlapping pair. Both representatives and
+   * the longest claim born no later than the older state suffice to identify a
+   * contradiction. Missing ranges of an incomplete map remain inconclusive. */
+  while (i < older->allocation_count || j < newer->claim_count) {
+    if (j == newer->claim_count ||
+        (i < older->allocation_count && records[i].first <= claims[j].first)) {
+      active_record = &records[i++];
+      if (active_record->state == PFS_ALLOCATION_POOL ||
+          active_record->state == PFS_ALLOCATION_VOLUME) {
+        const struct check_claim *active[] = {window.longest, window.other};
+        for (size_t k = 0; k < 2; ++k) {
+          if (active[k] && claim_end(active[k]) > active_record->first) {
+            check_newer_claim(diagnostic, active_record, active[k], active_record->first,
+                              generation);
+          }
+        }
+      } else if (historical && claim_end(historical) > active_record->first) {
+        check_newer_claim(diagnostic, active_record, historical, active_record->first,
+                          generation);
+      }
+    } else {
+      const struct check_claim *claim = &claims[j++];
+      if (active_record && allocation_end(active_record) > claim->first) {
+        check_newer_claim(diagnostic, active_record, claim, claim->first, generation);
+      }
+      retain_incarnation(&window, claim);
+      if (claim->birth <= generation &&
+          (!historical || claim_end(claim) > claim_end(historical))) {
+        historical = claim;
+      }
     }
   }
 }
@@ -543,15 +675,27 @@ check_compare_states(struct check_state *first, struct check_state *second,
   sort_claims(first);
   sort_claims(second);
   compare_claims(&diagnostic, first, second);
-  bool maps_ordered = check_map_order(first, false) && check_map_order(second, false);
+  bool first_ordered = check_map_order(first, false);
+  bool second_ordered = check_map_order(second, false);
+  bool maps_ordered = first_ordered && second_ordered;
+  const struct check_state *older = first;
+  const struct check_state *newer = second;
+  bool older_ordered = first_ordered;
+  bool newer_ordered = second_ordered;
+  if (first->candidate->superblock.header.birth > second->candidate->superblock.header.birth) {
+    older = second;
+    newer = first;
+    older_ordered = second_ordered;
+    newer_ordered = first_ordered;
+  }
   if (maps_ordered) {
-    if (first->candidate->superblock.header.birth <= second->candidate->superblock.header.birth) {
-      compare_allocations(&diagnostic, first, second);
-      compare_claim_protection(&diagnostic, first, second);
-    } else {
-      compare_allocations(&diagnostic, second, first);
-      compare_claim_protection(&diagnostic, second, first);
-    }
+    compare_allocations(&diagnostic, older, newer);
+  }
+  if (newer_ordered) {
+    compare_claim_protection(&diagnostic, older, newer);
+  }
+  if (older_ordered) {
+    compare_claim_incarnations(&diagnostic, older, newer);
   }
   *complete = state_complete(first) && state_complete(second) && maps_ordered &&
               result.failures == 0;
