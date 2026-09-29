@@ -4,7 +4,7 @@
 #include <pyxis_fs/pool.h>
 
 struct pfs_check_event {
-  /* NO_SELECTION denotes a comparison between states. UINT64_MAX means that
+  /* NO_SELECTION denotes a global or cross-state failure. UINT64_MAX means that
    * no physical block is available; zero IDs mean no known volume/object. */
   uint16_t slot;
   enum pfs_status status;
@@ -20,6 +20,7 @@ typedef void (*pfs_check_report_fn)(void *context, const struct pfs_check_event 
 
 struct pfs_check_state_result {
   enum pfs_status status;
+  /* One bit (1u << status) for every failure observed in this state. */
   uint32_t failures;
   bool complete;
   uint64_t generation;

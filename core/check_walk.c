@@ -403,9 +403,9 @@ walk_tree(struct check_walk *walk, const struct pfs_reference *root, uint64_t re
     child->context.block.referring_birth = frame->tree.header.birth;
     child->context.parent_level = frame->tree.level;
     child->bounded_lower = true;
-    child->lower = record.minimum;
+    pfs_bytes_copy(&child->lower, &record.minimum, sizeof(child->lower));
     child->bounded_upper = frame->bounded_upper;
-    child->upper = frame->upper;
+    pfs_bytes_copy(&child->upper, &frame->upper, sizeof(child->upper));
     if (frame->next < frame->tree.count) {
       struct pfs_tree_slot next_slot = frame->tree.slots[frame->next];
       struct pfs_internal_record next;
@@ -415,7 +415,7 @@ walk_tree(struct check_walk *walk, const struct pfs_reference *root, uint64_t re
         break;
       }
       child->bounded_upper = true;
-      child->upper = next.minimum;
+      pfs_bytes_copy(&child->upper, &next.minimum, sizeof(child->upper));
     }
     status = read_frame(walk, child);
     depth++;
