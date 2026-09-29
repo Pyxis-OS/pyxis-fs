@@ -247,95 +247,71 @@ recorded reserves suffice for writes.
 Imported images exercise contiguous inline extents; multi-extent and sparse-image
 runtime coverage remains limited.
 
-## Task-3 validation
+## Validation
 
-Native GCC 16.2 and the Pyxis cross compiler built this slice. Relocatable linkage
-of all cross-compiled core objects has no unresolved symbols. Manual formatting
-and reopening covered a 64 MiB single-volume image, a 64 MiB image with 256
-maximum-length names in reverse input order, and a 256 MiB two-volume image with
-Unicode/space names, explicit reserve overrides and a zero guarantee/two-block
-quota. The largest case exercises multi-level catalogs and allocation lookup;
-its recorded accounting is still not a complete map reconciliation. A 1 TiB plan
-reported 8+8+4 GiB reserves and created no file. Debugger inspection observed the
-empty root's owner and matching subtree grant with all defined rights.
+The read-only milestone closed on 2026-09-29 using merged implementation
+`144710d` (merge `c379afe`). Validation used ordinary host commands and debugger
+inspection on Linux 6.19.10 x86_64, with native GCC 16.2.1 and Pyxis GCC 16.2.0.
+The parent `make -j16 fs-tools`, a fresh standalone native build and a fresh
+cross-compiled core build passed. Relocatable linkage of the cross core had no
+unresolved symbols. No compiler-container rebuild was needed.
 
-Manual refusals covered an existing destination, impossible guarantees, low
-planner/open/listing memory caps, a zero owner ID and `..` in the output path.
-The single-volume image used 32 KiB host allocation for 64 MiB logical size and
-mode 0600 on the validation host. Corrupt/unsupported/degraded or differing-
-generation selection and actual I/O/flush failure remain code-inspection coverage;
-no damaged-image fixtures or fault injection were used. No kernel mount or QEMU
-validation is claimed by this host-only task.
+### Final merged workflow
 
-## Task-4 validation
+A fresh 128 MiB image imported quiescent snapshots of the Pyxis documentation and
+kernel trees, the mixed source described below, and an empty volume. The volumes
+contained 88, 104, 9 and 1 objects respectively. Separate inspector processes
+reopened the image, listed volumes/directories and checked both committed states.
+Each state reconciled 202 objects, 198 directory entries, 179 file extents, four
+grants, 40 metadata blocks and 638 data blocks. Both slots held the same
+generation-1 root and the whole-image check completed successfully. The repository
+imports exercise object indexes with multiple levels.
 
-Native and Pyxis-cross builds passed; combining all cross-compiled core objects
-left no unresolved symbols. Manual use of a formatter-created 64 MiB empty pool
-covered root stat and listing, selection by volume ID, owner acquisition,
-non-owner and ceiling denial, mutation refusal after policy allowance, and a
-missing path. Debugger inspection observed busy volume/pool closes while a view
-was live and zero charged memory after cleanup.
+Extraction of all three populated volumes matched their source snapshots with
+ordinary recursive `diff`; extraction of the empty volume produced an empty
+directory. The mixed source included Unicode/space names, nested and empty
+directories, an empty file, binary files of 4097 and 476776 bytes, an 8193-byte
+sparse host file, and hard-linked source names. Extracted hard-linked inputs had
+different host inodes. Source holes were materialized as zero data, so this does
+not establish runtime coverage for sparse filesystem extents.
 
-Healthy 96 MiB GPT images made with ordinary `sfdisk` and `dd` contained the same
-64 MiB pool. Inspection succeeded with 512-byte sectors at partition LBA 2049
-(a start not aligned to 4096 bytes), and 4096-byte sectors at LBA 256. Whole-image
-SHA-256 values were unchanged after inspection. An unused GPT entry and a low
-memory cap were refused.
+The three extractions ran concurrently in this Linux workspace. `/usr/bin/time`
+reported 0.29 seconds and 3140 KiB maximum RSS for documentation, 0.15 seconds and
+3080 KiB for kernel sources, and 0.00 seconds at the tool's displayed precision
+and 3140 KiB for the mixed volume. RSS includes host/library overhead and is not
+the core's charged-memory counter. These small-input observations are neither
+scaling bounds nor measurements on the owner's host.
 
-Task 4 did not exercise populated namespaces, nested acquisition or actual file
-contents. Its inline/tree extent, sparse-hole, malformed-metadata, grant-free
-volume, GPT degradation/ambiguity and I/O-failure coverage was source review;
-task 5 adds the populated round trips below. No custom image writer, damaged
-fixture, fault injection, kernel mount or QEMU validation was introduced.
+Nested owner acquisition of `file.read` and `file.metadata` succeeded. Removing
+`dir.lookup` from the ceiling or supplying an unrelated principal denied the
+request with exit 1. Policy-allowed `file.write` returned read-only/exit 4 without
+creating a view. A fresh 64 MiB single-empty-volume image also passed full checking
+and empty-directory listing. A 64 KiB checker cap returned incomplete/exit 4;
+debugger inspection observed zero charged memory at image cleanup.
 
-## Task-5 validation
+### Additional measured coverage
 
-The native `make -j16 fs-tools` and Pyxis-cross archive builds passed; the combined
-cross core has no unresolved symbols. A 128 MiB image imported the current
-documentation and kernel source directories into separate volumes (88 and 104
-objects), alongside an empty volume. Reopening and extraction of both source
-trees completed, and ordinary recursive `diff` reported identical contents.
-These object counts exercise object trees with multiple levels.
+Earlier implementation validation used the same retained contracts:
 
-A separate 64 MiB image imported a nine-object source containing Unicode/space
-names, nested and empty directories, an empty file, binary files of 4097 and
-476776 bytes, a sparse host file of 8193 bytes, and a hard-linked source copy.
-Extraction matched the source with recursive `diff`. The hard-linked inputs
-received different object IDs and extracted host inodes. A single 4097-byte file
-also extracted byte-for-byte. The source hole was materialized as zero data;
-this does not exercise a sparse filesystem extent layout.
+| Area | Observed behavior |
+| --- | --- |
+| Catalog and allocation-map depth | A 64 MiB image with 256 maximum-length volume names supplied in reverse order reopened and checked successfully; each state had 256 objects/grants and 576 metadata blocks. |
+| Capacity planning | A 256 MiB two-volume image accepted explicit reserves, a zero guarantee and a two-block quota. A 1 TiB plan reported 8+8+4 GiB reserves and created no file. |
+| GPT containers | Healthy 96 MiB images containing 64 MiB pools opened with 512-byte sectors at LBA 2049 (not 4 KiB aligned) and 4096-byte sectors at LBA 256. Checking succeeded for both. A populated 512-byte GPT image extracted matching file contents. Image SHA-256 values stayed unchanged during readonly inspection/extraction/checking. |
+| Object and view lifetime | ID-based volume selection, root metadata/grants and directory paging succeeded. Debugger inspection observed busy closes with a live view, held-subtree file reads with matching bytes, and metadata denial without `file.metadata`. |
+| Source and destination refusals | Existing output, source symlinks, source/output containment, `..` output components, zero owner IDs, impossible guarantees and insufficient quota were refused. Existing extraction output stayed untouched. |
+| Limits and cleanup | Low planner, pool-open, listing and checker caps were refused. An unused GPT entry was rejected. Debugger inspection observed zero charged memory after plan-only, extraction and successful/refused checker operations. |
 
-Manual refusals covered source/output containment, a source symlink, insufficient
-planning memory and a quota below the import's allocation, all before image
-creation. Existing extraction output was left untouched. Nested owner acquisition
-succeeded; missing lookup rights and a different principal were denied. Debugger
-inspection derived a file view under held subtree `file.read` and `dir.lookup`
-authority, read 64 matching bytes and refused metadata without `file.metadata`.
-Plan-only and file-extraction cleanup left zero charged memory.
+### Coverage limits
 
-A healthy GPT image with 512-byte sectors containing a populated pool extracted a binary
-file with identical contents; its whole-image SHA-256 was unchanged. Whole-image
-checking, file-data integrity checksums, multi-extent runtime coverage and
-kernel/QEMU validation are outside this task's validation.
+All runtime images have identical generation-1 roots and formatter-produced
+inline extents. Multiple-extent trees, sparse filesystem holes, grant-free
+volumes, differing generations, retired storage, unknown/malformed metadata,
+GPT degradation/ambiguity, concurrent source changes and actual I/O/allocation/
+flush failures retain source-review coverage only. No custom filesystem writer,
+damaged-image fixture or fault injection was introduced.
 
-## Task-6 validation
-
-Native builds passed; the Pyxis-cross core linked with no unresolved symbols.
-Manual `check` completed successfully on healthy empty and mixed-content raw
-images and a three-volume source import containing 193 objects, 190 directory
-entries and 174 file extents per state. An existing 64 MiB image with 256 empty
-volumes also passed, reporting
-256 objects/grants and 576 metadata blocks per state; this exercises catalogs and
-the allocation map with multiple levels. Healthy GPT images with 512-byte and
-4096-byte sectors passed through explicit partition selection. These images have
-identical generation-1 roots in both slots. The populated GPT image's whole-file
-SHA-256 remained unchanged after checking.
-
-A 64 KiB cap returned 4 with both states incomplete. Debugger inspection observed
-zero charged memory at host-image cleanup after that refusal and after the
-successful three-volume check. Differing generations, retired allocations,
-unknown features, malformed/corrupt media and actual I/O/allocation failures have
-source-review coverage only. No damaged-image fixture or fault injection was
-introduced. These checks establish structural consistency of the exercised
-images; they do not verify file payloads, multi-extent runtime behavior, writable
-admission/recovery or kernel/QEMU integration.
+Structural checking does not read file payloads; the extraction comparisons above
+establish contents only for the exercised inputs. File-data checksums, writable
+admission/recovery, FUSE and kernel mounting remain outside the implemented slice.
+No QEMU validation or production-data safety claim follows from these host checks.
