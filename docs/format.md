@@ -1,18 +1,19 @@
 # Initial Pyxis filesystem format and tool contract
 
-Status: task-1 specification under follow-up review; implementation is not present yet.
+Status: accepted task-1 specification, including follow-up decisions;
+implementation is not present yet.
 The [milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
 read-only GPT inspection boundary. Original project material is covered by the
 repository's [MPL-2.0 licensing notice](../LICENSING.md).
 
-The owner accepted the initial contract on 2026-09-29, then reopened review for
-targeted clarifications, an inline extent descriptor and revised reserve defaults.
-Task 1 remains open until that follow-up is resolved. The architecture and host-only
-milestone are unchanged. The future reclamation envelope records design constraints;
-its explicit writable-implementation gates remain. Implementation proceeds through
-separately authorized milestone tasks.
+The owner accepted the contract and follow-up decisions on 2026-09-29: include an
+inline extent descriptor, use lower proportional reserve defaults and require the
+ancestor lookup chain for acquisition by object ID. Task 1 is complete. The
+architecture and host-only milestone are unchanged. The future reclamation envelope
+records design constraints; its explicit writable-implementation gates remain.
+Implementation proceeds through separately authorized milestone tasks.
 
 ## Ownership and integration
 
@@ -528,9 +529,10 @@ result with the caller's domain-specific ceilings. An object-only caller cannot
 acquire a subtree or acquire another object through that authority.
 Grants above a restricted authority root may contribute policy, but can never
 enlarge that root or its ceiling. Require the entire requested set; do not
-silently return a weaker handle. Denial returns no acquired object. Requests for
-unimplemented mutation/administration operations return `READ_ONLY`; they do not
-perform policy changes or acquire an operational write interface.
+silently return a weaker handle. Denial returns no acquired object. After policy
+authorization, requests for unimplemented mutation/administration operations return
+`READ_ONLY`; they do not perform policy changes or acquire an operational write
+interface.
 
 An acquired result is bound to the open pool generation, volume/object identity,
 scope and actual rights. The trusted adapter owns its lifetime and delegation;
@@ -560,16 +562,15 @@ remaining traversal and result. A final object-only directory view cannot derive
 children even if its stored mask contains `dir.lookup`. No operation implicitly
 performs a fresh policy acquisition to enlarge an existing view.
 
-Proposed follow-up decision, pending owner review: policy acquisition by object ID
-must meet the same lookup checks as acquisition by path. After proving the target's
-validated parent chain reaches the supplied root, require effective `dir.lookup`
+Policy acquisition by object ID must meet the same lookup checks as acquisition
+by path. After proving the target's validated parent chain reaches the supplied
+root, require effective `dir.lookup`
 for the principal at each intervening directory, intersected with the trusted
 context's directory ceiling. The target equal to the supplied root needs no
 traversal check. Structural parent walking uses the trusted core without disclosing
 those internal records to the caller. An ID is a selector, not extra authority.
-Diagnostic inspection remains a separate authorized entry point. This proposal
-closes the potential ID-based path-lookup bypass without adding an authentication
-service or changing retained-capability delegation.
+Diagnostic inspection remains a separate authorized entry point. Acquiring by ID
+cannot bypass ordinary lookup policy or enlarge retained-capability delegation.
 
 Inspection has an explicitly separate diagnostic entry point over an authorized
 image. It may reveal all recorded principals, names and bytes without pretending
@@ -581,8 +582,8 @@ simulation of supplied trusted inputs, not a login mechanism.
 Complete checking derives counts from all allocation records for each retained
 state and reconciles cached totals. Candidate selection and ordinary access make
 only the narrower claims defined above. Live volume storage includes data,
-object/directory/extent/grant nodes and other volume-owned metadata. Pool catalog/map nodes and the pool root
-are pool metadata. Neither superblock slot is in `U` or any volume quota.
+object/directory/extent/grant nodes and other volume-owned metadata. Pool catalog/map
+nodes and the pool root are pool metadata. Neither superblock slot is in `U` or any volume quota.
 Retired blocks retain ownership for reporting but are charged to their recorded
 workspace budget, not twice as live permanent allocation.
 
@@ -615,8 +616,8 @@ does not permit overrunning any individual budget.
 The previous defaults (approximately 104 GiB combined at 1 TiB) were rejected in
 follow-up review. The owner requests roughly 16–24 GiB combined at that size, with
 32 GiB at most for the default. This is not a global cap on all pool sizes or on
-explicit overrides. The following replacement formula and split are proposed,
-pending owner review. Units are blocks, with ceiling division:
+explicit overrides. The owner accepted the following lower proportional defaults
+in follow-up review. Units are blocks, with ceiling division:
 
 | Budget | Default |
 | --- | --- |
@@ -624,8 +625,8 @@ pending owner review. Units are blocks, with ceiling division:
 | Migration workspace | `max(1024, ceil(U / 128))` |
 | Recovery workspace | `max(256, ceil(U / 256))` |
 
-The proposed split gives equal capacity to ordinary COW and migration, with half
-that amount for recovery. This is a prototype capacity policy, not a measured
+The proportional terms give equal capacity to ordinary COW and migration, with
+half that amount for recovery. This is a prototype capacity policy, not a measured
 operation-cost ratio. Floors remain 4 MiB, 4 MiB and 1 MiB respectively.
 
 | Pool extent | Ordinary COW | Migration | Recovery | Combined budgets |
@@ -645,7 +646,7 @@ those remain separate terms in the capacity inequality and formatter plan.
 A compared capped alternative retains the old fractions (`U/32`, `U/16`, `U/128`)
 but caps default budgets at 8 GiB, 12 GiB and 2 GiB. It gives 22 GiB at 1 TiB,
 yet retains 26 MiB at 256 MiB, 104 MiB at 1 GiB and 6.5 GiB at 64 GiB. The lower
-proportional proposal reduces that cost across development image sizes and needs
+proportional policy reduces that cost across development image sizes and needs
 no arbitrary transition point. Neither policy proves recovery or migration
 sufficiency; a cap alone supplies no bound on the work it must fund.
 
@@ -896,15 +897,14 @@ is separate work if concrete duplication later warrants it.
 Exit status: 0 completed success, 1 denied policy diagnostic, 2 usage/invalid
 input, 3 corrupt or ambiguous media, 4 unsupported, `READ_ONLY`, `LIMIT` from any
 command, or incomplete checking, 5 I/O or allocation failure. `access` reports
-policy denial as 1;
-if policy allows the request but its operations are unavailable, `READ_ONLY` is 4.
+policy denial as 1; if policy allows the request but its operations are unavailable, `READ_ONLY` is 4.
 A complete `check` requires two valid, fully checked slots: one valid with an
 absent peer is degraded/incomplete (4), and one valid with a corrupt peer is 3.
 Other diagnostic/read commands may succeed (0) on a selectable degraded pool,
 but must report degradation. When multiple outcomes occur, prioritize operational
 I/O/allocation failure (5), proved corruption/ambiguity (3), then incomplete (4);
-retain all individual reasons in the output. Every non-success diagnostic identifies the operation,
-available object/block context and whether partial output exists. Missing volume
+retain all individual reasons in the output. Every non-success diagnostic identifies
+the operation, available object/block context and whether partial output exists. Missing volume
 or path is an input/selection error, not a successful empty listing. Tool output
 is human-readable; stable JSON output is not part of this task.
 
@@ -932,8 +932,7 @@ counts, owners and grant targets. Check storage discriminators and canonical
 none/inline/tree modes, file ranges, logical lengths and allocation incarnations.
 Inline data claims are checked just like extent-tree claims. Collect extent claims
 for all metadata and file data, sort by physical range and compare them with the
-allocation map. No conflicting claims, missing
-owned ranges or unexplained live allocations are allowed. The allocation map and
+allocation map. No conflicting claims, missing owned ranges or unexplained live allocations are allowed. The allocation map and
 pool-root blocks must be accounted for too.
 
 Across states, unchanged physical storage may be shared only with compatible
@@ -951,12 +950,10 @@ automatic alternate-root retry or success after skipped required state.
 
 ## Remaining implementation gates and validation
 
-Task 1 is reopened for the follow-up review. The 1 TiB/one-million-record profile
-and 128 MiB default tool budget remain unchanged. The revised reserve formula and
-ID-acquisition lookup rule above need an explicit owner decision. Task 3 must still
-establish the
-allocation-map construction's termination bound. Writable work must settle the
-bounded admission and recovery costs listed above; acceptance of this contract
+Task 1 is complete after follow-up clarifications and owner decisions. The
+1 TiB/one-million-record profile and 128 MiB default tool budget remain unchanged.
+Task 3 must still establish the allocation-map construction's termination bound.
+Writable work must settle the bounded admission and recovery costs listed above; acceptance of this contract
 does not prove the reserve defaults sufficient for writable operation.
 Repository licensing is established as MPL-2.0.
 
