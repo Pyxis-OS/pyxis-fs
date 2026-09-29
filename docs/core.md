@@ -1,13 +1,12 @@
 # Shared core and encoding
 
 The core implements the local encoding layer of the [format contract](format.md),
-bulk image construction, pool selection, namespace and file reads, and policy
-acquisition. It builds as `libpyxis-fs.a` with no host-libc, kernel or Pyxis ABI
-dependency. Linux host tools populate standalone sparse images from source
-directories and provide diagnostic `info`, `volumes`, `list`, `stat`, `access`
-and `extract` commands.
-Explicit GPT partition selection belongs to the host adapter.
-See [host-tool usage](host-tools.md).
+bulk image construction, pool selection, namespace and file reads, policy
+acquisition and whole-image consistency checking. It builds as `libpyxis-fs.a`
+with no host-libc, kernel or Pyxis ABI dependency. Linux host tools populate
+standalone sparse images from source directories and provide diagnostic `info`,
+`volumes`, `list`, `stat`, `access`, `extract` and `check` commands. Explicit GPT
+partition selection belongs to the host adapter. See [host-tool usage](host-tools.md).
 
 ## Build
 
@@ -54,6 +53,7 @@ Public headers are under `include/pyxis_fs/`:
 | `pool.h` | Independent slot diagnostics, selected pool lifetime and copied diagnostic volume catalogs |
 | `read.h` | Diagnostic volume/object access, relative paths, ancestry, explicit grants, file reads and directory cursors |
 | `access.h` | Trusted acquisition contexts, policy evaluation and opaque views with checked ordinary operations |
+| `check.h` | Full diagnostic traversal, per-state reconciliation and retained-state overlap checking |
 
 The codecs do not allocate. Callers own input and output storage and must supply
 the stated accessible lengths; buffers and typed structures must be disjoint.
@@ -98,9 +98,9 @@ stricter than ordinary reads. Encoders construct initial-version records with
 zero extension bytes and reject unknown feature semantics. Decoding and encoding
 an existing record is not an extension-preserving mutation operation.
 
-Success proves local structure only. Pool counters are checked for local arithmetic
-consistency; they are not reconciled against allocation records. Tree decoding
-checks local ordering and ranges but never fetches children. Callers still need
+Codec success proves local structure only. Pool counters are checked for local
+arithmetic consistency; they are not reconciled against allocation records.
+Tree decoding checks local ordering and ranges but never fetches children. Callers still need
 separator/child-minimum agreement, full ancestry/cycle checks, allocation-proof
 closure, file bounds for extent trees, grant-target resolution and global counts.
 The standalone extent-file and grant-target helpers check those facts once the
@@ -214,6 +214,57 @@ with directory size, ancestry depth and allocation-map closure. The memory cap
 can stop an operation with `PFS_LIMIT`; the bounded profile does not promise a
 small I/O count or constant-time lookup.
 
+## Whole-image consistency checking
+
+`pfs_check` borrows an unchanged block reader and its memory owner for one
+synchronous diagnostic operation. It examines both candidate slots, including
+the state not selected for ordinary reads, and reports their results separately.
+It returns copied slot diagnostics, per-state status/completeness and visited
+record/claimed-block counts, plus the cross-state status/completeness. A state's
+`failures` bitmap has one bit at each observed `pfs_status` value; its `status`
+is the primary failure under the aggregation priority below. Counts from failed
+or incomplete traversals describe partial work. Invalid arguments
+leave the caller's result unchanged; media and resource failures publish partial
+results. The operation owns no handle after return and releases its workspace.
+
+An optional reporter receives individual failures with operation, slot and
+available block/volume/object context. Events are borrowed only until the
+callback returns. A reporter must not reenter the checker or change the reader,
+memory owner or image. `PFS_POOL_NO_SELECTION` identifies a global or cross-state
+event; `UINT64_MAX` identifies an unavailable block, and zero IDs an unavailable
+volume/object.
+
+Bounded iterative tree walks use the shared codecs to validate keys, separators,
+metadata identity and owner context. The checker reconciles both catalogs,
+namespace parent/entry relations and reachability, object storage, grants and
+extent claims. Sorted physical claims are matched against each state's allocation
+map, including the pool root and map nodes, and recorded counts, ownership and
+budget charges are reconciled. Cross-state comparison checks compatible shared
+storage and allocation incarnations, including older live references protected
+by newer retired allocations. Historical free/retired entries are not treated
+as live references, and retired contents are not parsed.
+
+Traversal frames, identity tables, copied records and physical claims share the
+supplied memory cap across retained states. Profile or cap exhaustion returns
+`PFS_LIMIT`; allocator failure below the cap returns `PFS_NO_MEMORY`. A
+resource-exhausted partial state is released before attempting its peer, and its
+tables cannot support a complete cross-state proof. Independent supported checks
+continue where their preconditions remain established.
+
+Full checking rejects every unknown enabled pool/volume feature, including those
+compatible with ordinary reads. Unsupported contents are skipped and the result
+remains incomplete. Unknown semantics never justify an unexplained-allocation
+corruption claim; independently established corruption is still reported. I/O or
+allocation failure takes priority over corruption, then unsupported/resource or
+other incomplete results. `PFS_OK` requires two fully checked valid states and
+a complete cross-state proof. A valid state with an absent peer is incomplete;
+with a corrupt peer it is corrupt.
+
+The checker reads metadata and proves file-data allocation claims without reading
+payloads. File bytes have no integrity checksums and are not verified. It performs
+no writes, repair, reclamation or runtime-reader exclusion proof. Content
+validation remains the separate extraction/host-comparison workflow.
+
 ## Policy acquisition and ordinary views
 
 The embedding authority supplies the trusted principal, root, scope and rights
@@ -301,5 +352,5 @@ retained descriptors without symlinks or `..`; extraction never merges into an
 existing tree. Files are flushed after copying, directories after their children,
 and the containing parent before successful completion. Failure leaves reported
 partial output for explicit removal. The host owns and closes all source/output
-descriptors; core readers and builders borrow their adapter contexts. Complete
-consistency checking remains task 6.
+descriptors; core readers and builders borrow their adapter contexts. Checking
+uses that same read-only adapter and shared lock without modifying the image.

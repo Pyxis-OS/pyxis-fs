@@ -95,6 +95,33 @@ Unsupported volume contents remain visible in that listing. Neither command
 claims globally verified accounting or traverses root-object/grant trees. Output
 quotes names and escapes control and non-ASCII bytes as hexadecimal bytes.
 
+## Check images
+
+```sh
+build/pyxisfs-inspect --image /tmp/pool.raw check
+```
+
+`check` takes no volume or path selector. It performs a bounded diagnostic walk
+of both candidates, reports selected and retained results separately, and checks
+their shared physical storage. Output includes individual failures with available
+block/volume/object context, visited record counts, claimed metadata/file blocks,
+and per-state and cross-state completeness. Counts from incomplete work are
+partial observations. Explicit GPT selection uses the same command.
+
+The checker reconciles catalogs, tree ordering and separators, namespaces, object
+storage and grants, physical claims, allocation ownership/incarnations, accounting
+and budget charges. Its traversal and bookkeeping share the memory cap. Unknown
+enabled features make the full result unsupported and incomplete, including
+read-compatible features; supported independent checks continue where meaningful.
+Skipped contents or exhausted resources never establish a clean image.
+
+Success requires two valid, fully checked states and a complete cross-state
+comparison. A valid state with an absent peer returns 4, and a corrupt peer
+returns 3. I/O or allocation failures take priority and return 5. The command
+reads metadata without reading or verifying file payloads, whose contents have
+no integrity checksums. It performs no repair, reclamation or image writes.
+Use extraction and ordinary host comparison to compare file contents.
+
 ## Objects and policy
 
 ```sh
@@ -190,8 +217,8 @@ GPT or pool bytes. Formatting still creates standalone images only.
 
 All commands accept `--memory-limit SIZE`, default 128 MiB and maximum 1 GiB.
 The cap charges input/planning state, construction buffers, candidate buffers,
-catalog staging, traversal frames, node caches, proof bookkeeping, live views,
-directory pages and GPT scratch. Fixed codec
+catalog staging, traversal frames, node caches, proof/checker bookkeeping, live
+views, directory pages and GPT scratch. Fixed codec
 stack frames, caller handles, argv and host allocator/libc overhead are outside
 that payload counter. Source manifests grow within the same cap; their old and
 new arrays are both charged during growth. The bulk planner copies the manifest
@@ -199,20 +226,24 @@ and reserves conservative node-descriptor space proportional to its object
 count, plus a fixed bounded volume/work-buffer area. These simultaneous planning
 allocations can exhaust the cap below the format's record-count maximum. A
 formatter limit failure occurs before file creation. An inspector limit failure
-publishes no volume records for a failed catalog call, though preceding selection diagnostics or
-completed directory pages can already have been printed.
+publishes no volume records for a failed catalog call, though preceding selection
+diagnostics or completed directory pages can already have been printed. `check`
+reports partial work and incomplete states on exhaustion and releases a partial
+resource-exhausted state before attempting its peer. Retained state tables share
+the cap; a complete cross-state result requires both states' necessary records.
 
 Exit codes are 0 for success, 1 for policy denial, 2 for invalid arguments or a
 missing selector, 3 for corrupt/ambiguous media, 4 for unsupported meaning,
-read-only operations, busy resources or a resource/capacity limit, and 5 for I/O or
-allocation failure. An absent/corrupt peer beside a valid selected slot is a
-warning for these commands; a successful operation still returns 0. Unsupported,
-limit or operational failures in either candidate prevent selection. If multiple
+read-only operations, busy resources, a resource/capacity limit or incomplete
+checking, and 5 for I/O or allocation failure. For commands other than `check`,
+an absent/corrupt peer beside a valid selected slot is a warning; a successful
+operation still returns 0. Unsupported, limit or operational failures in either
+candidate prevent selection. If multiple
 failures exist, command aggregation prioritizes I/O/allocation, proved corruption,
 then unsupported/limit, retaining both candidate diagnostics.
 
-Whole-image checking remains task 6. These tools do not mount, mutate or repair
-existing images, or establish that recorded reserves suffice for writes.
+These tools do not mount, mutate or repair existing images, or establish that
+recorded reserves suffice for writes.
 Imported images exercise contiguous inline extents; multi-extent and sparse-image
 runtime coverage remains limited.
 
@@ -286,3 +317,25 @@ A healthy GPT image with 512-byte sectors containing a populated pool extracted 
 file with identical contents; its whole-image SHA-256 was unchanged. Whole-image
 checking, file-data integrity checksums, multi-extent runtime coverage and
 kernel/QEMU validation are outside this task's validation.
+
+## Task-6 validation
+
+Native builds passed; the Pyxis-cross core linked with no unresolved symbols.
+Manual `check` completed successfully on healthy empty and mixed-content raw
+images and a three-volume source import containing 193 objects, 190 directory
+entries and 174 file extents per state. An existing 64 MiB image with 256 empty
+volumes also passed, reporting
+256 objects/grants and 576 metadata blocks per state; this exercises catalogs and
+the allocation map with multiple levels. Healthy GPT images with 512-byte and
+4096-byte sectors passed through explicit partition selection. These images have
+identical generation-1 roots in both slots. The populated GPT image's whole-file
+SHA-256 remained unchanged after checking.
+
+A 64 KiB cap returned 4 with both states incomplete. Debugger inspection observed
+zero charged memory at host-image cleanup after that refusal and after the
+successful three-volume check. Differing generations, retired allocations,
+unknown features, malformed/corrupt media and actual I/O/allocation failures have
+source-review coverage only. No damaged-image fixture or fault injection was
+introduced. These checks establish structural consistency of the exercised
+images; they do not verify file payloads, multi-extent runtime behavior, writable
+admission/recovery or kernel/QEMU integration.
