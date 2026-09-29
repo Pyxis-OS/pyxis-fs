@@ -39,6 +39,7 @@ enum pfs_status pfs_pool_open(struct pfs_pool *pool,
                              const struct pfs_block_reader *reader,
                              struct pfs_memory *memory,
                              struct pfs_pool_diagnostic *diagnostic);
+/* BUSY leaves the pool live while volume handles remain open. */
 enum pfs_status pfs_pool_close(struct pfs_pool *pool);
 
 /* Diagnostic access over an authorized image; this grants no object authority.
