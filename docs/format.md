@@ -515,10 +515,28 @@ The masks keep the three rights domains separate:
 | Administration | 1 | Edit grants; later writable milestone |
 | Administration | 2 | Change policy owner; later writable milestone |
 
-Unknown rights require a corresponding read-required feature because silently
-misinterpreting acquisition policy is not safe. A subtree record contains file
-rights for descendant files, directory rights for the root and descendant
-directories, and administration rights for either kind. Object-only grants apply
+Grant decoders must reject rights bits outside their supported masks; they must
+not silently discard unknown rights. Adding an independent allow right whose
+absence grants no authority does not itself require a feature declaration or
+structure-version change. New semantics that alter the interpretation of existing
+rights, scopes or records require an appropriate feature declaration or format
+change when existing validation would otherwise accept an unsafe interpretation.
+Writable admission must reject retained states containing rights it cannot
+validate. Adding a supported right never widens existing stored grants: their
+absent bit remains absent unless explicitly changed with the required authority.
+
+The current grant decoder rejects unknown rights with `CORRUPT` before publishing
+the decoded record. Policy acquisition propagates the failure without returning
+a view, and complete checking cannot report a clean state containing such a
+grant. Candidate selection does not walk all grants, so an older reader may open
+the pool and inspect unrelated data before encountering and rejecting an unknown
+right. This is rejection on encounter, not guaranteed rejection at pool open or
+a promise of compatibility with older implementations. Unknown requested rights
+or trusted rights ceilings are invalid API inputs.
+
+A subtree record contains file rights for descendant files, directory rights
+for the root and descendant directories, and administration rights for either
+kind. Object-only grants apply
 only to the named object and its relevant domains. Ownership alone adds no rights.
 The formatter gives each volume root an explicit owner subtree grant containing
 all defined bits; descendants inherit its owner and need no repeated grants.
