@@ -302,6 +302,38 @@ Earlier implementation validation used the same retained contracts:
 | Source and destination refusals | Existing output, source symlinks, source/output containment, `..` output components, zero owner IDs, impossible guarantees and insufficient quota were refused. Existing extraction output stayed untouched. |
 | Limits and cleanup | Low planner, pool-open, listing and checker caps were refused. An unused GPT entry was rejected. Debugger inspection observed zero charged memory after plan-only, extraction and successful/refused checker operations. |
 
+### Directory continuation validation
+
+On 2026-09-30, ordinary `make -j16` with GCC 16.2.1 built the freestanding core
+and host tools. The existing formatter imported `/usr/include/linux` into a
+64 MiB disposable image alongside an empty volume. Both generation-1 states
+passed `pyxisfs-inspect check`: 839 objects, 837 directory entries and 805 file
+extents. Existing diagnostic listing and recursive extraction succeeded;
+`diff -r` found no difference between the extracted headers and their source.
+
+Interactive GDB calls exercised `pfs_view_directory_page` through an acquired
+view in the ordinary `access` inspector command; no diagnostic command, test
+harness or image mutation was added:
+
+| Case | Observed result |
+| --- | --- |
+| Root with 604 entries and an internal directory-tree root | Pages of 300, 300 and 4 entries returned in order, ending at `zorro_ids.h`; continuation crossed leaf boundaries. |
+| Independent replay | Reusing the first-entry token twice returned the same next name, `acct.h`, and next token. |
+| Repeated end | Reusing the final token returned zero entries, `done=true` and the unchanged token. |
+| Nested LIST-only view | The `can` directory returned eight names; a root token with excess bytes was invalid there, while a valid local slot resumed inside that directory. |
+| Invalid slot paths | Missing/zero ancestor or leaf slots, out-of-range ancestor/leaf slots and excess bytes returned INVALID without changing output name, count, end flag or next token. |
+| Missing LIST | A LOOKUP-only view returned DENIED with outputs unchanged. |
+| Empty volume | Zero returned repeatable empty/end results; a nonzero continuation returned INVALID. |
+| Budget exhaustion | Under an 8 MiB core cap, a valid 16,000-entry capacity request returned LIMIT with outputs unchanged. |
+| Cleanup and abandonment | Charged core memory returned to the 1,200-byte pool/volume/view baseline after inspected calls and to zero after final close; no token close was needed. |
+
+Runtime continuation coverage uses one- and two-level directory trees, unchanged
+generation-1 images and the host adapter. Maximum-depth tokens, later generations,
+rooted media/format corruption and actual I/O/allocator failures have code review
+only. These checks do not measure the future kernel adapter's peak memory or
+runtime limits, and do not claim that an arbitrary token records its originating
+view. All debugger processes were stopped after inspection.
+
 ### Coverage limits
 
 All runtime images have identical generation-1 roots and formatter-produced

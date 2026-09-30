@@ -293,6 +293,55 @@ implicitly adds another domain. A view directory cursor captures list authority
 and independently retains the volume, so closing its originating view does not
 invalidate the cursor.
 
+### Stateless directory continuation
+
+`pfs_view_directory_page(view, after, entries, capacity, count, done, next)`
+provides an independent LIST page without a retained cursor. Start with `after=0`
+and pass the returned `next` to resume. Capacity must be positive and within
+`PFS_RECORD_COUNT_MAX`; outputs and the view must be disjoint. Each successful
+page publishes copied names/kinds in unsigned name order, its count, end flag
+and the last returned continuation. A zero-entry page preserves the input point;
+repeating the final point returns zero entries and `done=true`. A full page can
+return `done=false` even when its last entry is the directory's final entry;
+then the next call establishes exhaustion. All outputs remain unchanged on any
+failure, including denial, invalid continuation, media and memory-limit errors.
+
+The opaque 64-bit value contains no address or authority. The current encoding
+packs one-based tree slot choices, with the leaf entry in the low byte and its
+ancestors in successively higher bytes. Eight levels and at most 195 slots per
+node fit in 64 bits; compile-time assertions tie the encoding to these bounds.
+The directory root's validated level determines the number of used bytes. Zero
+slot choices, out-of-range slots and nonzero excess bytes return `PFS_INVALID`.
+Do not decode, increment or persist these values as on-disk identities.
+
+Each nonzero token is interpreted against the held view's immutable selected
+pool/volume/directory. Descent begins at its directory root and follows only
+validated internal references, preserving parent level, separator and inherited
+upper bounds. The token never supplies a block address. The reached entry's key
+supplies an exclusive lower bound to the existing successor search; the reader
+does not enumerate the returned prefix to recover a position. Errors from rooted
+reads, metadata decoding and allocation proofs retain their statuses rather than
+being reclassified as bad token bytes. All consulted allocations are proved
+before publication, and returned children must match their recorded kind/parent.
+Duplicate child IDs within a returned page are rejected.
+
+Tokens are untrusted resume hints, not authenticated records of prior calls. A
+forged reachable position can skip entries within the authorized directory, and
+the same numeric token may also be valid in another authorized view. Neither
+case expands LIST authority or proves token provenance. The embedding OS must
+keep its directory/generation binding separate; an old token cannot retain or
+reopen its view. No emitted-count value is taken from the caller, so this page
+operation makes no full-list count or cross-page uniqueness claim. Existing
+stateful diagnostic/view cursors retain end-to-end count reconciliation; the
+whole-image checker remains the global structural check.
+
+The call borrows its view and releases all temporary memory before return. It
+retains no cursor, extra volume reference or continuation registry: callers may
+replay, fork or abandon tokens without close calls. Existing ancestry naming
+scans and allocation-proof costs still apply; eliminating prefix reconstruction
+does not establish constant-time enumeration or a small I/O bound. Validation
+coverage is recorded in the [host-tool guide](host-tools.md#directory-continuation-validation).
+
 The diagnostic APIs and inspector commands operate over an already authorized
 image and may disclose identities and policy records. Their results are separate
 from ordinary view authority. The host `access` command simulates supplied trusted
