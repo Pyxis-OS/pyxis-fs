@@ -4,6 +4,14 @@
 #include "internal.h"
 #include "read_internal.h"
 
+#define DIRECTORY_POSITION_SLOT_BITS 8u
+#define DIRECTORY_POSITION_SLOT_MASK UINT64_C(0xff)
+
+_Static_assert(PFS_TREE_DEPTH_MAX * DIRECTORY_POSITION_SLOT_BITS <= 64,
+               "directory position fits in 64 bits");
+_Static_assert(PFS_TREE_SLOTS_MAX <= DIRECTORY_POSITION_SLOT_MASK,
+               "one-based directory slot fits in a position byte");
+
 struct pool_state {
   struct pfs_pool_diagnostic diagnostic;
   size_t volumes;
@@ -913,7 +921,7 @@ static enum pfs_status
 record_next(struct catalog_operation *operation, const struct pfs_reference *root,
             uint64_t birth, uint16_t kind, const struct pfs_object_id *object,
             const struct pfs_key *lower, bool strict, struct consulted_node **out,
-            uint16_t *out_slot, struct pfs_key *out_key)
+            uint16_t *out_slot, struct pfs_key *out_key, uint64_t *position)
 {
   if (object) {
     pfs_bytes_copy(&operation->object, object, sizeof(operation->object));
@@ -1002,6 +1010,13 @@ record_next(struct catalog_operation *operation, const struct pfs_reference *roo
       }
       int comparison = lower ? pfs_key_compare(kind, &key, lower) : 1;
       if (comparison > 0 || (!strict && comparison == 0)) {
+        if (position) {
+          uint64_t value = 0;
+          for (size_t j = 0; j + 1 < depth; ++j) {
+            value = (value << DIRECTORY_POSITION_SLOT_BITS) | operation->frames[j].next;
+          }
+          *position = (value << DIRECTORY_POSITION_SLOT_BITS) | (uint64_t)(i + 1);
+        }
         *out = node;
         *out_slot = i;
         pfs_bytes_copy(out_key, &key, sizeof(key));
@@ -1026,7 +1041,7 @@ object_lookup(struct catalog_operation *operation, const struct pfs_object_id *i
   uint16_t slot;
   struct pfs_key found;
   enum pfs_status status = record_next(operation, &operation->volume->record.object_root,
-    operation->volume->birth, PFS_INDEX_OBJECTS, NULL, &key, false, &node, &slot, &found);
+    operation->volume->birth, PFS_INDEX_OBJECTS, NULL, &key, false, &node, &slot, &found, NULL);
   if (status != PFS_OK) {
     return status;
   }
@@ -1046,7 +1061,7 @@ object_lookup(struct catalog_operation *operation, const struct pfs_object_id *i
 static enum pfs_status
 entry_next(struct catalog_operation *operation, const struct pfs_object_record *directory,
            uint64_t birth, const struct pfs_key *lower, bool strict,
-           struct pfs_dirent_record *entry, struct pfs_key *key)
+           struct pfs_dirent_record *entry, struct pfs_key *key, uint64_t *position)
 {
   if (directory->kind != PFS_OBJECT_DIRECTORY) {
     return PFS_INVALID;
@@ -1057,7 +1072,7 @@ entry_next(struct catalog_operation *operation, const struct pfs_object_record *
   struct consulted_node *node;
   uint16_t slot;
   enum pfs_status status = record_next(operation, &directory->tree_root, birth,
-    PFS_INDEX_DIRECTORY, &directory->id, lower, strict, &node, &slot, key);
+    PFS_INDEX_DIRECTORY, &directory->id, lower, strict, &node, &slot, key, position);
   if (status != PFS_OK) {
     return status;
   }
@@ -1079,7 +1094,7 @@ naming_match(struct catalog_operation *operation, const struct pfs_object_record
     struct pfs_dirent_record entry;
     struct pfs_key key;
     enum pfs_status status = entry_next(operation, parent, birth,
-      has_previous ? &previous : NULL, has_previous, &entry, &key);
+      has_previous ? &previous : NULL, has_previous, &entry, &key, NULL);
     if (status == PFS_NOT_FOUND) {
       return matches == 1 && seen == parent->directory_count ? PFS_OK : PFS_CORRUPT;
     }
@@ -1407,7 +1422,7 @@ pfs_volume_diagnostic_resolve(struct pfs_volume *volume, const struct pfs_object
     pfs_bytes_copy(key.bytes, path + offset, key.length);
     struct pfs_key found;
     struct pfs_dirent_record entry;
-    status = entry_next(operation, &object, birth, &key, false, &entry, &found);
+    status = entry_next(operation, &object, birth, &key, false, &entry, &found, NULL);
     if (status == PFS_OK && pfs_key_compare(PFS_INDEX_DIRECTORY, &key, &found)) {
       status = PFS_NOT_FOUND;
     }
@@ -1463,7 +1478,7 @@ pfs_volume_diagnostic_grants(struct pfs_volume *volume, const struct pfs_object_
     uint16_t slot;
     struct pfs_key key;
     status = record_next(operation, &operation->volume->record.grant_root,
-      operation->volume->birth, PFS_INDEX_GRANTS, NULL, &lower, strict, &node, &slot, &key);
+      operation->volume->birth, PFS_INDEX_GRANTS, NULL, &lower, strict, &node, &slot, &key, NULL);
     if (status == PFS_NOT_FOUND) {
       status = PFS_OK;
       break;
@@ -1778,6 +1793,142 @@ pfs_directory_close(struct pfs_directory_cursor *cursor)
   return status;
 }
 
+struct directory_page {
+  struct pfs_key previous;
+  uint64_t continuation;
+  size_t count;
+  bool started;
+  bool done;
+};
+
+/* Position bytes select one-based slots from leaf to root. All reads follow
+ * trusted root references; malformed slot choices never supply block addresses. */
+static enum pfs_status
+directory_resume(struct catalog_operation *operation,
+                 const struct pfs_object_record *directory, uint64_t birth,
+                 uint64_t position, struct pfs_key *key)
+{
+  if (directory->storage_kind == PFS_STORAGE_NONE) {
+    return PFS_INVALID;
+  }
+  pfs_bytes_copy(&operation->object, &directory->id, sizeof(operation->object));
+  struct consulted_node *node;
+  enum pfs_status status = node_get(operation, &directory->tree_root, birth,
+    PFS_INDEX_DIRECTORY, NULL, NULL, NULL, &node);
+  if (status != PFS_OK) {
+    return status;
+  }
+  unsigned bits = (node->tree.level + 1u) * DIRECTORY_POSITION_SLOT_BITS;
+  if (bits < 64 && position >> bits) {
+    return PFS_INVALID;
+  }
+  struct pfs_key upper;
+  bool has_upper = false;
+  for (;;) {
+    unsigned shift = node->tree.level * DIRECTORY_POSITION_SLOT_BITS;
+    uint16_t encoded = (uint16_t)((position >> shift) & DIRECTORY_POSITION_SLOT_MASK);
+    if (!encoded || encoded > node->tree.count) {
+      return PFS_INVALID;
+    }
+    uint16_t slot = encoded - 1;
+    if (!node->tree.level) {
+      return record_key(operation, node, slot, key);
+    }
+    struct pfs_internal_record child;
+    status = internal_at(operation, node, slot, &child);
+    if (status != PFS_OK) {
+      return status;
+    }
+    if (slot + 1 < node->tree.count) {
+      struct pfs_internal_record next;
+      status = internal_at(operation, node, slot + 1, &next);
+      if (status != PFS_OK) {
+        return status;
+      }
+      pfs_bytes_copy(&upper, &next.minimum, sizeof(upper));
+      has_upper = true;
+    }
+    struct consulted_node *target;
+    status = node_get(operation, &child.child, node->tree.header.birth,
+      PFS_INDEX_DIRECTORY, node, &child.minimum, has_upper ? &upper : NULL, &target);
+    if (status != PFS_OK) {
+      return status;
+    }
+    node = target;
+  }
+}
+
+/* Entries and page state are private staging. Callers finish proof/count checks
+ * before publishing them; child lookups overwrite the walk frames. */
+static enum pfs_status
+directory_read_page(struct catalog_operation *operation,
+                    const struct pfs_object_record *directory, uint64_t birth,
+                    struct pfs_dirent_record *entries, size_t capacity,
+                    struct directory_page *page)
+{
+  struct pfs_allocation identities = {0};
+  size_t identity_capacity = 2;
+  while (identity_capacity < capacity * 2) {
+    identity_capacity *= 2;
+  }
+  enum pfs_status status = pfs_memory_allocate(operation->pool->memory,
+    identity_capacity * sizeof(uint32_t), _Alignof(uint32_t), &identities);
+  if (status != PFS_OK) {
+    return status;
+  }
+  uint32_t *identity_table = identities.data;
+  pfs_bytes_zero(identity_table, identities.size);
+  while (page->count < capacity) {
+    struct pfs_key key;
+    uint64_t position;
+    struct pfs_dirent_record *entry = &entries[page->count];
+    status = entry_next(operation, directory, birth,
+      page->started ? &page->previous : NULL, page->started, entry, &key, &position);
+    if (status == PFS_NOT_FOUND) {
+      status = PFS_OK;
+      page->done = true;
+      break;
+    }
+    if (status != PFS_OK) {
+      break;
+    }
+    uint64_t identity = pfs_get_u64(entry->object.bytes) ^
+      pfs_get_u64(entry->object.bytes + sizeof(uint64_t));
+    size_t identity_slot = node_hash(identity, identity_capacity);
+    while (identity_table[identity_slot]) {
+      size_t previous_index = identity_table[identity_slot] - 1;
+      if (!pfs_bytes_compare(entries[previous_index].object.bytes, PFS_ID_SIZE,
+                             entry->object.bytes, PFS_ID_SIZE)) {
+        status = PFS_CORRUPT;
+        break;
+      }
+      identity_slot = (identity_slot + 1) & (identity_capacity - 1);
+    }
+    if (status != PFS_OK) {
+      break;
+    }
+    struct pfs_object_record child;
+    status = object_lookup(operation, &entry->object, &child, NULL);
+    if (status == PFS_NOT_FOUND) {
+      status = PFS_CORRUPT;
+    }
+    if (status == PFS_OK && (child.kind != entry->child_kind ||
+        pfs_bytes_compare(child.parent.bytes, PFS_ID_SIZE, directory->id.bytes, PFS_ID_SIZE))) {
+      status = PFS_CORRUPT;
+    }
+    if (status != PFS_OK) {
+      break;
+    }
+    identity_table[identity_slot] = (uint32_t)page->count + 1;
+    ++page->count;
+    page->continuation = position;
+    pfs_bytes_copy(&page->previous, &key, sizeof(key));
+    page->started = true;
+  }
+  pfs_memory_free(operation->pool->memory, &identities);
+  return status;
+}
+
 enum pfs_status
 pfs_directory_next(struct pfs_directory_cursor *cursor, struct pfs_dirent_record *out,
                    size_t capacity, size_t *count, bool *done)
@@ -1798,111 +1949,99 @@ pfs_directory_next(struct pfs_directory_cursor *cursor, struct pfs_dirent_record
     *done = true;
     return PFS_OK;
   }
-  struct pfs_allocation storage;
-  pfs_bytes_zero(&storage, sizeof(storage));
+  struct pfs_allocation storage = {0};
   struct catalog_operation *operation;
   enum pfs_status status = operation_create(cursor->volume, &storage, &operation);
   if (status != PFS_OK) {
     return status;
   }
-  struct pfs_allocation page;
-  pfs_bytes_zero(&page, sizeof(page));
+  struct pfs_allocation output = {0};
   status = pfs_memory_allocate(cursor->volume->pool->memory, capacity * sizeof(*out),
-    _Alignof(struct pfs_dirent_record), &page);
-  if (status != PFS_OK) {
-    operation_destroy(operation, &storage);
-    return status;
+    _Alignof(struct pfs_dirent_record), &output);
+  struct directory_page page = {.started = state->started};
+  pfs_bytes_copy(&page.previous, &state->previous, sizeof(page.previous));
+  if (status == PFS_OK) {
+    status = ancestry_collect(operation, &state->object);
   }
-  struct pfs_allocation identities;
-  pfs_bytes_zero(&identities, sizeof(identities));
-  size_t identity_capacity = 2;
-  while (identity_capacity < capacity * 2) {
-    identity_capacity *= 2;
-  }
-  status = pfs_memory_allocate(cursor->volume->pool->memory,
-    identity_capacity * sizeof(uint32_t), _Alignof(uint32_t), &identities);
-  if (status != PFS_OK) {
-    pfs_memory_free(cursor->volume->pool->memory, &page);
-    operation_destroy(operation, &storage);
-    return status;
-  }
-  uint32_t *identity_table = identities.data;
-  pfs_bytes_zero(identity_table, identities.size);
-  struct pfs_dirent_record *entries = page.data;
-  status = ancestry_collect(operation, &state->object);
   struct pfs_object_record directory;
   uint64_t birth;
   if (status == PFS_OK) {
     status = object_lookup(operation, &state->object, &directory, &birth);
   }
-  struct pfs_key previous;
-  pfs_bytes_copy(&previous, &state->previous, sizeof(previous));
-  bool started = state->started;
-  bool exhausted = false;
-  size_t used = 0;
-  while (status == PFS_OK && used < capacity) {
-    struct pfs_key key;
-    status = entry_next(operation, &directory, birth, started ? &previous : NULL,
-      started, &entries[used], &key);
-    if (status == PFS_NOT_FOUND) {
-      status = PFS_OK;
-      exhausted = true;
-      break;
-    }
-    if (status != PFS_OK) {
-      break;
-    }
-    uint64_t identity = pfs_get_u64(entries[used].object.bytes) ^
-      pfs_get_u64(entries[used].object.bytes + sizeof(uint64_t));
-    size_t identity_slot = node_hash(identity, identity_capacity);
-    while (identity_table[identity_slot]) {
-      size_t previous_index = identity_table[identity_slot] - 1;
-      if (!pfs_bytes_compare(entries[previous_index].object.bytes, PFS_ID_SIZE,
-                             entries[used].object.bytes, PFS_ID_SIZE)) {
-        status = PFS_CORRUPT;
-        break;
-      }
-      identity_slot = (identity_slot + 1) & (identity_capacity - 1);
-    }
-    if (status != PFS_OK) {
-      break;
-    }
-    struct pfs_object_record child;
-    status = object_lookup(operation, &entries[used].object, &child, NULL);
-    if (status == PFS_NOT_FOUND) {
-      status = PFS_CORRUPT;
-    }
-    if (status == PFS_OK && (child.kind != entries[used].child_kind ||
-        pfs_bytes_compare(child.parent.bytes, PFS_ID_SIZE, directory.id.bytes, PFS_ID_SIZE))) {
-      status = PFS_CORRUPT;
-    }
-    if (status != PFS_OK) {
-      break;
-    }
-    identity_table[identity_slot] = (uint32_t)used + 1;
-    ++used;
-    pfs_bytes_copy(&previous, &key, sizeof(previous));
-    started = true;
+  if (status == PFS_OK) {
+    status = directory_read_page(operation, &directory, birth, output.data, capacity, &page);
   }
   if (status == PFS_OK && (state->emitted > directory.directory_count ||
-      used > directory.directory_count - state->emitted ||
-      (exhausted && state->emitted + used != directory.directory_count))) {
+      page.count > directory.directory_count - state->emitted ||
+      (page.done && state->emitted + page.count != directory.directory_count))) {
     status = PFS_CORRUPT;
   }
   if (status == PFS_OK) {
     status = proof_complete(operation);
   }
   if (status == PFS_OK) {
-    pfs_bytes_copy(out, entries, used * sizeof(*out));
-    *count = used;
-    *done = exhausted;
-    pfs_bytes_copy(&state->previous, &previous, sizeof(state->previous));
-    state->started = started;
-    state->done = exhausted;
-    state->emitted += used;
+    pfs_bytes_copy(out, output.data, page.count * sizeof(*out));
+    *count = page.count;
+    *done = page.done;
+    pfs_bytes_copy(&state->previous, &page.previous, sizeof(state->previous));
+    state->started = page.started;
+    state->done = page.done;
+    state->emitted += page.count;
   }
-  pfs_memory_free(cursor->volume->pool->memory, &identities);
-  pfs_memory_free(cursor->volume->pool->memory, &page);
+  pfs_memory_free(cursor->volume->pool->memory, &output);
+  operation_destroy(operation, &storage);
+  return status;
+}
+
+enum pfs_status
+pfs_volume_directory_page(struct pfs_volume *volume, const struct pfs_object_id *id,
+                          uint64_t after, struct pfs_dirent_record *out, size_t capacity,
+                          size_t *count, bool *done, uint64_t *next)
+{
+  if (!volume_live(volume) || !id || !out || !capacity || !count || !done || !next ||
+      pfs_bytes_are_zero(id->bytes, PFS_ID_SIZE)) {
+    return PFS_INVALID;
+  }
+  if (capacity > PFS_RECORD_COUNT_MAX || capacity > SIZE_MAX / sizeof(*out)) {
+    return PFS_LIMIT;
+  }
+  struct pfs_allocation storage = {0};
+  struct catalog_operation *operation;
+  enum pfs_status status = operation_create(volume, &storage, &operation);
+  if (status != PFS_OK) {
+    return status;
+  }
+  struct pfs_allocation output = {0};
+  status = pfs_memory_allocate(volume->pool->memory, capacity * sizeof(*out),
+    _Alignof(struct pfs_dirent_record), &output);
+  if (status == PFS_OK) {
+    status = ancestry_collect(operation, id);
+  }
+  struct pfs_object_record directory;
+  uint64_t birth;
+  if (status == PFS_OK) {
+    status = object_lookup(operation, id, &directory, &birth);
+  }
+  if (status == PFS_OK && directory.kind != PFS_OBJECT_DIRECTORY) {
+    status = PFS_INVALID;
+  }
+  struct directory_page page = {.continuation = after, .started = after != 0};
+  if (status == PFS_OK && after) {
+    status = directory_resume(operation, &directory, birth, after, &page.previous);
+  }
+  if (status == PFS_OK) {
+    status = directory_read_page(operation, &directory, birth, output.data, capacity, &page);
+  }
+  if (status == PFS_OK) {
+    status = proof_complete(operation);
+  }
+  if (status == PFS_OK) {
+    pfs_bytes_copy(out, output.data, page.count * sizeof(*out));
+    *count = page.count;
+    *done = page.done;
+    *next = page.continuation;
+  }
+  pfs_memory_free(volume->pool->memory, &output);
   operation_destroy(operation, &storage);
   return status;
 }

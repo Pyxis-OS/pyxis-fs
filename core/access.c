@@ -566,6 +566,47 @@ pfs_view_directory_next(struct pfs_view_directory *cursor,
 }
 
 enum pfs_status
+pfs_view_directory_page(struct pfs_view *view, uint64_t after,
+                        struct pfs_view_entry *out, size_t capacity,
+                        size_t *count, bool *done, uint64_t *next)
+{
+  if (!view || !out || !capacity || !count || !done || !next ||
+      view->identity.kind != PFS_OBJECT_DIRECTORY) {
+    return PFS_INVALID;
+  }
+  if (!(view->rights.directory & PFS_DIR_LIST)) {
+    return PFS_DENIED;
+  }
+  if (capacity > PFS_RECORD_COUNT_MAX || capacity > SIZE_MAX / sizeof(struct pfs_dirent_record)) {
+    return PFS_LIMIT;
+  }
+  struct pfs_memory *memory = view->volume->pool->memory;
+  struct pfs_allocation allocation = {0};
+  enum pfs_status status = pfs_memory_allocate(memory,
+    capacity * sizeof(struct pfs_dirent_record), _Alignof(struct pfs_dirent_record), &allocation);
+  if (status != PFS_OK) {
+    return status;
+  }
+  size_t returned;
+  bool ended;
+  uint64_t position;
+  status = pfs_volume_directory_page(view->volume, &view->object, after,
+    allocation.data, capacity, &returned, &ended, &position);
+  if (status == PFS_OK) {
+    struct pfs_dirent_record *entries = allocation.data;
+    for (size_t i = 0; i < returned; ++i) {
+      pfs_bytes_copy(&out[i].name, &entries[i].name, sizeof(entries[i].name));
+      out[i].kind = entries[i].child_kind;
+    }
+    *count = returned;
+    *done = ended;
+    *next = position;
+  }
+  pfs_memory_free(memory, &allocation);
+  return status;
+}
+
+enum pfs_status
 pfs_view_directory_close(struct pfs_view_directory **cursor)
 {
   if (cursor == NULL) {

@@ -104,6 +104,21 @@ enum pfs_status pfs_view_directory_next(struct pfs_view_directory *cursor,
                                        bool *done);
 enum pfs_status pfs_view_directory_close(struct pfs_view_directory **cursor);
 
+/* Stateless LIST page in unsigned name order. Zero after starts; next is an
+ * opaque 64-bit resume point interpreted only against this held immutable view.
+ * Tokens carry no authority or provenance and retain no resources. They can be
+ * replayed/forked; even a forged valid point may skip entries within this view.
+ * Capacity is positive and at most PFS_RECORD_COUNT_MAX. On success, next is the
+ * last returned point (after when count is zero), and done signals exhaustion.
+ * Repeating a terminal point returns zero entries/done. Every failure preserves
+ * entries, count, done and next. All buffers/outputs are disjoint from the view
+ * and each other. Invalid token paths return INVALID; rooted media, format and
+ * resource errors retain their statuses. Ordinary page proof is not a full-list
+ * count reconciliation or uniqueness check across pages. */
+enum pfs_status pfs_view_directory_page(struct pfs_view *view, uint64_t after,
+                                       struct pfs_view_entry *out, size_t capacity,
+                                       size_t *count, bool *done, uint64_t *next);
+
 /* Nonempty relative paths derive a child using held rights only. Subtree scope
  * and dir.lookup are required on every containing directory. Requested rights
  * must be contained in held masks; the child cannot expand the held root or
