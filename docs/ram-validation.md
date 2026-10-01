@@ -140,12 +140,12 @@ job needs neither loop/tracing privileges nor a compiler-container rebuild.
 
 Forgejo runner 13.2.0 does not apply every workflow `container.options` field:
 its [job-option merge](https://code.forgejo.org/forgejo/runner/src/tag/v13.2.0/act/container/docker/run.go)
-accepts `--memory` but omits `--mount`, `--memory-swap` and `--ulimit`. The current
-runner therefore refuses with `dedicated scratch mount is missing` before the
-build or tests. Passing the same options directly to rootless Podman works
+accepts `--memory` but omits `--mount`, `--memory-swap` and `--ulimit`. The original
+`pyxis` job therefore refused with `dedicated scratch mount is missing` before
+the build or tests. Passing the same options directly to rootless Podman works
 locally; this is not evidence that the CI runner applied them.
 
-The proposed owner action is a separate rootless validation runner configuration,
+The filesystem jobs select a separate rootless validation runner configuration,
 advertising only `pyxis-fs-ram`, with these trusted configuration fields:
 
 ```yaml
@@ -161,7 +161,7 @@ container:
     - ""
 ```
 
-This is a fragment for review, not a replacement for the owner's full runner
+This is a required-settings fragment, not a replacement for the owner's full runner
 configuration. Preserve necessary existing options and permitted volume sources.
 The empty-string permission admits the anonymous mount's empty source in this
 runner's volume filter; it does not permit arbitrary host paths. Do not add a
@@ -170,11 +170,10 @@ job container. Keep ordinary image builds on the existing `pyxis` runner so this
 job limit does not constrain them. No rootful runtime, global swap change or
 additional container capabilities are required.
 
-After the owner provisions and confirms that label, change only the two
-filesystem jobs' `runs-on` values to it. The current workflows retain `pyxis` and
-fail safely there. Verify the effective boundary and passing checks at both
-published heads before marking this corrective step complete; the trusted config
-fragment has not yet been exercised by the CI runner.
+Only the two filesystem jobs select this label; ordinary image builds remain on
+`pyxis`. Verify the effective boundary and passing checks at both published heads
+before marking this corrective step complete. Selecting the label is not proof
+that the required configuration was applied; the guard still verifies it.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the
