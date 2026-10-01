@@ -321,7 +321,9 @@ use the sparse empty-leaf and one-child internal repair. The caller reserves
 staging slots, retirement references and disjoint workspace before calling.
 Failure leaves the candidate root, slots and retirement list unchanged; workspace
 is scratch. Superseded private nodes are discarded, not durably retired.
-There are no device writes or heap allocations during an edit.
+Extent insert/update also enforces the nearest successor subtree minimum: a
+range may end at that boundary but cannot overlap the next leaf. There are no
+device writes or heap allocations during an edit.
 
 At maximum depth eight, insert plans create at most 15 nodes and retire eight;
 fixed-length updates create/retire eight. Sparse deletes create/retire at most

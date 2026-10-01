@@ -36,6 +36,14 @@ executed total; several groups contain boundary tables or repeated edit historie
 | Private map planning | Independent interval/ownership expectations, canonical coalescing, unchanged inputs and refusal outputs; fragmented interior allocations accounting for every replacement map/catalog/root block, exact finite bounds and reachable nonempty nodes |
 | Reserved memory | Accepted profile arithmetic, capped arena reservation, allocation failure, release and no further allocation/I/O during private map planning |
 
+On 2026-10-01 the 30 task-2 groups passed with native GCC 16.2.1 in 2.22 seconds
+(`make check`, including incremental runner rebuild work). They also passed with
+ASan/UBSan under GCC 14.2.0 in the existing builder container. Pyxis GCC 16.2.0
+compiled the freestanding archive, and the parent kernel and host tools built.
+A fresh 64 MiB source import passed both-state checking and byte-for-byte
+extraction comparison. These are bounded host observations; no QEMU/guest or
+large-workload validation is claimed.
+
 Fixture storage and allocator controls live in `tests/support.c`, behind the
 existing platform callbacks. Temporary sparse files satisfy the format geometry
 floor without allocating a large empty-image payload. Allocation callbacks track
@@ -48,8 +56,8 @@ production test hook, crash simulator or claim of physical preallocation here.
 The `Filesystem` workflow runs the ordinary build and `make check` on each PR and
 push to main, using the existing Pyxis builder image. The `host-contract` job has a
 five-minute timeout; the quick suite is intended to stay comfortably below one
-minute on the normal runner. The repository owner must make its emitted PR status
-check required in branch protection. This repository owns the check; the parent
+minute on the normal runner. The emitted status is `Filesystem / host-contract (pull_request)`; the repository
+owner must add that exact pattern to required status checks in branch protection. This repository owns the check; the parent
 Pyxis build does not substitute for it.
 
 Passing establishes the exercised core contracts for these bounded inputs. It

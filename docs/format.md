@@ -37,7 +37,9 @@ build with explicit source/output directories and `HOST_CC`. It produces
 `build/fs-tools/pyxisfs-inspect`. A standalone build
 in pyxis-fs produces the same tools and a freestanding core archive. Host adapters
 use host libc; the core uses neither libc services nor Pyxis kernel/ABI headers.
-Normal kernel, SDK, ports and image targets acquire no filesystem dependency yet.
+The Pyxis kernel compiles a pinned read-only core subset for native mounts.
+Private planners, construction, checking, host adapters and Unity stay out of
+that subset; this task adds no guest writable interface.
 The maintained [host contract suite](testing.md) has a filesystem CI gate.
 Normal builds use the existing compiler; no compiler-container build, FUSE
 dependency or installation target is introduced.
