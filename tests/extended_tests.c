@@ -392,18 +392,16 @@ compare_extent_tree(struct test_failure *adapter, const struct pfs_tree_context 
 static enum pfs_status
 compare_retained_file(struct test_failure *adapter, struct pfs_tree_context *context,
                       const struct pfs_object_id *id, size_t length, unsigned salt,
-                      bool cleanup, uint64_t generation)
+                      bool present)
 {
   struct payload_record record;
   enum pfs_status status = find_payload_record(adapter, context, id->bytes, &record);
-  if (status == PFS_NOT_FOUND && cleanup && generation > starting_generation) {
-    return PFS_OK;
+  if (!present) {
+    return status == PFS_NOT_FOUND ? PFS_OK : status == PFS_OK ? PFS_CORRUPT : status;
   }
-  if (status != PFS_OK || record.object.file_length > length ||
-      ((!cleanup || generation <= starting_generation) && record.object.file_length != length)) {
+  if (status != PFS_OK || record.object.file_length != length) {
     return status == PFS_OK ? PFS_CORRUPT : status;
   }
-  length = (size_t)record.object.file_length;
   uint64_t offset = 0;
   if (record.object.storage_kind == PFS_STORAGE_INLINE) {
     status = compare_mapping(adapter, &record.object.inline_extent, length, salt, &offset);
@@ -419,8 +417,20 @@ compare_retained_file(struct test_failure *adapter, struct pfs_tree_context *con
   return status == PFS_OK && offset != length ? PFS_CORRUPT : status;
 }
 
+struct retained_slot_expectation {
+  uint64_t generation;
+  bool victim_present;
+  size_t victim_length;
+};
+
+static struct retained_slot_expectation frozen_slots[2];
+static enum pfs_status retained_status;
+static size_t retained_checks;
+static bool publication_active, slot_pending;
+
 static enum pfs_status
-compare_retained_slot(struct test_failure *adapter, uint64_t slot, bool cleanup)
+retained_slot_context(struct test_failure *adapter, uint64_t slot,
+                      struct pfs_tree_context *out, uint64_t *generation)
 {
   uint8_t bytes[PFS_BLOCK_SIZE];
   struct pfs_superblock super;
@@ -451,47 +461,131 @@ compare_retained_slot(struct test_failure *adapter, uint64_t slot, bool cleanup)
     tree.volume = volume_id;
     tree.block.reference = record.volume.object_root;
     tree.block.features = record.volume.features;
-    status = compare_retained_file(adapter, &tree, &source_id, SOURCE_BYTES, 1, false, super.header.birth);
-  }
-  if (status == PFS_OK) {
-    status = compare_retained_file(adapter, &tree, &victim_id, VICTIM_BYTES, 2, cleanup, super.header.birth);
+    *out = tree;
+    *generation = super.header.birth;
   }
   return status;
 }
 
-static enum pfs_status retained_status;
-static size_t retained_checks;
-static bool retained_cleanup;
+static enum pfs_status
+freeze_retained_slot(struct test_failure *adapter, uint64_t slot,
+                     struct retained_slot_expectation *expected)
+{
+  struct pfs_tree_context context;
+  enum pfs_status status = retained_slot_context(adapter, slot, &context, &expected->generation);
+  struct payload_record record;
+  if (status == PFS_OK) {
+    status = find_payload_record(adapter, &context, victim_id.bytes, &record);
+  }
+  if (status == PFS_NOT_FOUND) {
+    expected->victim_present = false;
+    expected->victim_length = 0;
+    return PFS_OK;
+  }
+  if (status == PFS_OK) {
+    if (record.object.file_length > VICTIM_BYTES) {
+      return PFS_CORRUPT;
+    }
+    expected->victim_present = true;
+    expected->victim_length = (size_t)record.object.file_length;
+  }
+  return status;
+}
+
+static enum pfs_status
+compare_frozen_slot(struct test_failure *adapter, uint64_t slot,
+                    const struct retained_slot_expectation *expected)
+{
+  struct pfs_tree_context context;
+  uint64_t generation;
+  enum pfs_status status = retained_slot_context(adapter, slot, &context, &generation);
+  if (status == PFS_OK && generation != expected->generation) {
+    return PFS_CORRUPT;
+  }
+  if (status == PFS_OK) {
+    status = compare_retained_file(adapter, &context, &source_id, SOURCE_BYTES, 1, true);
+  }
+  if (status == PFS_OK) {
+    status = compare_retained_file(adapter, &context, &victim_id,
+      expected->victim_length, 2, expected->victim_present);
+  }
+  return status;
+}
+
+static void
+freeze_retained_slots(struct test_failure *adapter)
+{
+  retained_status = freeze_retained_slot(adapter, 0, &frozen_slots[0]);
+  if (retained_status == PFS_OK) {
+    retained_status = freeze_retained_slot(adapter, PFS_POOL_BLOCKS_MIN - 1, &frozen_slots[1]);
+  }
+}
+
+static void
+compare_frozen_slots(struct test_failure *adapter)
+{
+  if (retained_status == PFS_OK) {
+    retained_status = compare_frozen_slot(adapter, 0, &frozen_slots[0]);
+  }
+  if (retained_status == PFS_OK) {
+    retained_status = compare_frozen_slot(adapter, PFS_POOL_BLOCKS_MIN - 1, &frozen_slots[1]);
+  }
+  retained_checks += 2;
+}
 
 static void
 observe_retained_payloads(struct test_failure *adapter, const struct test_failure_event *event,
                           bool before, void *context)
 {
   (void)context;
-  if (!before || event->kind != TEST_FAILURE_WRITE ||
-      (event->first != 0 && event->first != PFS_POOL_BLOCKS_MIN - 1) || retained_status != PFS_OK) {
+  if (retained_status != PFS_OK) {
     return;
   }
-  retained_status = compare_retained_slot(adapter, 0, retained_cleanup);
-  if (retained_status == PFS_OK) {
-    retained_status = compare_retained_slot(adapter, PFS_POOL_BLOCKS_MIN - 1, retained_cleanup);
+  if (before && event->kind == TEST_FAILURE_WRITE) {
+    bool slot = event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1;
+    if (!publication_active) {
+      /* Capture applicability before any replacement bytes can overwrite a
+       * retained tree. Cleanup may choose its batch size at the prior commit. */
+      freeze_retained_slots(adapter);
+      publication_active = true;
+    }
+    if (slot) {
+      compare_frozen_slots(adapter);
+      slot_pending = true;
+    }
+  } else if (!before && event->kind == TEST_FAILURE_FLUSH &&
+             event->status == PFS_OK && slot_pending) {
+    /* This slot completed its publication; the next batch may freeze the
+     * newly committed presence/length, never a modified retained record. */
+    publication_active = slot_pending = false;
   }
-  retained_checks += 2;
 }
 
 static void
-start_retained_observation(struct test_failure *adapter, bool cleanup)
+start_retained_observation(struct test_failure *adapter)
 {
   retained_status = PFS_OK;
   retained_checks = 0;
-  retained_cleanup = cleanup;
+  publication_active = slot_pending = false;
+  freeze_retained_slots(adapter);
+  for (size_t i = 0; i < 2 && retained_status == PFS_OK; i++) {
+    if (!frozen_slots[i].victim_present || frozen_slots[i].victim_length != VICTIM_BYTES) {
+      retained_status = PFS_CORRUPT;
+    }
+  }
+  compare_frozen_slots(adapter);
   adapter->observer = observe_retained_payloads;
 }
 
 static void
-check_retained_observation(struct test_failure *adapter)
+check_retained_observation(struct test_failure *adapter, bool early_failure)
 {
   adapter->observer = NULL;
+  if (early_failure) {
+    /* A failed replacement or first flush never publishes a slot. Check both
+     * frozen states even when the pre-slot observer was never reached. */
+    compare_frozen_slots(adapter);
+  }
   EXPECT_STATUS(PFS_OK, retained_status);
 }
 
@@ -554,12 +648,12 @@ discover_cuts(enum extended_operation operation)
   prepare_operation(operation);
   uint64_t base_write = device.ordinals[TEST_FAILURE_WRITE];
   uint64_t base_flush = device.ordinals[TEST_FAILURE_FLUSH];
-  start_retained_observation(&device, operation != EXT_RENAME);
+  start_retained_observation(&device);
   struct pfs_write_result result;
   struct pfs_view_close_result closed;
   struct pfs_write_open_result opening;
   EXPECT_STATUS(PFS_OK, execute_operation(operation, &result, &closed, &opening));
-  check_retained_observation(&device);
+  check_retained_observation(&device, false);
   EXPECT_TRUE(retained_checks > 0);
   cut_count = 0;
   size_t publication = 0;
@@ -692,12 +786,13 @@ run_cut(enum extended_operation operation, const struct extended_cut *cut, size_
   struct test_failure_fault fault = cut->fault;
   fault.ordinal += device.ordinals[fault.kind];
   EXPECT_STATUS(PFS_OK, test_failure_set_fault(&device, &fault));
-  start_retained_observation(&device, operation != EXT_RENAME);
+  start_retained_observation(&device);
   struct pfs_write_result result;
   struct pfs_view_close_result closed;
   struct pfs_write_open_result opening;
   EXPECT_STATUS(PFS_IO, execute_operation(operation, &result, &closed, &opening));
-  check_retained_observation(&device);
+  check_retained_observation(&device, cut->phase == EXT_ADMISSION ||
+    cut->phase == EXT_REPLACEMENT || cut->phase == EXT_FIRST_FLUSH);
   EXPECT_TRUE(device.triggered && !device.infrastructure_failure);
   bool uncertain = cut->phase == EXT_SLOT || cut->phase == EXT_SECOND_FLUSH;
   enum pfs_writer_health health = uncertain ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED;
