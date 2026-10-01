@@ -654,6 +654,53 @@ creation_randomness_refuses_zero_and_existing_identity_without_publication(void)
   close_fixture();
 }
 
+static bool reentry_checked, reentry_violation;
+
+static void
+observe_public_reentry(struct test_failure *adapter, const struct test_failure_event *event,
+                       bool before, void *context)
+{
+  (void)adapter;
+  (void)context;
+  if (!before || event->kind != TEST_FAILURE_WRITE || reentry_checked) {
+    return;
+  }
+  reentry_checked = true;
+  struct pfs_write_result result;
+  memset(&result, 0xa5, sizeof(result));
+  struct pfs_write_result previous = result;
+  reentry_violation |= pfs_view_write(file_view, 0, "X", 1, &result) != PFS_BUSY;
+  reentry_violation |= memcmp(&previous, &result, sizeof(result)) != 0;
+  reentry_violation |= pfs_view_resize(file_view, 0, &result) != PFS_BUSY;
+  reentry_violation |= memcmp(&previous, &result, sizeof(result)) != 0;
+  struct pfs_view *child = NULL;
+  struct pfs_view_identity identity;
+  memset(&identity, 0xa5, sizeof(identity));
+  struct pfs_view_identity prior_identity = identity;
+  reentry_violation |= pfs_view_create_file(parent_view, (const uint8_t *)"nested", 6,
+    &file_rights, &child, &identity, &result) != PFS_BUSY;
+  reentry_violation |= child != NULL || memcmp(&prior_identity, &identity, sizeof(identity)) != 0;
+  reentry_violation |= memcmp(&previous, &result, sizeof(result)) != 0;
+  reentry_violation |= pfs_pool_close(&pool) != PFS_BUSY;
+}
+
+static void
+public_mutation_callbacks_cannot_reenter_or_change_outputs(void)
+{
+  build_seed(PFS_BLOCK_SIZE, 1024, 64);
+  open_device();
+  const struct pfs_rights rights = {.file = file_rights.file,
+    .directory = PFS_DIR_CREATE | PFS_DIR_LOOKUP};
+  acquire_parent(PFS_SCOPE_SUBTREE, &rights);
+  reentry_checked = reentry_violation = false;
+  device.observer = observe_public_reentry;
+  write_expected(13, "X", 1);
+  TEST_ASSERT_TRUE(reentry_checked);
+  TEST_ASSERT_FALSE(reentry_violation);
+  device.observer = NULL;
+  close_fixture();
+}
+
 static uint8_t retained_before[PFS_BLOCK_SIZE], retained_after[PFS_BLOCK_SIZE];
 static size_t retained_before_length, retained_after_length;
 static uint64_t retained_generation;
@@ -798,4 +845,5 @@ run_file_tests(void)
   RUN_TEST(creation_failures_publish_a_view_only_after_confirmed_namespace_commit);
   RUN_TEST(live_directory_tokens_follow_namespace_changes_and_writer_instance);
   RUN_TEST(creation_randomness_refuses_zero_and_existing_identity_without_publication);
+  RUN_TEST(public_mutation_callbacks_cannot_reenter_or_change_outputs);
 }
