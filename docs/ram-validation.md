@@ -108,13 +108,12 @@ storage evidence and the next proposed bounded investigation.
 
 ## CI
 
-The quick filesystem PR job uses an anonymous tmpfs volume capped at 2 GiB and
-65,536 inodes, a 4 GiB container memory limit and zero container swap
-(`--memory-swap` equals `--memory`), plus hard core limit zero. Podman's `--tmpfs`
-parser does not accept `nr_inodes`; the anonymous local-driver tmpfs mount passes
-that option without adding container privileges or using a shared named volume.
-Actual mount type and limits are verified before building or running fixtures;
-an ordinary disk-backed volume cannot substitute for it.
+The quick filesystem PR job requires tmpfs capped at 2 GiB and 65,536 inodes,
+a 4 GiB container memory limit and zero container swap (`--memory-swap` equals
+`--memory`), plus hard core limit zero. Actual mount type and limits are verified
+before building or running fixtures; a disk-backed volume cannot substitute.
+The current anonymous-volume configuration fails on the CI runtime as described
+below. The named-volume alternative is proposed, not yet agreed or deployed.
 
 `python3 tests/ram_run.py --inside --suite check --ci-quick` selects the accepted
 quick-only exception to mount-level `noswap`. The runner independently accepts
@@ -145,38 +144,75 @@ accepts `--memory` but omits `--mount`, `--memory-swap` and `--ulimit`. The orig
 the build or tests. Passing the same options directly to rootless Podman works
 locally; this is not evidence that the CI runner applied them.
 
-The filesystem jobs select a separate rootless validation runner configuration,
-advertising only `pyxis-fs-ram`, with these trusted configuration fields:
+The filesystem jobs select the dedicated `pyxis-fs-ram` rootless runner. The
+initial trusted anonymous-volume mount also failed: after the owner permitted
+its empty source in `valid_volumes`, the mount existed but was not tmpfs, so
+both jobs refused before building. A local Podman 5.8.1 Docker-compatible API
+probe reproduced disk backing when creating an anonymous mount with
+`VolumeOptions.DriverConfig.Options`, with either empty or explicit `local`
+driver. Direct `podman run` had honored the same options; that earlier CLI
+validation did not establish the API behavior. The API also rejects `nr_inodes`
+in `HostConfig.Tmpfs`. No test payloads were written in these failed probes.
+
+### Proposed named-volume alternative
+
+**Pending agreement:** provision one named tmpfs volume under the runner's exact
+rootless user and Podman store, then attach it by name. Reserve it exclusively
+for this single validation runner, with capacity one. No other runner, helper
+container or manual mount may use it. Complete job-container removal and volume
+unmount before the next job; after interruption, the operator must remove stale
+attachments before resuming. This adds an administrator-managed volume lifetime,
+not a larger resource budget or a general runner framework.
+
+Provision once, as that rootless user, without `--ignore`:
+
+```sh
+podman volume create --driver local \
+  --opt type=tmpfs --opt device=tmpfs --opt nocopy \
+  --opt o=rw,nosuid,nodev,size=2g,nr_inodes=65536 pyxis-fs-ram
+```
+
+The proposed trusted runner fragment replaces the anonymous mount and its
+empty-source permission. Preserve other necessary settings and existing exact
+volume permissions; do not add a wildcard:
 
 ```yaml
 runner:
+  capacity: 1
   labels:
     - pyxis-fs-ram:docker://git.internal/pyxisos/pyxis-builder:pyxis-gcc16.2-binutils2.47
 container:
   privileged: false
   options: >-
     --memory=4g --memory-swap=4g --ulimit core=0:0
-    --mount 'type=volume,destination=/run/pyxis-fs-ram,volume-opt=type=tmpfs,volume-opt=device=tmpfs,"volume-opt=o=rw,nosuid,nodev,size=2g,nr_inodes=65536"'
+    --volume pyxis-fs-ram:/run/pyxis-fs-ram:nocopy
   valid_volumes:
-    - ""
+    - pyxis-fs-ram
 ```
 
-This is a required-settings fragment, not a replacement for the owner's full runner
-configuration. Preserve necessary existing options and permitted volume sources.
-The empty-string permission admits the anonymous mount's empty source in this
-runner's volume filter; it does not permit arbitrary host paths. Do not add a
-wildcard permission. If the job log reports `[] is not a valid volume, will be
-ignored`, verify that the empty-string entry is in the active configuration and
-reload the runner; the guard will refuse the resulting missing scratch mount.
-Anonymous volumes are removed when the runner removes the
-job container. Keep ordinary image builds on the existing `pyxis` runner so this
-job limit does not constrain them. No rootful runtime, global swap change or
-additional container capabilities are required.
+`nocopy` prevents image-directory contents being allocated by the runtime before
+the job. Podman [unmounts a volume when its last use ends](https://docs.podman.io/en/latest/markdown/podman-volume-unmount.1.html);
+unmounting [tmpfs discards its files](https://docs.kernel.org/filesystems/tmpfs.html).
+The volume definition persists, while each fully torn-down job loses its scratch
+contents. The guard still checks actual backing/limits before building; creating
+`scratch/tmp` fails if a prior job retained that directory. It does not establish
+exclusive ownership by itself: the operator must maintain the exclusivity and
+teardown preconditions. Fresh fixture pages are allocated by the verified
+zero-swap job; neither old payloads nor shared backing files may be reused.
 
-Only the two filesystem jobs select this label; ordinary image builds remain on
-`pyxis`. Verify the effective boundary and passing checks at both published heads
-before marking this corrective step complete. Selecting the label is not proof
-that the required configuration was applied; the guard still verifies it.
+Local API validation passed two sequential create/start/remove cycles, each
+verifying tmpfs, exact byte/inode caps, memory/swap/core limits and an empty mount.
+A zero-byte marker from the first cycle was absent in the second. A separate
+API run of the actual launcher passed all 111 quick groups, with a
+262,553,600-byte memory peak and zero swap/max/OOM events. This establishes the
+observed local runtime behavior, not successful CI provisioning or crash cleanup
+on the owner's runner. Probe containers and volumes were removed.
+
+Only filesystem jobs use this dedicated runner; ordinary image builds remain on
+`pyxis`. No production/core change or guard relaxation is needed. After agreement
+and provisioning, remove the obsolete anonymous mount declaration from both
+workflows, verify the effective boundary and passing checks at both published
+heads, then mark this corrective step complete.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the

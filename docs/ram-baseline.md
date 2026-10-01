@@ -108,8 +108,12 @@ confirmed strict-mode refusal without `noswap`, quick-mode allowance, and refusa
 of missing, nonempty or disk-backed scratch. At `4d71bca`, Forgejo runner 13.2
 ignored the workflow's mount option and the CI guard refused before building
 with `dedicated scratch mount is missing`. The workflows now select the dedicated
-`pyxis-fs-ram` runner; its effective controls and suite results require CI
-verification. The local pass does not establish a CI pass. This changes the CI execution
+`pyxis-fs-ram` runner. After its allowlist was corrected, both jobs at filesystem
+`6d83d39` / parent `a4e783e` refused the mount because it was not tmpfs. The
+[API investigation and proposed named-volume setup](ram-validation.md#proposed-named-volume-alternative)
+record the concrete runtime limitation and a locally validated alternative;
+agreement and CI verification remain pending. The local pass does not establish
+a CI pass. This changes the CI execution
 mechanism; the comparative measurements above used the unchanged strict launcher.
 
 ## Proposed next assignment, not implementation approval
