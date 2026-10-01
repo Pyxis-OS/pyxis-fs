@@ -5,6 +5,30 @@ not part of this task. Ordinary builds remain available with `make -j16`;
 filesystem tests require the verified RAM boundary below. No allocator or
 publication semantics change is included.
 
+## Contracts and execution profiles
+
+The 2 GiB scratch, 4 GiB job and 65,536-inode values below are the selected
+execution profile for the recorded runs. They are not filesystem invariants,
+machine specifications or product-capacity requirements. The RAM-only backing,
+disabled swap, bounded resource use and verified controls implement the agreed
+storage-safety policy for these runs. Capacity one is a precondition of the current
+shared-volume mechanism, not a permanent filesystem concurrency restriction.
+
+The current implementation still repeats the profile ceilings in the Python
+launcher, C guard and CI/deployment configuration. Those are upper-bound checks,
+not equality tests, but changing one copy does not propagate to the others. A
+guard refusal for exceeding that profile does not demonstrate a filesystem
+regression. This is an identified configuration-coupling limitation, not a new
+architectural contract justified by the existing checks.
+
+A focused follow-up should give the selected profile one authority and have
+provisioning and independent environmental verification consume it. Validate
+deliberately configured limits and propagation; do not derive an enlarged budget
+automatically from whatever limits happen to be present. Record requested and
+observed controls separately. Historical measurements retain their original
+parameters. This documentation records the constraint and current limitation;
+it does not change the launcher, guards, resource limits or assigned workloads.
+
 ## Local execution
 
 On Linux with cgroup v2, systemd, tmpfs `noswap`, Python 3 and the ordinary host

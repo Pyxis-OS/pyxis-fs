@@ -27,6 +27,23 @@ broad test rewrites. Exact bytes/offsets are appropriate where the disk format
 specifies them. Expected results must be independently defined: agreement between
 our encoder, reader and checker is not sufficient evidence.
 
+Configuration, authored or draft data, benchmark parameters, machine properties
+and convenient fixtures do not become contracts by appearing in tests or
+validators. Before adding an assertion, identify the deliberate contract that
+changing the value would violate. A setting has one authority: configure a chosen
+input and verify its propagation or behavior, rather than asserting the current
+default independently in multiple layers. A synthetic fixture may deliberately
+choose exact inputs and independent expected results for its scenario; its current
+contents do not define which other inputs the filesystem accepts.
+
+The same rule applies to structure and ownership. Investigate duplicate mutable
+authorities instead of adding copies and consistency assertions around them.
+When replacing an implementation, reassess which old expectations remain real
+contracts. Passing tests and matching documentation do not establish that the
+underlying architecture is appropriate. Execution-profile checks belong to the
+[launcher boundary](ram-validation.md#contracts-and-execution-profiles), separate
+from filesystem correctness.
+
 ## Current coverage
 
 The suite includes the following test groups. The runner prints each group and the
