@@ -9,7 +9,6 @@
 struct mutation_state {
   struct pfs_edit_slot slots[PFS_PLAN_VOLUME_NEW];
   bool data_slot[PFS_PLAN_VOLUME_NEW];
-  uint64_t logical[PFS_PLAN_VOLUME_NEW];
   struct check_claim data_claim[PFS_PLAN_VOLUME_NEW];
   struct pfs_reference retired[PFS_PLAN_VOLUME_RETIRED];
   size_t retired_count;
@@ -165,19 +164,9 @@ extent_tree_edit(struct pfs_mutation *mutation, struct pfs_object_record *object
 }
 
 static enum pfs_status
-mapping_delete(struct pfs_mutation *mutation, struct pfs_object_record *object,
-               const struct pfs_extent_mapping *mapping)
+mapping_overlay_remove(struct pfs_mutation *mutation,
+                       const struct pfs_extent_mapping *mapping)
 {
-  enum pfs_status status = PFS_OK;
-  if (object->storage_kind == PFS_STORAGE_TREE) {
-    status = extent_tree_edit(mutation, object, PFS_EDIT_DELETE, mapping);
-  } else {
-    object->storage_kind = PFS_STORAGE_NONE;
-    object->inline_extent = (struct pfs_extent_mapping){0};
-  }
-  if (status != PFS_OK) {
-    return status;
-  }
   struct mutation_state *state = &mutation->state;
   for (size_t i = 0; i < state->mapping_count; i++) {
     if (state->mappings[i].logical_first == mapping->logical_first) {
@@ -192,6 +181,43 @@ mapping_delete(struct pfs_mutation *mutation, struct pfs_object_record *object,
   state->replaced[state->replaced_count++] = mapping->logical_first;
   state->extent_count--;
   return PFS_OK;
+}
+
+static enum pfs_status
+mapping_delete(struct pfs_mutation *mutation, struct pfs_object_record *object,
+               const struct pfs_extent_mapping *mapping)
+{
+  enum pfs_status status = PFS_OK;
+  if (object->storage_kind == PFS_STORAGE_TREE) {
+    status = extent_tree_edit(mutation, object, PFS_EDIT_DELETE, mapping);
+  } else {
+    object->storage_kind = PFS_STORAGE_NONE;
+    object->inline_extent = (struct pfs_extent_mapping){0};
+  }
+  return status == PFS_OK ? mapping_overlay_remove(mutation, mapping) : status;
+}
+
+static enum pfs_status
+mapping_trim(struct pfs_mutation *mutation, struct pfs_object_record *object,
+             const struct pfs_extent_mapping *mapping)
+{
+  if (mutation->state.mapping_count == MUTATION_MAPPINGS_MAX) {
+    return PFS_LIMIT;
+  }
+  enum pfs_status status = PFS_OK;
+  if (object->storage_kind == PFS_STORAGE_TREE) {
+    status = extent_tree_edit(mutation, object, PFS_EDIT_UPDATE, mapping);
+  } else {
+    object->inline_extent = *mapping;
+  }
+  if (status == PFS_OK) {
+    status = mapping_overlay_remove(mutation, mapping);
+  }
+  if (status == PFS_OK) {
+    mutation->state.mappings[mutation->state.mapping_count++] = *mapping;
+    mutation->state.extent_count++;
+  }
+  return status;
 }
 
 static enum pfs_status
@@ -574,6 +600,7 @@ pfs_file_resize(struct pfs_volume *volume, const struct pfs_object_id *id,
       result->health = volume->pool->writer->status.health;
       return PFS_OK;
     }
+    bool shrinking = length < object.file_length;
     if (length > object.file_length) {
       if (object.file_length % PFS_BLOCK_SIZE) {
         struct pfs_extent_mapping mapping;
@@ -589,6 +616,11 @@ pfs_file_resize(struct pfs_volume *volume, const struct pfs_object_id *id,
       uint64_t retired = 0;
       size_t deletions = 0;
       struct pfs_extent_mapping mapping;
+      /* Six tail operations require at most 6*14 changed metadata nodes plus
+       * eight for the object path. A trim is an eight-node fixed-key UPDATE,
+       * counted as one of those six operations. Inline reduction removes only
+       * the sole remaining leaf. Thus retirement stays below 93 metadata plus
+       * 128 data blocks, with no new data and no metadata-node growth. */
       while (status == PFS_OK && deletions < SHRINK_MAPPINGS_MAX && retired < SHRINK_DATA_MAX &&
              mapping_find(mutation, id, 0, true, &mapping) && mapping.logical_first + mapping.count > keep) {
         uint64_t first = mapping.logical_first > keep ? mapping.logical_first : keep;
@@ -597,13 +629,15 @@ pfs_file_resize(struct pfs_volume *volume, const struct pfs_object_id *id,
           take = SHRINK_DATA_MAX - retired;
           first = mapping.logical_first + mapping.count - take;
         }
-        status = mapping_delete(mutation, &object, &mapping);
-        if (status == PFS_OK) {
-          status = remove_data(mutation, id, &mapping, first, take);
-        }
-        if (status == PFS_OK && first > mapping.logical_first) {
+        struct pfs_extent_mapping original = mapping;
+        if (first > mapping.logical_first) {
           mapping.count = first - mapping.logical_first;
-          status = mapping_insert(mutation, &object, &mapping);
+          status = mapping_trim(mutation, &object, &mapping);
+        } else {
+          status = mapping_delete(mutation, &object, &mapping);
+        }
+        if (status == PFS_OK) {
+          status = remove_data(mutation, id, &original, first, take);
         }
         object.file_length = first * PFS_BLOCK_SIZE;
         retired += take;
@@ -622,6 +656,11 @@ pfs_file_resize(struct pfs_volume *volume, const struct pfs_object_id *id,
     }
     if (status == PFS_OK) {
       status = pfs_mutation_finish(mutation);
+    }
+    if (status == PFS_OK && shrinking &&
+        (mutation->batch->volume.metadata_blocks > mutation->state.volume.metadata_blocks ||
+         mutation->batch->volume.file_extents > mutation->state.volume.file_extents)) {
+      status = PFS_CORRUPT;
     }
     if (status != PFS_OK) {
       return planning_failure(volume, status, result);
