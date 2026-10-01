@@ -105,7 +105,10 @@ and fresh fixture allocation on bounded ordinary tmpfs. A matching local rootles
 container passed all 111 groups with a 292,839,424-byte job peak, no swap and no
 max/OOM events. Mode checks refused all heavier suites; direct guard probes
 confirmed strict-mode refusal without `noswap`, quick-mode allowance, and refusal
-of missing, nonempty or disk-backed scratch. This changes the CI execution
+of missing, nonempty or disk-backed scratch. At `4d71bca`, Forgejo runner 13.2
+ignored the workflow's mount option and the CI guard refused before building
+with `dedicated scratch mount is missing`. Trusted runner provisioning remains
+pending; the local pass does not establish a CI pass. This changes the CI execution
 mechanism; the comparative measurements above used the unchanged strict launcher.
 
 ## Proposed next assignment, not implementation approval
