@@ -333,6 +333,9 @@ class OwnedLoop:
                         raise
                     os.close(self.fd)
                     self.fd = None
+                    # Autoclear and udev inspection can briefly retain the
+                    # previous device. No filesystem mutation has begun here.
+                    time.sleep(0.05)
             require(self.fd is not None, 'no exclusively available loop device')
         except BaseException:
             self.close()
