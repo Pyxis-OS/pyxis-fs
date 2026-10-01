@@ -551,7 +551,12 @@ enum pfs_status
 pfs_file_resize(struct pfs_volume *volume, const struct pfs_object_id *id,
                 uint64_t length, struct pfs_write_result *result)
 {
-  *result = (struct pfs_write_result){.completion = PFS_STOPPED};
+  /* The policy wrapper has already read and reported the starting length.
+   * Preparation can refuse without reaching another object read. */
+  bool length_valid = result->confirmed_length_valid;
+  uint64_t confirmed_length = result->confirmed_length;
+  *result = (struct pfs_write_result){.completion = PFS_STOPPED,
+    .confirmed_length_valid = length_valid, .confirmed_length = confirmed_length};
   for (;;) {
     struct pfs_mutation *mutation;
     struct pfs_object_record object;

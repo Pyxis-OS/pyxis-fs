@@ -20,7 +20,9 @@ enum pfs_status pfs_mutation_finish(struct pfs_mutation *mutation);
 
 /* Authority and argument checks belong to the policy-view wrapper. No writer
  * gate is held on entry. Each batch uses a fresh confirmed object record.
- * Results retain confirmed user progress independently of maintenance failure. */
+ * The wrapper initializes the result, including the starting confirmed length
+ * for resize, and handles no-ops before entry. Results retain confirmed user
+ * progress independently of maintenance failure. */
 enum pfs_status pfs_file_write(struct pfs_volume *volume,
   const struct pfs_object_id *id, uint64_t offset, const void *data, size_t length,
   struct pfs_write_result *result);
