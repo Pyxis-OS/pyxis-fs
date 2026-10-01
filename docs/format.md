@@ -1,15 +1,16 @@
 # Initial Pyxis filesystem format and tool contract
 
-Status: implemented initial format and read-only host-tool contract;
+Status: implemented initial format, read-only tools and bounded host writer opening;
 the [shared core](core.md), bounded bulk construction and source import,
 candidate selection, readonly traversal/acquisition, extraction and explicit GPT
 inspection and whole-image consistency checking are implemented.
 The volume ORPHANS representation, directory checkpoint right, canonical private
-COW editors and bounded allocation-map planners are implemented; their
-[core boundaries](core.md#private-candidate-planning) do not provide writable
-admission, publication or a public writer.
+COW editors and bounded allocation-map planners are implemented. Explicit
+[writer admission/publication](core.md#admitted-writer-and-publication) adds the
+ordered publisher and synchronous reclamation; public file/namespace mutation
+and native writable integration remain future tasks.
 [Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat`, `access`,
-`extract` and `check`.
+`extract` and `check`, plus healthy-session `pyxisfs-write open` and `checkpoint`.
 The [integration contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/devices/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
@@ -17,10 +18,10 @@ read-only GPT inspection boundary. Original project material is covered by the
 repository's [MPL-2.0 licensing notice](../LICENSING.md).
 
 The initial format uses an inline extent descriptor, proportional reserve
-policies and the ancestor lookup chain for acquisition by object ID. The future
-reclamation envelope records design constraints; its explicit writable
-implementation gates remain. Read-only milestone completion does not authorize
-writable transactions, FUSE or kernel mounting.
+policies and the ancestor lookup chain for acquisition by object ID. The
+publication/reclamation envelope constrains the bounded writer. Its implemented
+scope and validation limits are documented separately from the format; neither
+implies qualified real-host post-error recovery or FUSE support.
 
 ## Ownership and integration
 
@@ -34,11 +35,11 @@ Agreed integration is a published revision pinned at `fs/`, with the relative
 submodule URL `../pyxis-fs.git`. An opt-in parent `make fs-tools` invokes the host
 build with explicit source/output directories and `HOST_CC`. It produces
 `build/fs-tools/libpyxis-fs.a`, `build/fs-tools/mkpyxisfs` and
-`build/fs-tools/pyxisfs-inspect`. A standalone build
+`build/fs-tools/pyxisfs-inspect` and `build/fs-tools/pyxisfs-write`. A standalone build
 in pyxis-fs produces the same tools and a freestanding core archive. Host adapters
 use host libc; the core uses neither libc services nor Pyxis kernel/ABI headers.
 The Pyxis kernel compiles a pinned read-only core subset for native mounts.
-Private planners, construction, checking, host adapters and Unity stay out of
+Private planners, the publisher, construction, checking, host adapters and Unity stay out of
 that subset; this task adds no guest writable interface.
 The maintained [host contract suite](testing.md) has a filesystem CI gate.
 Normal builds use the existing compiler; no compiler-container build, FUSE
@@ -1054,8 +1055,9 @@ in [the core document](core.md#whole-image-consistency-checking).
 
 Private canonical/edit/map planning, finite envelopes and their arena are
 implemented. The caller still supplies retained-state, reusable-range and runtime
-pin proofs; planning establishes no durable state. Writable admission and recovery
-must implement the accepted promises before any usable writer is exposed.
+pin proofs; planning alone establishes no durable state. The admitted publisher
+establishes these proofs from checked retained summaries and explicit serial
+operation boundaries before issuing writes.
 Acceptance of this contract does not prove formatter reserve defaults sufficient
 for writable operation. Repository licensing is established as MPL-2.0.
 
@@ -1063,5 +1065,6 @@ The shared core builds as a freestanding archive. Formatting, diagnostic
 reopening, populated extraction round trips and structural checking are recorded
 in [historical host validation](host-tools.md#validation). The maintained
 [host contract suite and CI gate](testing.md) add synthetic fixtures and
-independent expected results for the implemented Task 2 boundaries. These checks
-do not establish writable admission, publication or crash recovery.
+independent expected results for planners, admission and publication, including
+simulated recovery from explicitly durable backing. These bounded checks do not
+establish actual-device crash recovery or whole-filesystem workload capacity.

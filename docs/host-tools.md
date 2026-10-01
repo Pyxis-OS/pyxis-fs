@@ -1,6 +1,6 @@
 # Filesystem host tools
 
-`make -j16` builds `build/mkpyxisfs`, `build/pyxisfs-inspect` and the freestanding
+`make -j16` builds `build/mkpyxisfs`, `build/pyxisfs-inspect`, `build/pyxisfs-write` and the freestanding
 core archive. Linux supplies file descriptors, advisory locks and `getrandom`;
 host libc is confined to the command/adapter layer. The Pyxis parent target
 `make -j16 fs-tools` places these outputs in `build/fs-tools/`.
@@ -364,3 +364,56 @@ Structural checking does not read file payloads; the extraction comparisons abov
 establish contents only for the exercised inputs. File-data checksums, writable
 admission/recovery, FUSE and kernel mounting remain outside the implemented slice.
 No QEMU validation or production-data safety claim follows from these host checks.
+
+
+## Healthy writer sessions
+
+`pyxisfs-write` exposes ordinary writable admission/reopening and checkpointing.
+It does not yet expose create, write, resize, unlink or rename. Supply explicit
+extent and metadata limits; profile selection is separate from disk capacity and
+per-transaction bounds. For example, on a healthy image formatted with sufficient
+unpromised capacity and reserves:
+
+```sh
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 open
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object OBJECT_ID --principal PRINCIPAL_ID \
+  --rights file.checkpoint checkpoint
+```
+
+IDs are exactly 32 hexadecimal digits. Checkpoint uses a real acquired view with
+exactly the requested `file.checkpoint` or `dir.checkpoint` right; it does not
+implicitly request read, metadata or lookup. The CLI's supplied principal/object
+are trusted embedding inputs, not authentication. The object ID must be obtained
+under appropriate authority before the exclusive session. Existing formatter
+grants have not gained `dir.checkpoint`; they retain the existing file right.
+The command reports admission requirements, confirmed generation and writer
+health/cleanup outcome. A healthy checkpoint after synchronous draining needs no
+extra publication.
+
+This adapter supports buffered I/O to a Linux local regular file, with exclusive
+advisory locking for the session, exact transfers and explicit `fsync`. It does
+not support writer access through GPT selection, raw devices or network files.
+All access must cooperate with the lock; other processes, mappings or devices
+must not modify the image. The host filesystem/device must honor the ordinary
+`fsync` durability contract. A single failed/partial write is not retried;
+flush/close errors are reported. Logical reserve admission does not reserve
+physical host space for the sparse image.
+
+Supported starting points have established healthy backing history, such as
+successful fresh formatting or a previously successful healthy writer session.
+After actual/suspected writeback failure, or an interrupted mutating session whose
+healthy history cannot be established, do not use ordinary reopen as recovery.
+The restriction also covers interrupted-session orphan recovery. Cached reads,
+close/reopen and a later successful `fsync` cannot certify previously failed
+writes. This is an adapter/operator precondition; the program has no automatic
+cross-process history detection, persistent registry, special XFS requirement or
+force-clear flag. Qualification of a concrete real-host durable recovery boundary
+is deferred. There is no supported recovery command for that case.
+
+Within an instance, pre-slot write/flush failure stops mutation while permitting
+proved confirmed-state reads. Uncertain slot publication stops all ordinary
+access. Cleanup failure cannot erase already confirmed user progress. An unknown
+outcome may include additional committed bytes and is not automatically
+retryable. Handle closure performs no recovery or retry. Simulator results are
+core protocol evidence only, not qualification of Linux post-error recovery.
