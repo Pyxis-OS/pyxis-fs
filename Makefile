@@ -23,6 +23,11 @@ TEST_HOST_OBJECTS := $(addprefix $(BUILD)/host/,source.o host.o gpt.o)
 TEST_OBJECTS := $(addprefix $(BUILD)/tests/,$(addsuffix .o,$(TEST_SOURCES)))
 UNITY_OBJECT := $(BUILD)/tests/unity.o
 TEST_RUNNER := $(BUILD)/pyxis-fs-tests
+COMPARE_RUNNER := $(BUILD)/pyxis-fs-compare
+COMPARE_OBJECTS := $(addprefix $(BUILD)/tests/,comparison.o failure.o support.o ram_guard.o)
+
+$(COMPARE_RUNNER): $(COMPARE_OBJECTS) $(UNITY_OBJECT) $(ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 check: $(TEST_RUNNER)
 	$(TEST_RUNNER) --suite pr
@@ -65,6 +70,6 @@ $(BUILD)/core/%.o: $(SOURCE)/core/%.c
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include -I$(SOURCE)/core $(CFLAGS) $(CORE_FLAGS) $(WARNINGS) -MMD -MP -c $< -o $@
 
 clean:
-	$(RM) $(OBJECTS) $(OBJECTS:.o=.d) $(ARCHIVE) $(HOST_OBJECTS) $(HOST_OBJECTS:.o=.d) $(TOOLS) $(TEST_OBJECTS) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT) $(UNITY_OBJECT:.o=.d) $(TEST_RUNNER)
+	$(RM) $(OBJECTS) $(OBJECTS:.o=.d) $(ARCHIVE) $(HOST_OBJECTS) $(HOST_OBJECTS:.o=.d) $(TOOLS) $(TEST_OBJECTS) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT) $(UNITY_OBJECT:.o=.d) $(TEST_RUNNER) $(COMPARE_OBJECTS) $(COMPARE_OBJECTS:.o=.d) $(COMPARE_RUNNER)
 
--include $(OBJECTS:.o=.d) $(HOST_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT:.o=.d)
+-include $(OBJECTS:.o=.d) $(HOST_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT:.o=.d) $(COMPARE_OBJECTS:.o=.d)
