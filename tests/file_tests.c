@@ -33,6 +33,9 @@ random_bytes(void *context, void *buffer, size_t length)
   uint64_t *sequence = context;
   uint8_t *bytes = buffer;
   ++*sequence;
+  if (random_mode == 3) {
+    return PFS_IO;
+  }
   if (random_mode) {
     memset(buffer, 0, length);
     if (random_mode == 2 && length) {
@@ -656,10 +659,108 @@ creation_randomness_refuses_zero_and_existing_identity_without_publication(void)
     TEST_ASSERT_FALSE(result.namespace_confirmed);
     TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   }
+  random_mode = 3;
+  TEST_ASSERT_EQUAL(PFS_IO, pfs_view_create_file(parent_view,
+    (const uint8_t *)"new", 3, NULL, NULL, NULL, &result));
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+  TEST_ASSERT_FALSE(result.namespace_confirmed);
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   random_mode = 0;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(parent_view,
     (const uint8_t *)"new", 3, NULL, NULL, NULL, &result));
   expect_complete(&result);
+  close_fixture();
+}
+
+#define LONG_NAMES_COUNT 120u
+static uint8_t long_names[LONG_NAMES_COUNT][PFS_NAME_MAX];
+static size_t long_name_lengths[LONG_NAMES_COUNT];
+
+static void
+expect_long_namespace(void)
+{
+  struct pfs_directory_token token = {0}, next;
+  struct pfs_view_entry entries[7];
+  size_t index = 0;
+  bool done = false;
+  while (!done) {
+    size_t count;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_directory_live_page(parent_view, &token,
+      entries, 7, &count, &done, &next));
+    for (size_t i = 0; i < count; i++, index++) {
+      TEST_ASSERT_LESS_THAN_UINT(LONG_NAMES_COUNT + 1, index);
+      TEST_ASSERT_EQUAL(PFS_OBJECT_FILE, entries[i].kind);
+      if (index == LONG_NAMES_COUNT) {
+        TEST_ASSERT_EQUAL_UINT(4, entries[i].name.length);
+        TEST_ASSERT_EQUAL_MEMORY("file", entries[i].name.bytes, 4);
+      } else {
+        TEST_ASSERT_EQUAL_UINT(long_name_lengths[index], entries[i].name.length);
+        TEST_ASSERT_EQUAL_MEMORY(long_names[index], entries[i].name.bytes, long_name_lengths[index]);
+      }
+    }
+    TEST_ASSERT_TRUE(done || count > 0);
+    token = next;
+  }
+  TEST_ASSERT_EQUAL_UINT(LONG_NAMES_COUNT + 1, index);
+}
+
+static void
+long_name_creation_history_preserves_namespace_policy_and_reopens(void)
+{
+  build_seed(37, 1024, 64);
+  open_device();
+  const struct pfs_rights parent_rights = {.file = file_rights.file,
+    .directory = PFS_DIR_CREATE | PFS_DIR_LOOKUP | PFS_DIR_LIST | PFS_DIR_METADATA,
+    .admin = PFS_ADMIN_INSPECT};
+  acquire_parent(PFS_SCOPE_SUBTREE, &parent_rights);
+  for (size_t i = 0; i < LONG_NAMES_COUNT; i++) {
+    size_t length = 220 + i % 36;
+    long_name_lengths[i] = length;
+    memset(long_names[i], (int)('a' + i % 26), length);
+    long_names[i][0] = (uint8_t)('0' + i / 100);
+    long_names[i][1] = (uint8_t)('0' + i / 10 % 10);
+    long_names[i][2] = (uint8_t)('0' + i % 10);
+    long_names[i][3] = '_';
+    struct pfs_write_result result;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(parent_view, long_names[i], length,
+      NULL, NULL, NULL, &result));
+    expect_complete(&result);
+    TEST_ASSERT_TRUE(result.namespace_confirmed);
+    TEST_ASSERT_FALSE(device.infrastructure_failure);
+    test_failure_trace_reset(&device);
+  }
+  struct pfs_view_metadata metadata;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_metadata(parent_view, &metadata));
+  TEST_ASSERT_EQUAL_UINT64(LONG_NAMES_COUNT + 1, metadata.size);
+  expect_long_namespace();
+  expect_bytes(file_view, expected, expected_length);
+  struct pfs_rights child = {.file = PFS_FILE_READ | PFS_FILE_METADATA,
+    .admin = PFS_ADMIN_INSPECT};
+  for (size_t i = 0; i < LONG_NAMES_COUNT; i += 19) {
+    struct pfs_view_identity identity;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_lookup(parent_view, long_names[i], long_name_lengths[i],
+      PFS_SCOPE_OBJECT, &child, &other_view, &identity));
+    expect_bytes(other_view, expected, 0);
+    struct pfs_principal_id owner;
+    const struct pfs_principal_id expected_owner = {{5}};
+    size_t count;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_inspect(other_view, &owner, NULL, 0, &count));
+    TEST_ASSERT_EQUAL_MEMORY(&expected_owner, &owner, sizeof(owner));
+    TEST_ASSERT_EQUAL_UINT(0, count);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view));
+  }
+  close_handles();
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
+  struct pfs_check_result check;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&device.builder.reader, device.memory, NULL, NULL, &check));
+  struct pfs_write_open_result opening;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &device.builder,
+    device.memory, &options, &opening));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &volume_id, &volume));
+  acquire_file(&file_rights, &file_view);
+  acquire_parent(PFS_SCOPE_SUBTREE, &parent_rights);
+  expect_long_namespace();
+  expect_bytes(file_view, expected, expected_length);
   close_fixture();
 }
 
@@ -855,4 +956,5 @@ run_file_tests(void)
   RUN_TEST(live_directory_tokens_follow_namespace_changes_and_writer_instance);
   RUN_TEST(creation_randomness_refuses_zero_and_existing_identity_without_publication);
   RUN_TEST(public_mutation_callbacks_cannot_reenter_or_change_outputs);
+  RUN_TEST(long_name_creation_history_preserves_namespace_policy_and_reopens);
 }
