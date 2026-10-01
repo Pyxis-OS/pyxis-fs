@@ -1,0 +1,688 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+#include "edit_tests.h"
+#include "edit.h"
+#include "internal.h"
+#include "support.h"
+#include "unity.h"
+#include <pyxis_fs/record.h>
+
+#include <stdio.h>
+#include <string.h>
+
+#define EDIT_TEST_ITEMS 240u
+#define EDIT_TEST_SLOTS 256u
+
+static struct test_fixture fixture;
+static struct pfs_edit_slot slots[EDIT_TEST_SLOTS];
+static struct pfs_edit_slot saved_slots[EDIT_TEST_SLOTS];
+static struct pfs_reference retired[EDIT_TEST_SLOTS];
+static struct pfs_edit_workspace workspace;
+static struct pfs_edit_candidate candidate;
+static uint8_t walk_data[PFS_TREE_DEPTH_MAX][PFS_BLOCK_SIZE];
+static struct pfs_tree walk_tree[PFS_TREE_DEPTH_MAX];
+static bool present[EDIT_TEST_ITEMS];
+static size_t expected_position;
+static size_t reachable_private;
+
+static void
+start_case(uint16_t kind)
+{
+  TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, PFS_POOL_BLOCKS_MIN, 0));
+  memset(slots, 0, sizeof(slots));
+  memset(retired, 0, sizeof(retired));
+  memset(present, 0, sizeof(present));
+  candidate = (struct pfs_edit_candidate) {
+    .reader = &fixture.builder.reader,
+    .context = {
+      .block = { .block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}} },
+      .kind = kind,
+      .volume = {{2}},
+      .object = {{3}},
+    },
+    .birth = 1,
+    .slots = slots,
+    .slot_capacity = EDIT_TEST_SLOTS,
+    .retired = retired,
+    .retired_capacity = EDIT_TEST_SLOTS,
+  };
+  for (size_t i = 0; i < EDIT_TEST_SLOTS; ++i) {
+    slots[i].block = 100 + i;
+  }
+}
+
+static struct pfs_record_context
+context_for(uint64_t birth)
+{
+  return (struct pfs_record_context) {
+    .block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = candidate.birth,
+    .containing_birth = birth,
+    .features = candidate.context.block.features,
+  };
+}
+
+static struct pfs_key
+name_key(unsigned item)
+{
+  struct pfs_key key = {0};
+  key.length = item % 3 ? PFS_NAME_MAX : 4;
+  char prefix[11];
+  snprintf(prefix, sizeof(prefix), "%04u", item);
+  memcpy(key.bytes, prefix, 4);
+  memset(key.bytes + 4, 'x', key.length - 4);
+  return key;
+}
+
+static struct pfs_encoded_record
+name_record(unsigned item, const struct pfs_key *key, uint8_t *data)
+{
+  struct pfs_dirent_record value = {
+    .name = { .length = key->length },
+    .child_kind = PFS_OBJECT_FILE,
+  };
+  memcpy(value.name.bytes, key->bytes, key->length);
+  value.object.bytes[0] = (uint8_t)(item + 1);
+  value.object.bytes[1] = (uint8_t)((item + 1) >> 8);
+  struct pfs_record_context context = context_for(candidate.birth);
+  struct pfs_encoded_record encoded = { .data = data };
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_dirent_record_encode(data, 304, &context, &value, &encoded.length));
+  return encoded;
+}
+
+static void
+get_node(struct pfs_reference reference, size_t depth)
+{
+  TEST_ASSERT_LESS_THAN(PFS_TREE_DEPTH_MAX, depth);
+  bool found = false;
+  if (reference.birth == candidate.birth) {
+    for (size_t i = 0; i < candidate.slot_capacity; ++i) {
+      if (slots[i].active && slots[i].block == reference.block) {
+        memcpy(walk_data[depth], slots[i].data, PFS_BLOCK_SIZE);
+        ++reachable_private;
+        found = true;
+        break;
+      }
+    }
+    TEST_ASSERT_TRUE(found);
+  } else {
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(candidate.reader, reference.block, 1,
+                                           walk_data[depth], PFS_BLOCK_SIZE));
+  }
+  struct pfs_tree_context context = candidate.context;
+  context.block.reference = reference;
+  context.block.selected_generation = candidate.birth;
+  context.block.referring_birth = candidate.birth;
+  context.parent_level = depth ? walk_tree[depth - 1].level : 0;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_tree_decode(walk_data[depth], PFS_BLOCK_SIZE,
+                                          &context, &walk_tree[depth]));
+}
+
+static void
+walk_names(struct pfs_reference reference, size_t depth)
+{
+  get_node(reference, depth);
+  struct pfs_tree *tree = &walk_tree[depth];
+  if (depth) {
+    TEST_ASSERT_GREATER_OR_EQUAL(6, tree->count);
+  }
+  struct pfs_record_context context = context_for(tree->header.birth);
+  for (uint16_t i = 0; i < tree->count; ++i) {
+    const uint8_t *data = walk_data[depth] + tree->slots[i].offset;
+    if (tree->level) {
+      struct pfs_internal_record child;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(data, tree->slots[i].length,
+                            PFS_INDEX_DIRECTORY, &context, &child));
+      walk_names(child.child, depth + 1);
+      TEST_ASSERT_EQUAL(0, pfs_key_compare(PFS_INDEX_DIRECTORY, &child.minimum,
+                                          &walk_tree[depth + 1].minimum));
+    } else {
+      while (expected_position < EDIT_TEST_ITEMS && !present[expected_position]) {
+        ++expected_position;
+      }
+      TEST_ASSERT_LESS_THAN(EDIT_TEST_ITEMS, expected_position);
+      struct pfs_dirent_record value;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_dirent_record_decode(data, tree->slots[i].length, &context, &value));
+      struct pfs_key expected = name_key((unsigned)expected_position);
+      TEST_ASSERT_EQUAL(expected.length, value.name.length);
+      TEST_ASSERT_EQUAL_MEMORY(expected.bytes, value.name.bytes, expected.length);
+      TEST_ASSERT_EQUAL(expected_position + 1, (unsigned)value.object.bytes[0] |
+                                             ((unsigned)value.object.bytes[1] << 8));
+      ++expected_position;
+    }
+  }
+}
+
+static void
+check_names(void)
+{
+  expected_position = 0;
+  reachable_private = 0;
+  if (candidate.root.block) {
+    walk_names(candidate.root, 0);
+  }
+  while (expected_position < EDIT_TEST_ITEMS && !present[expected_position]) {
+    ++expected_position;
+  }
+  TEST_ASSERT_EQUAL(EDIT_TEST_ITEMS, expected_position);
+  size_t active = 0;
+  for (size_t i = 0; i < candidate.slot_capacity; ++i) {
+    active += slots[i].active;
+  }
+  TEST_ASSERT_EQUAL(active, reachable_private);
+}
+
+static void
+publish_fixture(void)
+{
+  memcpy(saved_slots, slots, sizeof(slots));
+  for (size_t i = 0; i < EDIT_TEST_SLOTS; ++i) {
+    if (slots[i].active) {
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, slots[i].block, 1,
+                                               slots[i].data, PFS_BLOCK_SIZE));
+    }
+    slots[i].active = false;
+    slots[i].block += 1024;
+  }
+  ++candidate.birth;
+  candidate.retired_count = 0;
+}
+
+static void
+check_published_unchanged(uint64_t writes)
+{
+  uint8_t block[PFS_BLOCK_SIZE];
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  for (size_t i = 0; i < EDIT_TEST_SLOTS; ++i) {
+    if (saved_slots[i].active) {
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(candidate.reader, saved_slots[i].block,
+                                             1, block, PFS_BLOCK_SIZE));
+      TEST_ASSERT_EQUAL_MEMORY(saved_slots[i].data, block, PFS_BLOCK_SIZE);
+    }
+  }
+}
+
+static void
+namespace_edits_preserve_order_profile_and_published_blocks(void)
+{
+  start_case(PFS_INDEX_DIRECTORY);
+  uint8_t data[304];
+  for (unsigned i = 0; i < EDIT_TEST_ITEMS; ++i) {
+    unsigned item = (i * 137) % EDIT_TEST_ITEMS;
+    struct pfs_key key = name_key(item);
+    struct pfs_encoded_record record = name_record(item, &key, data);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+    present[item] = true;
+    TEST_ASSERT_LESS_OR_EQUAL(15, workspace.output_count);
+    TEST_ASSERT_LESS_OR_EQUAL(8, workspace.consumed_count);
+    TEST_ASSERT_EQUAL(0, candidate.retired_count);
+    check_names();
+  }
+  publish_fixture();
+  uint64_t writes = fixture.writes;
+  for (unsigned i = 0; i < EDIT_TEST_ITEMS; ++i) {
+    unsigned item = (i * 137) % EDIT_TEST_ITEMS;
+    struct pfs_key key = name_key(item);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_DELETE, &key, NULL));
+    present[item] = false;
+    TEST_ASSERT_LESS_OR_EQUAL(15, workspace.output_count);
+    TEST_ASSERT_LESS_OR_EQUAL(15, workspace.consumed_count);
+    check_names();
+  }
+  TEST_ASSERT_EQUAL_UINT64(0, candidate.root.block);
+  size_t published_count = 0;
+  for (size_t i = 0; i < EDIT_TEST_SLOTS; ++i) {
+    published_count += saved_slots[i].active;
+  }
+  TEST_ASSERT_EQUAL(published_count, candidate.retired_count);
+  check_published_unchanged(writes);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static void
+repeated_updates_reuse_private_buffers_and_fail_atomically(void)
+{
+  start_case(PFS_INDEX_DIRECTORY);
+  candidate.slot_capacity = 1;
+  uint8_t data[304];
+  struct pfs_key key = name_key(0);
+  struct pfs_encoded_record record = name_record(0, &key, data);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+  for (unsigned i = 0; i < 100; ++i) {
+    record = name_record(i, &key, data);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_UPDATE, &key, &record));
+    TEST_ASSERT_EQUAL(0, candidate.retired_count);
+    TEST_ASSERT_TRUE(slots[0].active);
+  }
+  for (unsigned i = 1; i < 13; ++i) {
+    struct pfs_key added = name_key(i);
+    added.length = PFS_NAME_MAX;
+    memset(added.bytes + 4, 'x', PFS_NAME_MAX - 4);
+    record = name_record(i, &added, data);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &added, &record));
+  }
+  struct pfs_key overflow = name_key(13);
+  record = name_record(13, &overflow, data);
+  struct pfs_edit_slot private_before = slots[0];
+  struct pfs_reference private_root = candidate.root;
+  TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &overflow, &record));
+  TEST_ASSERT_EQUAL_MEMORY(&private_before, &slots[0], sizeof(private_before));
+  TEST_ASSERT_EQUAL_MEMORY(&private_root, &candidate.root, sizeof(private_root));
+  TEST_ASSERT_EQUAL(0, candidate.retired_count);
+  record = name_record(99, &key, data);
+  publish_fixture();
+  uint64_t writes = fixture.writes;
+  struct pfs_reference root = candidate.root;
+  candidate.retired_capacity = 0;
+  struct pfs_edit_slot before = slots[0];
+  TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_UPDATE, &key, &record));
+  TEST_ASSERT_EQUAL_MEMORY(&root, &candidate.root, sizeof(root));
+  TEST_ASSERT_EQUAL_MEMORY(&before, &slots[0], sizeof(before));
+  TEST_ASSERT_EQUAL(0, candidate.retired_count);
+  check_published_unchanged(writes);
+  candidate.retired_capacity = EDIT_TEST_SLOTS;
+  candidate.slot_capacity = 0;
+  TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_UPDATE, &key, &record));
+  TEST_ASSERT_EQUAL_MEMORY(&root, &candidate.root, sizeof(root));
+  TEST_ASSERT_EQUAL_MEMORY(&before, &slots[0], sizeof(before));
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static struct pfs_reference
+write_tree(uint64_t block, uint16_t level, struct pfs_encoded_record *records, uint16_t count)
+{
+  struct pfs_tree_context context = candidate.context;
+  context.block.selected_generation = 1;
+  context.block.referring_birth = 1;
+  context.block.reference = (struct pfs_reference) { block, 1, PFS_BLOCK_TREE, PFS_FORMAT_VERSION };
+  struct pfs_tree tree = {
+    .header = { .type = PFS_BLOCK_TREE, .version = PFS_FORMAT_VERSION,
+                .pool = context.block.pool, .block = block, .birth = 1 },
+    .kind = context.kind,
+    .level = level,
+    .count = count,
+    .volume = context.volume,
+    .object = context.object,
+  };
+  uint8_t data[PFS_BLOCK_SIZE];
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_tree_encode(data, sizeof(data), &context, &tree, records));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, block, 1, data, sizeof(data)));
+  return context.block.reference;
+}
+
+static struct pfs_key
+extent_key(uint64_t first)
+{
+  struct pfs_key key = { .length = 8 };
+  test_put_u64(key.bytes, first);
+  return key;
+}
+
+static struct pfs_encoded_record
+internal_record(uint8_t *data, struct pfs_reference reference, struct pfs_key minimum)
+{
+  struct pfs_internal_record value = { .child = reference, .minimum = minimum };
+  struct pfs_record_context context = context_for(1);
+  struct pfs_encoded_record encoded = { .data = data };
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_encode(data, 304, candidate.context.kind,
+                                                     &context, &value, &encoded.length));
+  return encoded;
+}
+
+static void
+sparse_repair(unsigned sibling_children)
+{
+  start_case(PFS_INDEX_EXTENTS);
+  candidate.birth = 2;
+  uint8_t parent_data[5][304];
+  struct pfs_encoded_record parent_records[5];
+  unsigned total = 2 + sibling_children;
+  for (unsigned i = 0; i < total; ++i) {
+    struct pfs_extent_record extent = {
+      .mapping = { .logical_first = 2 * i, .count = 1, .physical_first = 9000 + i, .birth = 1 },
+    };
+    struct pfs_record_context context = context_for(1);
+    uint8_t data[64];
+    struct pfs_encoded_record record = { .data = data };
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_extent_record_encode(data, sizeof(data), &context, &extent, &record.length));
+    struct pfs_reference leaf = write_tree(600 + i, 0, &record, 1);
+    parent_records[i] = internal_record(parent_data[i], leaf, extent_key(2 * i));
+  }
+  struct pfs_reference left = write_tree(700, 1, parent_records, 2);
+  struct pfs_reference right = write_tree(701, 1, parent_records + 2, sibling_children);
+  uint8_t root_data[2][304];
+  struct pfs_encoded_record root_records[2] = {
+    internal_record(root_data[0], left, extent_key(0)),
+    internal_record(root_data[1], right, extent_key(4)),
+  };
+  candidate.root = write_tree(800, 2, root_records, 2);
+  uint64_t writes = fixture.writes;
+  struct pfs_key key = extent_key(0);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_DELETE, &key, NULL));
+  TEST_ASSERT_LESS_OR_EQUAL(14, workspace.output_count);
+  TEST_ASSERT_LESS_OR_EQUAL(14, workspace.consumed_count);
+  reachable_private = 0;
+  get_node(candidate.root, 0);
+  TEST_ASSERT_EQUAL(sibling_children == 2 ? 1 : 2, walk_tree[0].level);
+  uint64_t expected = 2;
+  if (walk_tree[0].level == 1) {
+    struct pfs_record_context context = context_for(candidate.birth);
+    TEST_ASSERT_EQUAL(3, walk_tree[0].count);
+    for (uint16_t i = 0; i < walk_tree[0].count; ++i) {
+      struct pfs_internal_record child;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(walk_data[0] + walk_tree[0].slots[i].offset,
+                           walk_tree[0].slots[i].length, PFS_INDEX_EXTENTS, &context, &child));
+      TEST_ASSERT_EQUAL_UINT64(expected, pfs_get_u64(child.minimum.bytes));
+      get_node(child.child, 1);
+      TEST_ASSERT_EQUAL_UINT64(expected, pfs_get_u64(walk_tree[1].minimum.bytes));
+      expected += 2;
+    }
+  } else {
+    struct pfs_record_context context = context_for(candidate.birth);
+    TEST_ASSERT_EQUAL(2, walk_tree[0].count);
+    for (uint16_t i = 0; i < 2; ++i) {
+      struct pfs_internal_record child;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(walk_data[0] + walk_tree[0].slots[i].offset,
+                           walk_tree[0].slots[i].length, PFS_INDEX_EXTENTS, &context, &child));
+      get_node(child.child, 1);
+      TEST_ASSERT_GREATER_OR_EQUAL(2, walk_tree[1].count);
+      TEST_ASSERT_EQUAL_UINT64(expected, pfs_get_u64(child.minimum.bytes));
+      for (uint16_t j = 0; j < walk_tree[1].count; ++j) {
+        struct pfs_internal_record leaf;
+        TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(walk_data[1] + walk_tree[1].slots[j].offset,
+                             walk_tree[1].slots[j].length, PFS_INDEX_EXTENTS, &context, &leaf));
+        TEST_ASSERT_EQUAL_UINT64(expected, pfs_get_u64(leaf.minimum.bytes));
+        get_node(leaf.child, 2);
+        TEST_ASSERT_EQUAL_UINT64(expected, pfs_get_u64(walk_tree[2].minimum.bytes));
+        expected += 2;
+      }
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT64(2 * total, expected);
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_EQUAL(4, candidate.retired_count);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static void
+sparse_internal_merge_collapses_root(void)
+{
+  sparse_repair(2);
+}
+
+static void
+sparse_internal_redistribution_preserves_depth(void)
+{
+  sparse_repair(3);
+}
+
+static void
+minimum_and_maximum_component_lengths(void)
+{
+  start_case(PFS_INDEX_DIRECTORY);
+  uint8_t data[304];
+  struct pfs_key low = { .length = 1, .bytes = {'a'} };
+  struct pfs_key high = { .length = PFS_NAME_MAX };
+  memset(high.bytes, 'z', sizeof(high.bytes));
+  struct pfs_encoded_record record = name_record(1, &high, data);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &high, &record));
+  record = name_record(0, &low, data);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &low, &record));
+  get_node(candidate.root, 0);
+  TEST_ASSERT_EQUAL(1, walk_tree[0].minimum.length);
+  TEST_ASSERT_EQUAL('a', walk_tree[0].minimum.bytes[0]);
+  TEST_ASSERT_EQUAL(PFS_NAME_MAX, walk_tree[0].maximum.length);
+  TEST_ASSERT_EQUAL_MEMORY(high.bytes, walk_tree[0].maximum.bytes, PFS_NAME_MAX);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_DELETE, &low, NULL));
+  get_node(candidate.root, 0);
+  TEST_ASSERT_EQUAL(PFS_NAME_MAX, walk_tree[0].minimum.length);
+  TEST_ASSERT_EQUAL_MEMORY(high.bytes, walk_tree[0].minimum.bytes, PFS_NAME_MAX);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_DELETE, &high, NULL));
+  TEST_ASSERT_EQUAL(0, candidate.root.block);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static void
+walk_extents(struct pfs_reference reference, size_t depth, uint64_t *expected)
+{
+  get_node(reference, depth);
+  struct pfs_tree *tree = &walk_tree[depth];
+  struct pfs_record_context context = context_for(tree->header.birth);
+  for (uint16_t i = 0; i < tree->count; ++i) {
+    const uint8_t *data = walk_data[depth] + tree->slots[i].offset;
+    if (tree->level) {
+      struct pfs_internal_record child;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(data, tree->slots[i].length,
+                            PFS_INDEX_EXTENTS, &context, &child));
+      TEST_ASSERT_EQUAL_UINT64(*expected, pfs_get_u64(child.minimum.bytes));
+      walk_extents(child.child, depth + 1, expected);
+      TEST_ASSERT_EQUAL(0, pfs_key_compare(PFS_INDEX_EXTENTS, &child.minimum,
+                                          &walk_tree[depth + 1].minimum));
+    } else {
+      struct pfs_extent_record extent;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_extent_record_decode(data, tree->slots[i].length, &context, &extent));
+      TEST_ASSERT_EQUAL_UINT64(*expected, extent.mapping.logical_first);
+      TEST_ASSERT_EQUAL_UINT64(9000 + *expected / 2, extent.mapping.physical_first);
+      *expected += 2;
+    }
+  }
+}
+
+static void
+maximum_depth_sparse_delete_fits_retirement_bound(void)
+{
+  start_case(PFS_INDEX_EXTENTS);
+  candidate.birth = 2;
+  struct pfs_reference children[128];
+  struct pfs_key minima[128];
+  uint64_t block = 1000;
+  struct pfs_record_context context = context_for(1);
+  for (unsigned i = 0; i < 128; ++i) {
+    struct pfs_extent_record extent = {
+      .mapping = { .logical_first = 2 * i, .count = 1, .physical_first = 9000 + i, .birth = 1 },
+    };
+    uint8_t data[64];
+    struct pfs_encoded_record record = { .data = data };
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_extent_record_encode(data, sizeof(data), &context, &extent, &record.length));
+    children[i] = write_tree(block++, 0, &record, 1);
+    minima[i] = extent_key(2 * i);
+  }
+  for (uint16_t level = 1, count = 128; count > 1; ++level, count /= 2) {
+    for (uint16_t i = 0; i < count / 2; ++i) {
+      uint8_t data[2][304];
+      struct pfs_encoded_record records[2] = {
+        internal_record(data[0], children[2 * i], minima[2 * i]),
+        internal_record(data[1], children[2 * i + 1], minima[2 * i + 1]),
+      };
+      children[i] = write_tree(block++, level, records, 2);
+      minima[i] = minima[2 * i];
+    }
+  }
+  candidate.root = children[0];
+  struct pfs_key key = extent_key(0);
+  uint64_t writes = fixture.writes;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_DELETE, &key, NULL));
+  TEST_ASSERT_EQUAL(14, candidate.retired_count);
+  TEST_ASSERT_LESS_OR_EQUAL(14, workspace.output_count);
+  TEST_ASSERT_LESS_OR_EQUAL(14, workspace.consumed_count);
+  uint64_t expected = 2;
+  reachable_private = 0;
+  walk_extents(candidate.root, 0, &expected);
+  TEST_ASSERT_EQUAL_UINT64(256, expected);
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static struct pfs_key
+growth_key(unsigned item)
+{
+  struct pfs_key key = { .length = PFS_NAME_MAX };
+  char prefix[11];
+  snprintf(prefix, sizeof(prefix), "%04u", item / 6);
+  memcpy(key.bytes, prefix, 4);
+  memset(key.bytes + 4, 'x', PFS_NAME_MAX - 4);
+  key.bytes[PFS_NAME_MAX - 1] = (uint8_t)('a' + item % 6);
+  return key;
+}
+
+static void
+walk_growth(struct pfs_reference reference, size_t depth)
+{
+  get_node(reference, depth);
+  struct pfs_tree *tree = &walk_tree[depth];
+  if (depth) {
+    TEST_ASSERT_GREATER_OR_EQUAL(6, tree->count);
+  }
+  struct pfs_record_context context = context_for(tree->header.birth);
+  for (uint16_t i = 0; i < tree->count; ++i) {
+    const uint8_t *data = walk_data[depth] + tree->slots[i].offset;
+    if (tree->level) {
+      struct pfs_internal_record child;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(data, tree->slots[i].length,
+                            PFS_INDEX_DIRECTORY, &context, &child));
+      walk_growth(child.child, depth + 1);
+      TEST_ASSERT_EQUAL(0, pfs_key_compare(PFS_INDEX_DIRECTORY, &child.minimum,
+                                          &walk_tree[depth + 1].minimum));
+    } else {
+      struct pfs_dirent_record value;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_dirent_record_decode(data, tree->slots[i].length, &context, &value));
+      struct pfs_key expected = growth_key((unsigned)expected_position);
+      TEST_ASSERT_EQUAL(expected.length, value.name.length);
+      TEST_ASSERT_EQUAL_MEMORY(expected.bytes, value.name.bytes, expected.length);
+      TEST_ASSERT_EQUAL(expected_position + 1, value.object.bytes[0]);
+      ++expected_position;
+    }
+  }
+}
+
+static void
+namespace_minimum_growth_can_split_root_on_delete(void)
+{
+  start_case(PFS_INDEX_DIRECTORY);
+  candidate.birth = 2;
+  uint8_t root_data[13][304];
+  struct pfs_encoded_record root_records[13];
+  struct pfs_key short_key = { .length = 4, .bytes = {'0', '0', '0', '0'} };
+  for (unsigned i = 0; i < 13; ++i) {
+    uint8_t data[7][304];
+    struct pfs_encoded_record records[7];
+    unsigned count = 0;
+    if (!i) {
+      records[count++] = name_record(200, &short_key, data[0]);
+    }
+    for (unsigned j = 0; j < 6; ++j) {
+      struct pfs_key key = growth_key(i * 6 + j);
+      records[count] = name_record(i * 6 + j, &key, data[count]);
+      ++count;
+    }
+    struct pfs_reference leaf = write_tree(600 + i, 0, records, count);
+    root_records[i] = internal_record(root_data[i], leaf, i ? growth_key(i * 6) : short_key);
+  }
+  candidate.root = write_tree(700, 1, root_records, 13);
+  uint64_t writes = fixture.writes;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_DELETE, &short_key, NULL));
+  expected_position = 0;
+  reachable_private = 0;
+  walk_growth(candidate.root, 0);
+  TEST_ASSERT_EQUAL(78, expected_position);
+  TEST_ASSERT_LESS_OR_EQUAL(15, workspace.output_count);
+  TEST_ASSERT_LESS_OR_EQUAL(15, workspace.consumed_count);
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static struct pfs_key
+orphan_key(unsigned item)
+{
+  struct pfs_key key = { .length = PFS_ID_SIZE };
+  key.bytes[PFS_ID_SIZE - 1] = (uint8_t)(item + 1);
+  return key;
+}
+
+static void
+walk_orphans(struct pfs_reference reference, size_t depth)
+{
+  get_node(reference, depth);
+  struct pfs_tree *tree = &walk_tree[depth];
+  if (depth) {
+    TEST_ASSERT_GREATER_OR_EQUAL(6, tree->count);
+  }
+  struct pfs_record_context context = context_for(tree->header.birth);
+  for (uint16_t i = 0; i < tree->count; ++i) {
+    const uint8_t *data = walk_data[depth] + tree->slots[i].offset;
+    if (tree->level) {
+      struct pfs_internal_record child;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(data, tree->slots[i].length,
+                            PFS_INDEX_ORPHANS, &context, &child));
+      walk_orphans(child.child, depth + 1);
+      TEST_ASSERT_EQUAL(0, pfs_key_compare(PFS_INDEX_ORPHANS, &child.minimum,
+                                          &walk_tree[depth + 1].minimum));
+    } else {
+      while (expected_position < 120 && !present[expected_position]) {
+        ++expected_position;
+      }
+      TEST_ASSERT_LESS_THAN(120, expected_position);
+      struct pfs_orphan_record value;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_orphan_record_decode(data, tree->slots[i].length, &context, &value));
+      struct pfs_key expected = orphan_key((unsigned)expected_position);
+      TEST_ASSERT_EQUAL_MEMORY(expected.bytes, value.object.bytes, PFS_ID_SIZE);
+      ++expected_position;
+    }
+  }
+}
+
+static void
+orphan_index_uses_namespace_occupancy_and_private_disposal(void)
+{
+  start_case(PFS_INDEX_ORPHANS);
+  memset(&candidate.context.object, 0, sizeof(candidate.context.object));
+  candidate.context.block.features.read_required = PFS_FEATURE_ORPHANS;
+  for (unsigned i = 0; i < 120; ++i) {
+    unsigned item = i * 77 % 120;
+    struct pfs_key key = orphan_key(item);
+    struct pfs_orphan_record orphan;
+    memcpy(orphan.object.bytes, key.bytes, PFS_ID_SIZE);
+    struct pfs_record_context context = context_for(candidate.birth);
+    uint8_t data[PFS_ORPHAN_RECORD_SIZE];
+    struct pfs_encoded_record record = { .data = data };
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_orphan_record_encode(data, sizeof(data), &context, &orphan, &record.length));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+    present[item] = true;
+  }
+  for (unsigned i = 0; i < 120; ++i) {
+    unsigned item = i * 77 % 120;
+    struct pfs_key key = orphan_key(item);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_DELETE, &key, NULL));
+    present[item] = false;
+    expected_position = 0;
+    reachable_private = 0;
+    if (candidate.root.block) {
+      walk_orphans(candidate.root, 0);
+    }
+    while (expected_position < 120 && !present[expected_position]) {
+      ++expected_position;
+    }
+    TEST_ASSERT_EQUAL(120, expected_position);
+    TEST_ASSERT_EQUAL(0, candidate.retired_count);
+    size_t active = 0;
+    for (size_t j = 0; j < candidate.slot_capacity; ++j) {
+      active += slots[j].active;
+    }
+    TEST_ASSERT_EQUAL(active, reachable_private);
+  }
+  TEST_ASSERT_EQUAL(0, candidate.root.block);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+void
+run_edit_tests(void)
+{
+  Unity.TestFile = __FILE__;
+  RUN_TEST(namespace_edits_preserve_order_profile_and_published_blocks);
+  RUN_TEST(repeated_updates_reuse_private_buffers_and_fail_atomically);
+  RUN_TEST(sparse_internal_merge_collapses_root);
+  RUN_TEST(sparse_internal_redistribution_preserves_depth);
+  RUN_TEST(minimum_and_maximum_component_lengths);
+  RUN_TEST(maximum_depth_sparse_delete_fits_retirement_bound);
+  RUN_TEST(namespace_minimum_growth_can_split_root_on_delete);
+  RUN_TEST(orphan_index_uses_namespace_occupancy_and_private_disposal);
+}
