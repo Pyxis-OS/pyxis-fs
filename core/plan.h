@@ -56,10 +56,13 @@ struct pfs_map_change {
   struct pfs_allocation_record after;
 };
 
-/* Sorted, disjoint deltas replace exactly matching state/owner/birth/charge of
- * their source ranges. Input is a canonical complete map. Output may not alias
- * input/deltas; count is published only on success, output bytes are scratch on
- * failure. Both successful and failed calls leave source/deltas unchanged.
+/* Sorted, disjoint deltas replace exactly matching state, owner, birth,
+ * retirement and charge of their source ranges. Input is a canonical complete
+ * map. Output may not alias input/deltas; count is published only on success.
+ * Output bytes are scratch on failure. Both successful and failed calls leave
+ * source/deltas unchanged.
+ * A malformed base returns PFS_CORRUPT; a delta that does not match the validated
+ * base returns PFS_INVALID.
  * Protection/admission evidence for retire/free/claim transitions belongs to the
  * future publisher; this is a bounded private interval editor, not that proof. */
 enum pfs_status pfs_plan_map_apply(const struct pfs_record_context *context,

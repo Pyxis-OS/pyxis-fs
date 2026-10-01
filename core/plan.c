@@ -219,7 +219,7 @@ pfs_plan_map_apply(const struct pfs_record_context *context,
         uint64_t change_end = change->before.first + change->before.count;
         if (position >= change->before.first) {
           if (!same_allocation(&base[i], &change->before)) {
-            return PFS_CORRUPT;
+            return PFS_INVALID;
           }
           record = change->after;
           record.first = position;

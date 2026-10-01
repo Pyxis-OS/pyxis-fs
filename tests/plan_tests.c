@@ -97,9 +97,57 @@ interval_changes_are_private_and_canonical(void)
   TEST_ASSERT_EQUAL_UINT(1, count);
   TEST_ASSERT_EQUAL_UINT64(PFS_POOL_BLOCKS_MIN - 2, output[0].count);
   TEST_ASSERT_EQUAL_UINT(PFS_ALLOCATION_FREE, output[0].state);
+}
+
+static void
+interval_failures_distinguish_source_and_delta(void)
+{
+  struct pfs_record_context context = {
+    .block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = 3, .containing_birth = 3,
+  };
+  struct pfs_allocation_record base[] = {
+    {.first = 1, .count = 10, .state = PFS_ALLOCATION_VOLUME, .owner = {{9}}, .birth = 1},
+    {.first = 11, .count = PFS_POOL_BLOCKS_MIN - 12},
+  };
+  struct pfs_allocation_record original[2];
+  memcpy(original, base, sizeof(base));
+  struct pfs_map_change free_change = {
+    .before = base[0], .after = {.first = 1, .count = 10},
+  };
+  struct pfs_allocation_record output[6];
+  size_t count = 99;
   free_change.before.owner.bytes[0] = 8;
-  TEST_ASSERT_EQUAL(PFS_CORRUPT, pfs_plan_map_apply(&context, base, 2, &free_change, 1, output, 6, &count));
+  struct pfs_map_change saved_change = free_change;
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_plan_map_apply(&context, base, 2, &free_change, 1, output, 6, &count));
+  TEST_ASSERT_EQUAL_UINT(99, count);
   TEST_ASSERT_EQUAL_MEMORY(original, base, sizeof(base));
+  TEST_ASSERT_EQUAL_MEMORY(&saved_change, &free_change, sizeof(free_change));
+
+  /* A matching prefix does not authorize the rest of a range across states. */
+  free_change.before = base[0];
+  free_change.before.count++;
+  free_change.after.count++;
+  saved_change = free_change;
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_plan_map_apply(&context, base, 2, &free_change, 1, output, 6, &count));
+  TEST_ASSERT_EQUAL_UINT(99, count);
+  TEST_ASSERT_EQUAL_MEMORY(original, base, sizeof(base));
+  TEST_ASSERT_EQUAL_MEMORY(&saved_change, &free_change, sizeof(free_change));
+
+  /* Incomplete coverage remains malformed source data, even with bad deltas. */
+  base[1].count--;
+  memcpy(original, base, sizeof(base));
+  TEST_ASSERT_EQUAL(PFS_CORRUPT, pfs_plan_map_apply(&context, base, 2, &free_change, 1, output, 6, &count));
+  TEST_ASSERT_EQUAL_UINT(99, count);
+  TEST_ASSERT_EQUAL_MEMORY(original, base, sizeof(base));
+  TEST_ASSERT_EQUAL_MEMORY(&saved_change, &free_change, sizeof(free_change));
+
+  base[1].count++;
+  base[0].owner = (struct pfs_volume_id){0};
+  memcpy(original, base, sizeof(base));
+  TEST_ASSERT_EQUAL(PFS_CORRUPT, pfs_plan_map_apply(&context, base, 2, &free_change, 1, output, 6, &count));
+  TEST_ASSERT_EQUAL_UINT(99, count);
+  TEST_ASSERT_EQUAL_MEMORY(original, base, sizeof(base));
+  TEST_ASSERT_EQUAL_MEMORY(&saved_change, &free_change, sizeof(free_change));
 }
 
 static bool
@@ -281,6 +329,7 @@ run_plan_tests(void)
   Unity.TestFile = __FILE__;
   RUN_TEST(limits_and_arena);
   RUN_TEST(interval_changes_are_private_and_canonical);
+  RUN_TEST(interval_failures_distinguish_source_and_delta);
   RUN_TEST(fragmented_map_accounts_for_itself);
   RUN_TEST(single_leaf_map_and_reserved_blocks);
 }
