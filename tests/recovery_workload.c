@@ -312,7 +312,7 @@ remove_file(const char *name)
   return true;
 }
 
-static void
+static bool
 close_file(struct pfs_view **view)
 {
   test_failure_trace_reset(&device);
@@ -320,14 +320,24 @@ close_file(struct pfs_view **view)
   double start = now();
   enum pfs_status status = pfs_view_close(view, &result);
   account_call(start, 0);
-  TEST_ASSERT_EQUAL(PFS_OK, status);
-  TEST_ASSERT_TRUE(result.released);
-  TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+  if (status != PFS_OK || !result.released || result.health != PFS_WRITER_READY) {
+    struct pfs_write_result failure = {.completion = PFS_STOPPED,
+      .operation_status = status, .health = result.health,
+      .maintenance_completion = result.maintenance_completion,
+      .maintenance_status = result.maintenance_status};
+    printf("  close released=%s\n", result.released ? "true" : "false");
+    require_complete("close-file", status, &failure);
+    return false;
+  }
+  return true;
 }
 
 static void
 compare_view(struct pfs_view *view, FILE *host, uint64_t first, uint64_t length)
 {
+  /* Verification reads do not enter the timed mutation callback totals. */
+  test_failure_observer_fn observer = device.observer;
+  device.observer = NULL;
   struct pfs_view_metadata metadata;
   test_failure_trace_reset(&device);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_metadata(view, &metadata));
@@ -343,6 +353,7 @@ compare_view(struct pfs_view *view, FILE *host, uint64_t first, uint64_t length)
     TEST_ASSERT_EQUAL_MEMORY(expected, actual, count);
     offset += count;
   }
+  device.observer = observer;
 }
 
 static enum pfs_status
@@ -715,8 +726,9 @@ retained_churn(void)
     }
     compare_view(retained, expected_churn.file, 0, 2 * PFS_BLOCK_SIZE);
     compare_view(replacement, expected_churn.file, 2 * PFS_BLOCK_SIZE, PFS_BLOCK_SIZE);
-    close_file(&retained);
-    close_file(&replacement);
+    if (!close_file(&retained) || !close_file(&replacement)) {
+      return false;
+    }
     if (!remove_file(churn_name)) {
       return false;
     }
