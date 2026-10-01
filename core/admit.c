@@ -243,13 +243,18 @@ reusable(const struct pfs_admit_state *first, const struct pfs_admit_state *seco
 {
   size_t i = 0, j = 0, produced = 0;
   uint64_t total = 0;
+  bool first_selected = first->candidate.superblock.header.birth >=
+                        second->candidate.superblock.header.birth;
   while (i < first->map_count && j < second->map_count) {
     const struct pfs_allocation_record *a = &first->maps[i];
     const struct pfs_allocation_record *b = &second->maps[j];
     uint64_t a_end = a->first + a->count, b_end = b->first + b->count;
     uint64_t begin = a->first > b->first ? a->first : b->first;
     uint64_t end = a_end < b_end ? a_end : b_end;
-    if (begin < end && a->state == PFS_ALLOCATION_FREE && b->state == PFS_ALLOCATION_FREE) {
+    const struct pfs_allocation_record *selected = first_selected ? a : b;
+    const struct pfs_allocation_record *older = first_selected ? b : a;
+    if (begin < end && selected->state == PFS_ALLOCATION_FREE &&
+        (older->state == PFS_ALLOCATION_FREE || older->state == PFS_ALLOCATION_RETIRED)) {
       const struct pfs_admit_state *states[] = {first, second};
       for (size_t s = 0; s < 2; s++) {
         const struct pfs_admit_state *state = states[s];

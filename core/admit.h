@@ -60,9 +60,11 @@ enum pfs_status pfs_admit_candidate(struct pfs_plan_arena *arena,
   struct pfs_admit_state *state, const struct pfs_admit_state *older,
   bool user_batch);
 
-/* Enumerates physical ranges free in both complete maps and without either
- * state's live claims. Runtime operation/I/O pins must independently have ended.
- * No same-publication free is eligible. Output/count publish only on success;
+/* Enumerates ranges free in the selected map and free or historically retired
+ * in the older map, without either state's live claims. Both summaries must
+ * describe completely validated durable states. Runtime operation/I/O pins must
+ * independently have ended. A private candidate's same-publication free is not
+ * eligible for allocation. Output/count publish only on success;
  * ranges are scratch on failure. Does no I/O or allocation. */
 enum pfs_status pfs_admit_reusable(const struct pfs_admit_state *first,
   const struct pfs_admit_state *second, struct pfs_reusable_range *ranges,

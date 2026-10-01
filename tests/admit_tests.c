@@ -312,6 +312,76 @@ candidate_rejects_unproven_claims_and_live_workspace_charges(void)
   release_opening();
 }
 
+static void
+historical_retirement_does_not_protect_reusable_storage(void)
+{
+  build_image(64, 1024);
+  struct pfs_allocation_record older_map[] = {
+    {.first = 1, .count = 10},
+    {.first = 11, .count = 2, .state = PFS_ALLOCATION_RETIRED,
+     .charge = PFS_CHARGE_RECOVERY, .birth = 1, .retirement = 2},
+    {.first = 13, .count = PFS_POOL_BLOCKS_MIN - 14},
+  };
+  struct pfs_allocation_record selected_map = {.first = 1, .count = PFS_POOL_BLOCKS_MIN - 2};
+  states[0].candidate.superblock.header.birth = 2;
+  states[0].maps = older_map;
+  states[0].map_count = 3;
+  states[1].candidate.superblock.header.birth = 3;
+  states[1].maps = &selected_map;
+  states[1].map_count = 1;
+  struct pfs_reusable_range ranges[4];
+  size_t count = 99;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_reusable(&states[0], &states[1], ranges, 4, &count));
+  uint64_t total = 0;
+  bool historical_available = false;
+  for (size_t i = 0; i < count; i++) {
+    total += ranges[i].count;
+    historical_available |= ranges[i].first <= 11 &&
+      ranges[i].first + ranges[i].count >= 13;
+  }
+  TEST_ASSERT_EQUAL_UINT64(PFS_POOL_BLOCKS_MIN - 2, total);
+  TEST_ASSERT_TRUE(historical_available);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_reusable(&states[1], &states[0], ranges, 4, &count));
+  struct check_claim live = {.first = 11, .count = 2, .birth = 1,
+    .volume = {{2}}, .object = {{4}}};
+  states[0].claims = &live;
+  states[0].claim_count = 1;
+  count = 99;
+  TEST_ASSERT_EQUAL(PFS_CORRUPT, pfs_admit_reusable(&states[0], &states[1], ranges, 4, &count));
+  TEST_ASSERT_EQUAL_UINT(99, count);
+  states[0].claims = NULL;
+  states[0].claim_count = 0;
+
+  /* An older live allocation protects the range even without a collected claim. */
+  older_map[1].state = PFS_ALLOCATION_POOL;
+  older_map[1].charge = PFS_CHARGE_PERMANENT;
+  older_map[1].retirement = 0;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_reusable(&states[1], &states[0], ranges, 4, &count));
+  total = 0;
+  for (size_t i = 0; i < count; i++) {
+    total += ranges[i].count;
+    TEST_ASSERT_TRUE(ranges[i].first + ranges[i].count <= 11 || ranges[i].first >= 13);
+  }
+  TEST_ASSERT_EQUAL_UINT64(PFS_POOL_BLOCKS_MIN - 4, total);
+
+  /* A selected retirement remains unavailable until its free change is durable. */
+  older_map[1].state = PFS_ALLOCATION_RETIRED;
+  older_map[1].charge = PFS_CHARGE_RECOVERY;
+  older_map[1].retirement = 3;
+  states[0].maps = &selected_map;
+  states[0].map_count = 1;
+  states[1].maps = older_map;
+  states[1].map_count = 3;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_reusable(&states[0], &states[1], ranges, 4, &count));
+  total = 0;
+  for (size_t i = 0; i < count; i++) {
+    total += ranges[i].count;
+    TEST_ASSERT_TRUE(ranges[i].first + ranges[i].count <= 11 || ranges[i].first >= 13);
+  }
+  TEST_ASSERT_EQUAL_UINT64(PFS_POOL_BLOCKS_MIN - 4, total);
+  release_opening();
+}
+
 void
 run_admit_tests(void)
 {
@@ -324,4 +394,5 @@ run_admit_tests(void)
   RUN_TEST(opening_memory_refusal_releases_temporary_proof);
   RUN_TEST(candidate_admission_is_private_and_reserves_exact_generations);
   RUN_TEST(candidate_rejects_unproven_claims_and_live_workspace_charges);
+  RUN_TEST(historical_retirement_does_not_protect_reusable_storage);
 }
