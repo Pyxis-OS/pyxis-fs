@@ -4,6 +4,7 @@
 #include "read_internal.h"
 #include "writer_access.h"
 #include "access_internal.h"
+#include "writer.h"
 
 
 struct pfs_view_directory {
@@ -41,7 +42,7 @@ rights_unavailable(const struct pfs_volume *volume, const struct pfs_rights *rig
   uint64_t directory = PFS_DIR_METADATA | PFS_DIR_LIST | PFS_DIR_LOOKUP;
   if (volume->pool->writer) {
     file |= PFS_FILE_CHECKPOINT | PFS_FILE_WRITE | PFS_FILE_RESIZE;
-    directory |= PFS_DIR_CHECKPOINT | PFS_DIR_CREATE;
+    directory |= PFS_DIR_CHECKPOINT | PFS_DIR_CREATE | PFS_DIR_REMOVE | PFS_DIR_REPLACE;
   }
   return (rights->file & ~file) != 0 ||
     (rights->directory & ~directory) != 0 ||
@@ -286,6 +287,15 @@ view_create(struct pfs_volume *volume, const struct pfs_object_record *object,
   pfs_bytes_copy(&view->identity.object, &object->id, sizeof(object->id));
   view->identity.generation = volume->pool->writer ? 0 : pfs_volume_generation(volume);
   view->identity.kind = object->kind;
+  if (volume->pool->writer) {
+    status = pfs_runtime_hold(volume->pool, &metadata.id, &object->id, &view->runtime);
+    if (status != PFS_OK) {
+      pfs_memory_move(volume->pool->memory, &view->allocation, &allocation);
+      pfs_memory_free(volume->pool->memory, &allocation);
+      pfs_volume_drop(volume);
+      return status;
+    }
+  }
   *out = view;
   return PFS_OK;
 }
@@ -393,32 +403,68 @@ view_acquire_path_active(struct pfs_volume *volume,
   return view_acquire_active(volume, context, &current, scope, requested, out);
 }
 
-static enum pfs_status
-view_close_active(struct pfs_view **view)
+enum pfs_status
+pfs_view_operation_hold(struct pfs_view *view)
 {
-  if (view == NULL) {
+  if (!view) {
     return PFS_INVALID;
   }
-  if (*view == NULL) {
-    return PFS_OK;
+  if (view->runtime) {
+    if (view->runtime->operations == SIZE_MAX) {
+      return PFS_LIMIT;
+    }
+    ++view->runtime->operations;
   }
-  struct pfs_volume *volume = (*view)->volume;
+  return PFS_OK;
+}
+
+void
+pfs_view_operation_drop(struct pfs_view *view)
+{
+  if (view && view->runtime && view->runtime->operations) {
+    --view->runtime->operations;
+  }
+}
+
+enum pfs_status
+pfs_view_reserve(struct pfs_view *parent, const struct pfs_object_id *id,
+                 uint16_t kind, const struct pfs_rights *rights,
+                 enum pfs_grant_scope scope, struct pfs_view **out)
+{
+  if (!parent || !id || !out || *out || !rights_valid(rights) ||
+      !scope_valid(scope) || pfs_bytes_are_zero(id->bytes, PFS_ID_SIZE) ||
+      (kind != PFS_OBJECT_FILE && kind != PFS_OBJECT_DIRECTORY) ||
+      request_kind_validate(kind, scope) != PFS_OK) {
+    return PFS_INVALID;
+  }
+  const struct pfs_object_record object = {.id = *id, .kind = kind};
+  return view_create(parent->volume, &object, scope, rights, out);
+}
+
+static void
+view_release(struct pfs_view *view)
+{
+  struct pfs_memory *memory = view->volume->pool->memory;
   struct pfs_allocation allocation = {0};
-  enum pfs_status status = pfs_memory_move(volume->pool->memory,
-                                          &(*view)->allocation, &allocation);
-  if (status != PFS_OK) {
-    return status;
+  pfs_runtime_drop(view->volume->pool, view->runtime);
+  pfs_memory_move(memory, &view->allocation, &allocation);
+  pfs_memory_free(memory, &allocation);
+}
+
+void
+pfs_view_discard(struct pfs_view *view)
+{
+  if (!view) {
+    return;
   }
-  status = pfs_volume_drop(volume);
-  if (status != PFS_OK) {
-    pfs_memory_move(volume->pool->memory, &allocation, &(*view)->allocation);
-    return status;
+  struct pfs_volume *volume = view->volume;
+  struct pfs_pool *pool = volume->pool;
+  if (pfs_writer_lifetime_begin(pool) != PFS_OK) {
+    return;
   }
-  status = pfs_memory_free(volume->pool->memory, &allocation);
-  if (status == PFS_OK) {
-    *view = NULL;
-  }
-  return status;
+  view_release(view);
+  pfs_volume_drop(volume);
+  pfs_writer_end(pool, PFS_OK);
 }
 
 static enum pfs_status
@@ -686,6 +732,26 @@ view_lookup_active(struct pfs_view *view, const uint8_t *path, size_t length,
   return status;
 }
 
+static enum pfs_status
+view_begin(struct pfs_view *view)
+{
+  enum pfs_status status = pfs_volume_begin(view->volume);
+  if (status == PFS_OK) {
+    status = pfs_view_operation_hold(view);
+    if (status != PFS_OK) {
+      pfs_writer_end(view->volume->pool, status);
+    }
+  }
+  return status;
+}
+
+static void
+view_end(struct pfs_view *view, enum pfs_status status)
+{
+  pfs_view_operation_drop(view);
+  pfs_writer_end(view->volume->pool, status);
+}
+
 enum pfs_status
 pfs_access_evaluate(struct pfs_volume *volume,
                     const struct pfs_trusted_context *context,
@@ -749,11 +815,10 @@ pfs_view_metadata(struct pfs_view *view, struct pfs_view_metadata *out)
   if (!view) {
     return PFS_INVALID;
   }
-  struct pfs_volume *held_volume = view->volume;
-  enum pfs_status status = pfs_volume_begin(held_volume);
+  enum pfs_status status = view_begin(view);
   if (status == PFS_OK) {
     status = view_metadata_active(view, out);
-    pfs_writer_end(held_volume->pool, status);
+    view_end(view, status);
   }
   return status;
 }
@@ -765,11 +830,10 @@ pfs_view_inspect(struct pfs_view *view, struct pfs_principal_id *owner,
   if (!view) {
     return PFS_INVALID;
   }
-  struct pfs_volume *held_volume = view->volume;
-  enum pfs_status status = pfs_volume_begin(held_volume);
+  enum pfs_status status = view_begin(view);
   if (status == PFS_OK) {
     status = view_inspect_active(view, owner, grants, capacity, count);
-    pfs_writer_end(held_volume->pool, status);
+    view_end(view, status);
   }
   return status;
 }
@@ -781,11 +845,10 @@ pfs_view_read(struct pfs_view *view, uint64_t offset, void *buffer, size_t lengt
   if (!view) {
     return PFS_INVALID;
   }
-  struct pfs_volume *held_volume = view->volume;
-  enum pfs_status status = pfs_volume_begin(held_volume);
+  enum pfs_status status = view_begin(view);
   if (status == PFS_OK) {
     status = view_read_active(view, offset, buffer, length, read_count);
-    pfs_writer_end(held_volume->pool, status);
+    view_end(view, status);
   }
   return status;
 }
@@ -796,11 +859,10 @@ pfs_view_directory_open(struct pfs_view *view, struct pfs_view_directory **out)
   if (!view) {
     return PFS_INVALID;
   }
-  struct pfs_volume *held_volume = view->volume;
-  enum pfs_status status = pfs_volume_begin(held_volume);
+  enum pfs_status status = view_begin(view);
   if (status == PFS_OK) {
     status = view_directory_open_active(view, out);
-    pfs_writer_end(held_volume->pool, status);
+    view_end(view, status);
   }
   return status;
 }
@@ -830,11 +892,10 @@ pfs_view_directory_page(struct pfs_view *view, uint64_t after,
   if (!view) {
     return PFS_INVALID;
   }
-  struct pfs_volume *held_volume = view->volume;
-  enum pfs_status status = pfs_volume_begin(held_volume);
+  enum pfs_status status = view_begin(view);
   if (status == PFS_OK) {
     status = view_directory_page_active(view, after, out, capacity, count, done, next);
-    pfs_writer_end(held_volume->pool, status);
+    view_end(view, status);
   }
   return status;
 }
@@ -847,30 +908,61 @@ pfs_view_lookup(struct pfs_view *view, const uint8_t *path, size_t length,
   if (!view) {
     return PFS_INVALID;
   }
-  struct pfs_volume *held_volume = view->volume;
-  enum pfs_status status = pfs_volume_begin(held_volume);
+  enum pfs_status status = view_begin(view);
   if (status == PFS_OK) {
     status = view_lookup_active(view, path, length, scope, requested, out, identity);
-    pfs_writer_end(held_volume->pool, status);
+    view_end(view, status);
   }
   return status;
 }
 
 enum pfs_status
-pfs_view_close(struct pfs_view **view)
+pfs_view_close(struct pfs_view **view, struct pfs_view_close_result *result)
 {
-  if (!view) {
+  if (!view || !result) {
     return PFS_INVALID;
   }
   if (!*view) {
+    *result = (struct pfs_view_close_result){.released = true, .health = PFS_WRITER_READY};
     return PFS_OK;
   }
-  struct pfs_pool *pool = (*view)->volume->pool;
+  struct pfs_volume *volume = (*view)->volume;
+  struct pfs_pool *pool = volume->pool;
+  enum pfs_writer_health health = pool->writer ? pool->writer->status.health : PFS_WRITER_READY;
+  struct pfs_view_close_result closed = {.health = health};
   enum pfs_status status = pfs_writer_lifetime_begin(pool);
-  if (status == PFS_OK) {
-    status = view_close_active(view);
-    pfs_writer_end(pool, status);
+  if (status != PFS_OK) {
+    if (status == PFS_BUSY) {
+      *result = closed;
+    }
+    return status;
   }
+  if ((*view)->runtime && (*view)->runtime->operations) {
+    pfs_writer_end(pool, PFS_OK);
+    *result = closed;
+    return PFS_BUSY;
+  }
+  struct pfs_object_id object = (*view)->object;
+  bool last = (*view)->runtime && (*view)->runtime->views == 1;
+  /* Keep this view's volume retention through synchronous orphan cleanup. */
+  view_release(*view);
+  *view = NULL;
+  closed.released = true;
+  pfs_writer_end(pool, PFS_OK);
+  if (last && health == PFS_WRITER_READY) {
+    struct pfs_write_result cleanup = {0};
+    status = pool->writer->cleanup(volume, &object, &cleanup);
+    closed.maintenance_completion = cleanup.maintenance_completion;
+    closed.maintenance_status = cleanup.maintenance_status;
+    closed.health = cleanup.health;
+  }
+  pfs_writer_lifetime_begin(pool);
+  pfs_volume_drop(volume);
+  pfs_writer_end(pool, PFS_OK);
+  if (pool->writer) {
+    closed.health = pool->writer->status.health;
+  }
+  *result = closed;
   return status;
 }
 
@@ -924,6 +1016,11 @@ pfs_view_checkpoint(struct pfs_view *view, struct pfs_write_result *result)
   if (status != PFS_OK) {
     return status;
   }
+  status = pfs_view_operation_hold(view);
+  if (status != PFS_OK) {
+    pfs_writer_end(pool, status);
+    return status;
+  }
   uint64_t right = view->identity.kind == PFS_OBJECT_FILE ?
     view->rights.file & PFS_FILE_CHECKPOINT : view->rights.directory & PFS_DIR_CHECKPOINT;
   if (!right) {
@@ -936,6 +1033,36 @@ pfs_view_checkpoint(struct pfs_view *view, struct pfs_write_result *result)
   } else {
     status = pfs_writer_checkpoint(pool, result);
   }
+  pfs_view_operation_drop(view);
   pfs_writer_end(pool, status);
+  return status;
+}
+
+enum pfs_status
+pfs_view_delegate(struct pfs_view *view, enum pfs_grant_scope scope,
+                  const struct pfs_rights *requested, struct pfs_view **out,
+                  struct pfs_view_identity *identity)
+{
+  if (!view || !out || *out || !identity || !rights_valid(requested) ||
+      !scope_valid(scope) || request_kind_validate(view->identity.kind, scope) != PFS_OK) {
+    return PFS_INVALID;
+  }
+  enum pfs_status status = view_begin(view);
+  if (status != PFS_OK) {
+    return status;
+  }
+  if ((view->scope == PFS_SCOPE_OBJECT && scope != PFS_SCOPE_OBJECT) ||
+      !rights_contained(requested, &view->rights) ||
+      (scope == PFS_SCOPE_OBJECT &&
+       ((view->identity.kind == PFS_OBJECT_FILE && requested->directory) ||
+        (view->identity.kind == PFS_OBJECT_DIRECTORY && requested->file)))) {
+    status = PFS_DENIED;
+  } else {
+    status = pfs_view_reserve(view, &view->object, view->identity.kind, requested, scope, out);
+    if (status == PFS_OK) {
+      *identity = (*out)->identity;
+    }
+  }
+  view_end(view, status);
   return status;
 }

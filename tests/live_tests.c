@@ -75,9 +75,7 @@ add_explicit_directory_checkpoint(const struct pfs_volume_record *volume_record)
                                          output, sizeof(output)));
 }
 
-/* This is a bridge unit fixture, not a writable-open or publication shortcut.
- * The bridge receives a checked generation and confirmed volume description;
- * admission and actual publication have their own independent fixtures. */
+/* Ordinary live access uses the same admitted writer as mutation tests. */
 static void
 open_bridge_fixture(void)
 {
@@ -98,10 +96,13 @@ open_bridge_fixture(void)
   struct pfs_build_volume specification = {
     .id = {{2}}, .root_object = {{3}}, .name = {4, "home"}, .owner = {{5}},
     .object_count = 2, .objects = objects,
+    .quota_set = true, .quota = 128, .guarantee_set = true,
   };
   struct pfs_build_spec spec = {
     .block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}},
     .volume_count = 1, .volumes = &specification,
+    .reserve_set = PFS_RESERVE_COW | PFS_RESERVE_MIGRATION | PFS_RESERVE_RECOVERY,
+    .cow_reserve = 1024, .migration_reserve = 1024, .recovery_reserve = 1024,
   };
   struct pfs_build_plan plan = {0};
   struct pfs_build_source source = {.read = source_read, .validate = source_validate};
@@ -109,26 +110,14 @@ open_bridge_fixture(void)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_build(&plan, &fixture.builder, &source));
   add_explicit_directory_checkpoint(&plan.volumes[0]);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_build_plan_destroy(&plan));
-  struct pfs_pool_diagnostic diagnostic;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open(&pool, &fixture.builder.reader, &fixture.memory, &diagnostic));
+  struct pfs_write_open_result opening;
+  const struct pfs_write_options options = {
+    .extent_limit = 16, .metadata_limit = 16, .random = test_random,
+  };
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &fixture.builder,
+    &fixture.memory, &options, &opening));
   const struct pfs_volume_id id = {{2}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &id, &volume));
-  struct pfs_volume_record record;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_metadata(&volume, &record));
-  struct pfs_allocation allocation = {0};
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_memory_allocate(&fixture.memory, sizeof(struct pfs_writer),
-                    _Alignof(struct pfs_writer), &allocation));
-  struct pfs_writer *writer = allocation.data;
-  memset(writer, 0, sizeof(*writer));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_memory_move(&fixture.memory, &allocation, &writer->allocation));
-  writer->pool = &pool;
-  writer->backing = &fixture.builder;
-  writer->diagnostic = diagnostic;
-  writer->states[0].candidate = diagnostic.candidate[diagnostic.selected];
-  writer->states[0].volumes[0].record = record;
-  writer->states[0].volume_count = 1;
-  writer->status.health = PFS_WRITER_READY;
-  pool.writer = writer;
   authority = (struct pfs_trusted_context) {
     .principal = {{5}}, .root = {{3}}, .scope = PFS_SCOPE_SUBTREE,
     .ceiling = {PFS_FILE_RIGHTS_ALL, PFS_DIR_RIGHTS_ALL, PFS_ADMIN_RIGHTS_ALL},
@@ -153,8 +142,8 @@ static void
 close_bridge_fixture(void)
 {
   hook_enabled = false;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view, &(struct pfs_view_close_result){0}));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_FALSE(pool.writer_busy);
@@ -208,7 +197,7 @@ checkpoint_authority_does_not_imply_read_lookup_or_metadata(void)
   authority.ceiling = rights;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &authority, &authority.root,
                           PFS_SCOPE_OBJECT, &rights, &child));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&child));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&child, &(struct pfs_view_close_result){0}));
   close_bridge_fixture();
 }
 
@@ -262,8 +251,8 @@ live_mode_separates_immutable_diagnostics_and_stopped_reads(void)
   TEST_ASSERT_NULL(child);
   uint64_t writes = fixture.writes;
   uint64_t flushes = fixture.flushes;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view, &(struct pfs_view_close_result){0}));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
@@ -289,23 +278,24 @@ callback_reentry(void)
   if (hook_closing_pool) {
     return;
   }
+  struct pfs_view *target = file_view ? file_view : directory_view;
   TEST_ASSERT_EQUAL(PFS_BUSY, pfs_volume_close(&volume));
   struct pfs_view_metadata metadata;
   memset(&metadata, 0xa5, sizeof(metadata));
   struct pfs_view_metadata before = metadata;
-  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_metadata(file_view, &metadata));
+  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_metadata(target, &metadata));
   TEST_ASSERT_EQUAL_MEMORY(&before, &metadata, sizeof(metadata));
   uint8_t bytes[8];
   size_t count = 456;
-  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_read(file_view, 0, bytes, sizeof(bytes), &count));
+  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_read(target, 0, bytes, sizeof(bytes), &count));
   TEST_ASSERT_EQUAL(456, count);
   struct pfs_write_result result;
   memset(&result, 0xa5, sizeof(result));
   struct pfs_write_result previous = result;
-  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_checkpoint(file_view, &result));
+  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_checkpoint(target, &result));
   TEST_ASSERT_EQUAL_MEMORY(&previous, &result, sizeof(result));
-  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_close(&file_view));
-  TEST_ASSERT_NOT_NULL(file_view);
+  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_view_close(&target, &(struct pfs_view_close_result){0}));
+  TEST_ASSERT_NOT_NULL(target);
   struct pfs_view *child = NULL;
   struct pfs_view_identity identity;
   struct pfs_rights rights = {.file = PFS_FILE_READ};
@@ -313,8 +303,8 @@ callback_reentry(void)
                             PFS_SCOPE_OBJECT, &rights, &child, &identity));
   TEST_ASSERT_NULL(child);
   struct pfs_access_result evaluated;
-  const struct pfs_object_id target = {{4}};
-  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_access_evaluate(&volume, &authority, &target,
+  const struct pfs_object_id target_id = {{4}};
+  TEST_ASSERT_EQUAL(PFS_BUSY, pfs_access_evaluate(&volume, &authority, &target_id,
                                 PFS_SCOPE_OBJECT, &rights, &evaluated));
   struct pfs_view_entry entries[2];
   bool done = false;
@@ -370,9 +360,9 @@ callbacks_cannot_reenter_reads_authority_or_lifetime_changes(void)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_read(file_view, 0, bytes, sizeof(bytes), &count));
   TEST_ASSERT_EQUAL_MEMORY(payload, bytes, sizeof(payload));
   TEST_ASSERT_GREATER_THAN(0, hook_calls);
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view, &(struct pfs_view_close_result){0}));
   hook_closing_pool = true;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   hook_enabled = false;

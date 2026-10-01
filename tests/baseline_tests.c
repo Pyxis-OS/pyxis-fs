@@ -92,7 +92,7 @@ read_list_authority_and_lifetimes(void)
   TEST_ASSERT_EQUAL(PFS_DENIED, pfs_view_metadata(file, &metadata));
   TEST_ASSERT_EQUAL(PFS_BUSY, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_BUSY, pfs_pool_close(&pool));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_NULL(file);
   rights.directory = PFS_DIR_LIST;
   rights.file = 0;
@@ -112,7 +112,7 @@ read_list_authority_and_lifetimes(void)
   TEST_ASSERT_EQUAL(PFS_DENIED, pfs_view_lookup(root, (const uint8_t *)"file", 4,
     PFS_SCOPE_OBJECT, &rights, &file, &identity));
   TEST_ASSERT_NULL(file);
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&root));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&root, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_EQUAL_UINT64(0, fixture.memory.used);

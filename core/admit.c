@@ -53,7 +53,7 @@ same_promises(const struct pfs_admit_state *first, const struct pfs_admit_state 
         pfs_bytes_compare(a->name.bytes, a->name.length, b->name.bytes, b->name.length) ||
         !same_id(a->root_object.bytes, b->root_object.bytes) ||
         a->quota != b->quota || a->guarantee != b->guarantee ||
-        a->features.read_required != b->features.read_required ||
+        ((a->features.read_required ^ b->features.read_required) & ~PFS_FEATURE_ORPHANS) ||
         a->features.write_required != b->features.write_required ||
         a->features.optional != b->features.optional) {
       return false;
@@ -95,11 +95,6 @@ canonical_state(const struct check_state *state)
   }
   const struct check_claim *claims = state->claims.data;
   const struct check_volume *volumes = state->volumes.data;
-  for (size_t i = 0; i < state->volume_count; i++) {
-    if (volumes[i].record.orphan_root.block) {
-      return PFS_RECOVERY_REQUIRED;
-    }
-  }
   for (size_t i = 0; i < state->claim_count; i++) {
     const struct check_claim *claim = &claims[i];
     if (claim->type != PFS_BLOCK_TREE) {
@@ -123,6 +118,8 @@ canonical_state(const struct check_state *state)
           continue;
         }
         context.block.features = volumes[v].record.features;
+        namespace_root = claim->kind == PFS_INDEX_ORPHANS &&
+          volumes[v].record.orphan_root.block == claim->first;
         const struct check_object *objects = volumes[v].objects.data;
         size_t first = 0, last = volumes[v].object_count;
         while (claim->kind == PFS_INDEX_DIRECTORY && first < last) {
@@ -192,6 +189,25 @@ copy_state(const struct check_state *source, struct pfs_admit_state *out,
     } else if (!claim->type) {
       volume->file_extents++;
       out->file_extents++;
+      const struct check_volume *checked = &volumes[volume - out->volumes];
+      const struct check_object *objects = checked->objects.data;
+      size_t first = 0, last = checked->object_count;
+      while (first < last) {
+        size_t middle = first + (last - first) / 2;
+        int order = pfs_bytes_compare(claim->object.bytes, PFS_ID_SIZE,
+          objects[middle].record.id.bytes, PFS_ID_SIZE);
+        if (!order) {
+          if (objects[middle].orphans) {
+            volume->orphan_work += claim->count;
+          }
+          break;
+        }
+        if (order < 0) {
+          last = middle;
+        } else {
+          first = middle + 1;
+        }
+      }
     } else {
       volume->metadata_blocks += claim->count;
       out->metadata_blocks += claim->count;
@@ -387,9 +403,6 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
         volume->namespace_nodes > volume->metadata_blocks ||
         volume->namespace_nodes > volume->record.live_blocks) {
       return PFS_LIMIT;
-    }
-    if (volume->record.orphan_root.block || volume->orphan_work) {
-      return PFS_RECOVERY_REQUIRED;
     }
     uint64_t records = population - 1;
     uint64_t trees = volume->directories + 1;

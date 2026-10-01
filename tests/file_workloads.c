@@ -245,9 +245,9 @@ static void
 close_writer(void)
 {
   device.observer = NULL;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&sequential));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&small));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&parent));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&sequential, &(struct pfs_view_close_result){0}));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&small, &(struct pfs_view_close_result){0}));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&parent, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_EQUAL_UINT64(0, device.memory->used);
@@ -438,7 +438,7 @@ populated_sequential_small_and_edit_history(void)
     TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire_path(&volume, &authority,
       (const uint8_t *)path, (size_t)length, PFS_SCOPE_OBJECT, &read, &source));
     compare_view(source, sources.file, source_offsets[i], source_lengths[i]);
-    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&source));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&source, &(struct pfs_view_close_result){0}));
   }
   const struct pfs_admit_state *state = &pool.writer->states[pool.writer->selected];
   printf("  final generation=%llu allocation-records=%zu claims=%zu file-extents=%llu "

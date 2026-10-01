@@ -19,6 +19,8 @@
 void setUp(void);
 void tearDown(void);
 void run_baseline_tests(void);
+void run_namespace_tests(void);
+void run_namespace_failure_tests(void);
 
 void
 setUp(void)
@@ -54,6 +56,8 @@ main(int argc, char **argv)
     run_admit_tests();
     run_publication_tests();
     run_file_tests();
+    run_namespace_tests();
+    run_namespace_failure_tests();
   }
   UNITY_END();
   return Unity.NumberOfTests == 0 || Unity.TestFailures != 0 ||

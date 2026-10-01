@@ -18,7 +18,7 @@ TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect $(BUILD)/pyxisfs-write
 
 all: $(ARCHIVE) $(TOOLS)
 
-TEST_SOURCES := file_workloads file_tests publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests codec_tests edit_tests
+TEST_SOURCES := namespace_failure_tests namespace_tests file_workloads file_tests publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests codec_tests edit_tests
 TEST_OBJECTS := $(addprefix $(BUILD)/tests/,$(addsuffix .o,$(TEST_SOURCES)))
 UNITY_OBJECT := $(BUILD)/tests/unity.o
 TEST_RUNNER := $(BUILD)/pyxis-fs-tests

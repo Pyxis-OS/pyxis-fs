@@ -368,9 +368,9 @@ No QEMU validation or production-data safety claim follows from these host check
 
 ## Healthy writer sessions
 
-`pyxisfs-write` exposes ordinary writable admission/reopening, checkpointing and
-regular-file creation, writes and resize. Unlink, rename and directory mutation
-commands are not provided. Supply explicit
+`pyxisfs-write` exposes ordinary writable admission/reopening, checkpointing,
+file and directory creation, removal, regular-file rename/replacement, writes
+and resize. Supply explicit
 extent and metadata limits; profile selection is separate from disk capacity and
 per-transaction bounds. For example, on a healthy image formatted with sufficient
 unpromised capacity and reserves:
@@ -384,6 +384,22 @@ build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
   --volume-id VOLUME_ID --object PARENT_ID --principal PRINCIPAL_ID \
   --rights dir.create create-file --name notes.txt
 build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object PARENT_ID --principal PRINCIPAL_ID \
+  --rights dir.create create-directory --name drafts
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object PARENT_ID --principal PRINCIPAL_ID \
+  --rights dir.remove remove --name obsolete.txt
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object SOURCE_PARENT_ID --principal PRINCIPAL_ID \
+  --rights dir.remove rename --name notes.txt \
+  --destination-object DESTINATION_PARENT_ID --destination-name saved.txt \
+  --destination-rights dir.create
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object SOURCE_PARENT_ID --principal PRINCIPAL_ID \
+  --rights dir.remove rename --name newer.txt \
+  --destination-object DESTINATION_PARENT_ID --destination-name saved.txt \
+  --destination-rights dir.create,dir.replace --replace
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
   --volume-id VOLUME_ID --object FILE_ID --principal PRINCIPAL_ID \
   --rights file.write,file.resize write --input /tmp/contents --offset 0
 build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
@@ -393,9 +409,14 @@ build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
 
 IDs are exactly 32 hexadecimal digits. Each command acquires an object-scoped
 view with exactly the requested rights. Checkpoint accepts `file.checkpoint` or
-`dir.checkpoint`; create accepts `dir.create`; resize accepts `file.resize`;
-write accepts `file.write` with optional `file.resize`. Duplicate rights and rights
-unrelated to the selected operation are rejected. The CLI's supplied principal/object
+`dir.checkpoint`; both create commands accept `dir.create`; remove and the rename
+source accept `dir.remove`; resize accepts `file.resize`; write accepts
+`file.write` with optional `file.resize`. Rename independently acquires the
+specified destination parent with exactly `--destination-rights dir.create`,
+optionally including `dir.replace`, under the same volume and principal. Both
+parents receive their own object-scoped trusted context and ceiling. Duplicate
+rights, duplicate options and options or rights unrelated to the selected
+operation are rejected. The CLI's supplied principal/object
 are trusted embedding inputs, not authentication. The object ID must be obtained
 under appropriate authority before the exclusive session. Existing formatter
 grants have not gained `dir.checkpoint`; they retain the existing file right.
@@ -403,11 +424,33 @@ The command reports admission requirements, confirmed generation and writer
 health/cleanup outcome. A healthy checkpoint after synchronous draining needs no
 extra publication.
 
-`create-file` takes one UTF-8 component of 1–255 bytes, excluding `/`, `.` and `..`.
-It creates an empty regular file owned under the parent's creation policy, with
-no new grants. The command requests no returned child handle or child authority;
-obtain its new ID through a subsequent authorized lookup or diagnostic listing.
-Creation authority alone does not grant access to the new file.
+`create-file` and `create-directory` take one UTF-8 component of 1–255 bytes,
+excluding `/`, `.` and `..`. They create an empty object owned under the parent's
+creation policy, with no new grants. The commands request no returned child
+handle or child authority; obtain its new ID through a subsequent authorized
+lookup or diagnostic listing. Creation authority alone does not grant access to
+the new object.
+
+`remove` takes the held parent ID and one name component. It removes a regular
+file or empty directory; a nonempty directory returns `not-empty`. The core
+records the victim as a persistent orphan in the same transaction and cleans it
+when no runtime references remain. Existing held views in an embedding retain
+their identity, contents and rights; a removed directory stays empty and rejects
+insertion. These single-operation host commands retain only the parent views,
+so their unheld victims are cleaned after confirmed namespace publication.
+
+`rename` takes source-parent `--object` and `--name`, plus explicit
+`--destination-object`, `--destination-name` and `--destination-rights`. Source
+and destination names are single components. Regular-file rename preserves the
+source object's identity and contents; directory moves/replacement and
+cross-volume moves are unsupported. The optional boolean flag `--replace`
+defaults to false. A distinct existing file destination returns `exists` unless
+`--replace` is supplied, even when destination authority includes `dir.replace`.
+Displacing that file also requires `dir.replace`; an absent destination needs
+only `dir.create`. A validated same-parent/same-name operation succeeds without
+publication or replacement authority, reporting `namespace-confirmed=false`.
+Replacement retains and cleans the displaced object through the same orphan
+lifecycle as removal.
 
 `--offset` and `--length` are unsigned decimal byte counts. Resize growth exposes
 zeros, and shrinking then regrowing does not expose discarded bytes. Write input
@@ -432,8 +475,11 @@ prefix, last confirmed length when available, namespace confirmation, writer
 health and separate maintenance outcome/status. Consume that output even on a
 nonzero exit: an error may follow confirmed progress, and an unknown outcome may
 have committed beyond the confirmed prefix or length. A close error fails the
-command without erasing earlier confirmed progress. No automatic retry follows
-an error or unknown outcome.
+command without erasing earlier confirmed progress. When close reports cleanup
+or failure, its output includes whether the handle was consumed (`released`),
+writer health and maintenance outcome/status. Both rename parent views are
+closed even when acquisition or mutation fails. No automatic retry follows an
+error or unknown outcome.
 
 This adapter supports buffered I/O to a Linux local regular file, with exclusive
 advisory locking for the session, exact transfers and explicit `fsync`. It does
@@ -462,8 +508,10 @@ or maintenance also stops all ordinary access pool-wide, even if transient. A
 fresh validated reopen must meet the backing-history preconditions above; the
 failed instance cannot retry itself healthy. Cleanup failure cannot erase already
 confirmed user progress. An unknown outcome may include additional committed
-bytes and is not automatically retryable. Handle closure performs no recovery or retry. Simulator results are
-core protocol evidence only, not qualification of Linux post-error recovery.
+bytes and is not automatically retryable. In a healthy writer, last-reference
+closure can finish funded orphan cleanup. Closure performs no recovery or retry
+in a stopped writer. Simulator results are core protocol evidence only, not
+qualification of Linux post-error recovery.
 
 ### File command validation
 
@@ -486,3 +534,20 @@ refusals left the selected generation unchanged. The final check completed both
 retained generations 22/21 and their cross-state comparison, each with one file
 extent and one data block. These are healthy host command observations; they
 provide no real-host writeback-failure or power-loss recovery qualification.
+
+
+### Namespace command validation
+
+On Linux 6.19.10 with native GCC 16.2.1, a fresh 64 MiB source-populated image
+(E=512/M=256, 4 MiB recovery reserve) passed directory/file creation, removal and
+regular-file rename/replacement. Holding `dir.replace` without `--replace` refused
+an existing destination without changing its generation or expected victim bytes.
+Explicit replacement preserved the source identity and independently supplied
+4391-byte contents. A 255-byte destination name succeeded; same-name rename
+reported `namespace_confirmed=false` without changing generation. Nonempty
+directory removal refused without publication. Removing empty files/directories
+returned a ready writer. Final checking covered both retained generations and
+cross-state consistency with no orphans; full extraction matched the independently
+defined final tree. Catalog diagnostics recognized the retained ORPHANS feature.
+These are ordinary healthy-session observations, not interrupted-session or
+post-writeback-error recovery qualification.

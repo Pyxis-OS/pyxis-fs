@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "writer.h"
 #include "canonical.h"
+#include "file.h"
 
 /* Planning performs backing reads only. Keep its I/O failures distinct from
  * replacement writes/flushes and the slot publication uncertainty window. */
@@ -126,6 +127,19 @@ stop_writer(struct pfs_writer *writer, enum pfs_status status, enum publication_
     PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED;
   writer->status.failure = status;
   writer->status.invariant_failure = admitted && status != PFS_IO && status != PFS_CORRUPT;
+}
+
+void
+pfs_writer_funded_failure(struct pfs_pool *pool, enum pfs_status status)
+{
+  if (!pool || !pool->writer || status == PFS_OK || status == PFS_BUSY ||
+      status == PFS_RECOVERY_REQUIRED) {
+    return;
+  }
+  struct pfs_writer *writer = pool->writer;
+  if (writer->status.health == PFS_WRITER_READY) {
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
+  }
 }
 
 static enum pfs_status
@@ -387,7 +401,8 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
       }
       retired += claim->count;
       status = change_add(writer, &changes_count, claim->first, claim->count,
-        PFS_ALLOCATION_RETIRED, &claim->volume, claim->birth, PFS_CHARGE_ORDINARY);
+        PFS_ALLOCATION_RETIRED, &claim->volume, claim->birth,
+        batch->orphan_cleanup ? PFS_CHARGE_RECOVERY : PFS_CHARGE_ORDINARY);
       if (status != PFS_OK) {
         return status;
       }
@@ -701,9 +716,13 @@ pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch, struct pfs_wri
   writer->publishing = true;
   *result = (struct pfs_write_result){.completion = PFS_STOPPED, .health = writer->status.health};
   enum pfs_status status = PFS_OK;
+  /* Deleting a final leaf may collapse to an unchanged child or an empty
+   * index, retiring metadata without emitting replacement volume nodes. */
   if (batch->available_count != PFS_PLAN_VOLUME_NEW ||
-      !batch->block_count || batch->block_count > PFS_PLAN_VOLUME_NEW || !batch->blocks ||
-      !batch->add || !batch->add_count || batch->add_count > PFS_PLAN_VOLUME_NEW ||
+      batch->block_count > PFS_PLAN_VOLUME_NEW || (batch->block_count && !batch->blocks) ||
+      batch->add_count > PFS_PLAN_VOLUME_NEW || (batch->add_count && !batch->add) ||
+      ((!batch->block_count) != (!batch->add_count)) ||
+      (!batch->block_count && !batch->remove_count) ||
       batch->remove_count > PFS_PLAN_VOLUME_RETIRED || (batch->remove_count && !batch->remove) ||
       batch->generation != writer->last_confirmed_generation + 1) {
     status = PFS_INVALID;
@@ -778,6 +797,7 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
     pfs_memory_move(memory, &allocation, &pool->writer->allocation);
     pool->writer->pool = pool;
     pool->writer->backing = backing;
+    pool->writer->cleanup = pfs_orphan_cleanup;
     pool->writer->random = options->random;
     pool->writer->random_context = options->random_context;
     status = pfs_admit_open(&backing->reader, memory, options->extent_limit, options->metadata_limit,
@@ -821,6 +841,11 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
       status = pfs_block_flush(backing);
       if (status == PFS_OK) {
         status = drain(writer, &diagnostic->recovery);
+        if (status == PFS_OK) {
+          pool->writer_busy = false;
+          status = pfs_orphan_recover(pool, &diagnostic->recovery);
+          pool->writer_busy = true;
+        }
       } else {
         stop_writer(writer, status, PUBLICATION_REPLACEMENTS, false);
         diagnostic->recovery.completion = PFS_STOPPED;

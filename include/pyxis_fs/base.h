@@ -23,6 +23,7 @@ enum pfs_status {
   PFS_EXISTS,
   PFS_DETACHED,
   PFS_CHANGED,
+  PFS_NOT_EMPTY,
 };
 
 #define PFS_BLOCK_SIZE 4096u

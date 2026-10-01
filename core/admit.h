@@ -39,8 +39,8 @@ struct pfs_admit_state {
 /* Summary storage belongs to the caller and must be charged to memory. The
  * empty arena is reserved after both-state structural proof, before summaries
  * are copied. Temporary checker storage shares memory and is released on every
- * return. Opening reads metadata only, performs no writes and refuses retained
- * orphans until orphan recovery is implemented. On failure arena and summaries
+ * return. Opening reads metadata only and performs no writes. Orphans are fully
+ * checked and their remaining work is included in generation admission. On failure arena and summaries
  * are empty; check diagnostics retain the completed validation result.
  * Successful vectors occupy arena slots 0/1; empty slot 2 is the candidate. */
 enum pfs_status pfs_admit_open(const struct pfs_block_reader *reader,

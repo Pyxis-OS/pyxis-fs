@@ -16,4 +16,21 @@ const struct pfs_volume_record *pfs_writer_volume(const struct pfs_pool *pool,
   const struct pfs_volume_id *id, uint64_t *birth);
 enum pfs_status pfs_writer_checkpoint(struct pfs_pool *pool, struct pfs_write_result *result);
 
+/* Shared live identity references do not pin any committed generation. Entry
+ * storage is charged to pool memory, separate from the admitted mutation arena. */
+struct pfs_runtime_object {
+  struct pfs_allocation allocation;
+  struct pfs_runtime_object *next;
+  struct pfs_volume_id volume;
+  struct pfs_object_id object;
+  size_t views;
+  size_t operations;
+};
+bool pfs_runtime_references(const struct pfs_pool *pool,
+  const struct pfs_volume_id *volume, const struct pfs_object_id *object);
+enum pfs_status pfs_runtime_hold(struct pfs_pool *pool,
+  const struct pfs_volume_id *volume, const struct pfs_object_id *object,
+  struct pfs_runtime_object **out);
+void pfs_runtime_drop(struct pfs_pool *pool, struct pfs_runtime_object *object);
+
 #endif

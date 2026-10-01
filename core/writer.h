@@ -29,6 +29,8 @@ struct pfs_batch {
   size_t remove_count;
   const struct check_claim *add;
   size_t add_count;
+  /* Cleanup volume retirements consume recovery, not ordinary workspace. */
+  bool orphan_cleanup;
 };
 
 struct pfs_changed_directory {
@@ -47,6 +49,9 @@ struct pfs_writer {
   struct pfs_check_result opening;
   struct pfs_pool_diagnostic diagnostic;
   struct pfs_writer_status status;
+  struct pfs_runtime_object *runtime_objects;
+  enum pfs_status (*cleanup)(struct pfs_volume *volume,
+    const struct pfs_object_id *id, struct pfs_write_result *result);
   struct pfs_batch batch;
   pfs_random_fn random;
   void *random_context;
@@ -63,5 +68,7 @@ enum pfs_status pfs_writer_prepare(struct pfs_pool *pool, struct pfs_batch **bat
 void pfs_writer_abort(struct pfs_pool *pool);
 enum pfs_status pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch,
   struct pfs_write_result *result);
+/* A reserved orphan sequence cannot refuse resources as ordinary admission. */
+void pfs_writer_funded_failure(struct pfs_pool *pool, enum pfs_status status);
 
 #endif

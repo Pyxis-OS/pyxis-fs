@@ -3,6 +3,26 @@
 
 #include <pyxis_fs/read.h>
 
+enum pfs_writer_health {
+  PFS_WRITER_READY,
+  PFS_WRITER_READABLE_STOPPED,
+  PFS_WRITER_ACCESS_STOPPED,
+};
+
+enum pfs_maintenance_completion {
+  PFS_MAINTENANCE_NONE,
+  PFS_MAINTENANCE_COMPLETE,
+  PFS_MAINTENANCE_STOPPED,
+  PFS_MAINTENANCE_UNKNOWN,
+};
+
+struct pfs_view_close_result {
+  bool released;
+  enum pfs_maintenance_completion maintenance_completion;
+  enum pfs_status maintenance_status;
+  enum pfs_writer_health health;
+};
+
 struct pfs_rights {
   uint64_t file;
   uint64_t directory;
@@ -54,7 +74,11 @@ enum pfs_status pfs_view_acquire_path(struct pfs_volume *volume,
                                      enum pfs_grant_scope scope,
                                      const struct pfs_rights *requested,
                                      struct pfs_view **out);
-enum pfs_status pfs_view_close(struct pfs_view **view);
+/* Accepted close consumes the view even if final orphan cleanup fails. BUSY
+ * preserves the view and reports released=false. Stopped writers release runtime
+ * state without cleanup. Close performs no checkpoint or recovery retry. */
+enum pfs_status pfs_view_close(struct pfs_view **view,
+  struct pfs_view_close_result *result);
 
 struct pfs_view_identity {
   struct pfs_pool_id pool;
@@ -131,5 +155,12 @@ enum pfs_status pfs_view_lookup(struct pfs_view *view,
                                const struct pfs_rights *requested,
                                struct pfs_view **out,
                                struct pfs_view_identity *identity);
+
+/* Delegate this held identity with exactly requested rights. Rights and scope
+ * may only narrow; object scope on files cannot carry directory rights. No
+ * namespace or fresh policy acquisition occurs, including for retained orphans. */
+enum pfs_status pfs_view_delegate(struct pfs_view *view,
+  enum pfs_grant_scope scope, const struct pfs_rights *requested,
+  struct pfs_view **out, struct pfs_view_identity *identity);
 
 #endif
