@@ -10,10 +10,16 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
+#include <linux/btrfs.h>
+#include <linux/loop.h>
+#include <linux/magic.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -23,6 +29,7 @@
 #define PATCHES_MAX 80u
 #define REQUEST_MAX (256u * 1024u)
 #define CORE_MEMORY_MAX (128u * 1024u * 1024u)
+#define MOUNT_LINE_BYTES 16384u
 
 struct patch {
   uint64_t offset;
@@ -63,6 +70,7 @@ static struct phase_stats preparation, measurement;
 static struct phase_stats *phase = &preparation;
 static uint8_t payload[REQUEST_MAX], actual[REQUEST_MAX];
 static int root_fd = -1;
+static int native_root_fd = -1, native_loop_fd = -1, native_backing_fd = -1;
 static bool native, batch, callback_failed, phase_stops, verifying;
 static unsigned population;
 static const char *case_name, *root_path;
@@ -327,12 +335,119 @@ remove_file(struct oracle_file *oracle)
   completed_operation();
 }
 
+static uint64_t
+mount_id(int fd)
+{
+  struct statx attributes;
+  require(statx(fd, "", AT_EMPTY_PATH, STATX_MNT_ID, &attributes) == 0 &&
+    (attributes.stx_mask & STATX_MNT_ID), "read held descriptor mount ID");
+  return attributes.stx_mnt_id;
+}
+
+static void
+require_read_only(int fd)
+{
+  int flags = fcntl(fd, F_GETFL);
+  require(flags >= 0 && (flags & O_ACCMODE) == O_RDONLY && !(flags & O_PATH),
+    "native descriptors must be open read-only");
+}
+
+static void
+require_loop_node(const char *path, dev_t loop_device)
+{
+  int fd = open(path, O_PATH | O_CLOEXEC | O_NOFOLLOW);
+  struct stat attributes;
+  require(fd >= 0 && fstat(fd, &attributes) == 0 &&
+    S_ISBLK(attributes.st_mode) && attributes.st_rdev == loop_device,
+    "native filesystem device must be the held loop");
+  require(close(fd) == 0, "close inspected device node");
+}
+
+static void
+verify_native_mount(uint64_t id, dev_t loop_device)
+{
+  struct statfs filesystem;
+  require(fstatfs(root_fd, &filesystem) == 0 &&
+    (filesystem.f_type == EXT4_SUPER_MAGIC || filesystem.f_type == BTRFS_SUPER_MAGIC),
+    "native root must be ext4 or Btrfs");
+  FILE *mounts = fopen("/proc/self/mountinfo", "re");
+  require(mounts != NULL, "open native mount information");
+  char line[MOUNT_LINE_BYTES];
+  bool found = false;
+  while (fgets(line, sizeof(line), mounts)) {
+    require(strchr(line, '\n') != NULL, "native mount information exceeds buffer");
+    unsigned long long candidate;
+    require(sscanf(line, "%llu", &candidate) == 1, "parse native mount ID");
+    if (candidate != id) {
+      continue;
+    }
+    char *separator = strstr(line, " - ");
+    char type[32], source[PATH_MAX];
+    require(separator && sscanf(separator + 3, "%31s %4095s", type, source) == 2,
+      "parse native mount source");
+    require((filesystem.f_type == EXT4_SUPER_MAGIC && !strcmp(type, "ext4")) ||
+      (filesystem.f_type == BTRFS_SUPER_MAGIC && !strcmp(type, "btrfs")),
+      "native mount filesystem type mismatch");
+    require_loop_node(source, loop_device);
+    found = true;
+    break;
+  }
+  require(found && !ferror(mounts), "held native mount is missing");
+  require(fclose(mounts) == 0, "close native mount information");
+  if (filesystem.f_type == EXT4_SUPER_MAGIC) {
+    struct stat attributes;
+    require(fstat(root_fd, &attributes) == 0 && attributes.st_dev == loop_device,
+      "ext4 root must use the held loop");
+  } else {
+    /* Btrfs has an anonymous st_dev; inspect its sole device explicitly. */
+    struct btrfs_ioctl_fs_info_args information = {0};
+    require(ioctl(root_fd, BTRFS_IOC_FS_INFO, &information) == 0 &&
+      information.num_devices == 1, "native Btrfs must have exactly one device");
+    struct btrfs_ioctl_dev_info_args backing = {.devid = information.max_id};
+    require(ioctl(root_fd, BTRFS_IOC_DEV_INFO, &backing) == 0 &&
+      memchr(backing.path, '\0', sizeof(backing.path)), "inspect native Btrfs device");
+    require_loop_node((const char *)backing.path, loop_device);
+  }
+}
+
+static void
+open_native_root(void)
+{
+  require_read_only(native_root_fd);
+  require_read_only(native_loop_fd);
+  require_read_only(native_backing_fd);
+  struct stat root, loop, backing, scratch;
+  require(fstat(native_root_fd, &root) == 0 && S_ISDIR(root.st_mode) &&
+    fstat(native_loop_fd, &loop) == 0 && S_ISBLK(loop.st_mode) &&
+    fstat(native_backing_fd, &backing) == 0 && S_ISREG(backing.st_mode) &&
+    fstat(pfs_test_ram_directory_fd(), &scratch) == 0,
+    "inspect held native descriptors");
+  require(backing.st_dev == scratch.st_dev &&
+    mount_id(native_backing_fd) == mount_id(pfs_test_ram_directory_fd()),
+    "native loop backing must use the validated RAM mount");
+  struct loop_info64 status;
+  require(ioctl(native_loop_fd, LOOP_GET_STATUS64, &status) == 0 &&
+    status.lo_device == (uint64_t)backing.st_dev && status.lo_inode == backing.st_ino &&
+    status.lo_offset == 0 && status.lo_sizelimit == 0 && status.lo_flags == LO_FLAGS_AUTOCLEAR,
+    "held loop must cover the verified RAM backing");
+  uint64_t id = mount_id(native_root_fd);
+  int supplied = open(root_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  struct stat current;
+  require(supplied >= 0 && fstat(supplied, &current) == 0 &&
+    current.st_dev == root.st_dev && current.st_ino == root.st_ino && mount_id(supplied) == id,
+    "native root must match the held directory");
+  require(close(supplied) == 0, "close supplied native root");
+  /* All workload paths resolve from this held directory, never from --root. */
+  root_fd = fcntl(native_root_fd, F_DUPFD_CLOEXEC, 3);
+  require(root_fd >= 0, "hold verified native root");
+  verify_native_mount(id, loop.st_rdev);
+}
+
 static void
 open_backend(void)
 {
-  root_fd = open(root_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  require(root_fd >= 0, "open supplied root");
   if (native) {
+    open_native_root();
     DIR *directory = fdopendir(dup(root_fd));
     require(directory != NULL, "inspect native root");
     struct dirent *entry;
@@ -344,6 +459,8 @@ open_backend(void)
     require(errno == 0 && closedir(directory) == 0, "read native root");
     return;
   }
+  root_fd = open(root_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  require(root_fd >= 0, "open supplied root");
   struct stat supplied, validated;
   require(fstat(root_fd, &supplied) == 0 &&
     fstat(pfs_test_ram_directory_fd(), &validated) == 0 &&
@@ -614,12 +731,28 @@ print_phase(const char *name, const struct phase_stats *stats)
   printf("}");
 }
 
+static int
+parse_descriptor(const char *text)
+{
+  require(text && *text, "missing native descriptor");
+  unsigned value = 0;
+  for (; *text; text++) {
+    require(*text >= '0' && *text <= '9' &&
+      value <= ((unsigned)INT_MAX - (unsigned)(*text - '0')) / 10,
+      "invalid native descriptor");
+    value = value * 10 + (unsigned)(*text - '0');
+  }
+  require(value >= 3, "native descriptors must not use standard streams");
+  return (int)value;
+}
+
 static void
 parse_arguments(int argc, char **argv)
 {
   const char *filesystem = NULL, *durability = NULL, *population_text = NULL, *stops = NULL;
-  require(argc == 11 || argc == 13,
-    "expected --filesystem --root --population --case --durability and optional --phase-stops pairs");
+  const char *root_descriptor = NULL, *loop_descriptor = NULL, *backing_descriptor = NULL;
+  require(argc >= 11 && argc <= 19 && argc % 2 == 1,
+    "expected filesystem/root/population/case/durability pairs and optional phase/native descriptors");
   for (int i = 1; i < argc; i += 2) {
     const char **destination = NULL;
     if (!strcmp(argv[i], "--filesystem")) {
@@ -634,6 +767,12 @@ parse_arguments(int argc, char **argv)
       destination = &durability;
     } else if (!strcmp(argv[i], "--phase-stops")) {
       destination = &stops;
+    } else if (!strcmp(argv[i], "--native-root-fd")) {
+      destination = &root_descriptor;
+    } else if (!strcmp(argv[i], "--native-loop-fd")) {
+      destination = &loop_descriptor;
+    } else if (!strcmp(argv[i], "--native-backing-fd")) {
+      destination = &backing_descriptor;
     }
     require(destination && !*destination, "unknown or repeated option");
     *destination = argv[i + 1];
@@ -647,6 +786,16 @@ parse_arguments(int argc, char **argv)
   require(!stops || !strcmp(stops, "yes") || !strcmp(stops, "no"), "phase stops must be yes or no");
   phase_stops = stops && !strcmp(stops, "yes");
   native = !strcmp(filesystem, "native");
+  if (native) {
+    require(root_descriptor && loop_descriptor && backing_descriptor,
+      "native mode requires launcher-held root, loop and RAM backing descriptors");
+    native_root_fd = parse_descriptor(root_descriptor);
+    native_loop_fd = parse_descriptor(loop_descriptor);
+    native_backing_fd = parse_descriptor(backing_descriptor);
+  } else {
+    require(!root_descriptor && !loop_descriptor && !backing_descriptor,
+      "native descriptors are not valid for Pyxis mode");
+  }
   batch = !strcmp(durability, "batch");
   population = !strcmp(population_text, "32") ? 32 : 256;
   require(native || !batch, "Pyxis has operation durability only");
@@ -655,8 +804,8 @@ parse_arguments(int argc, char **argv)
 int
 main(int argc, char **argv)
 {
-  pfs_test_require_ram();
   parse_arguments(argc, argv);
+  pfs_test_require_ram();
   open_backend();
   prepare();
   phase = &measurement;
