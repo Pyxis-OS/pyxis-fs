@@ -1,11 +1,14 @@
 # Maintained host contract tests
 
-Run the deterministic PR suite from this repository:
+Run the deterministic PR suite in the [bounded RAM setup](ram-validation.md):
 
 ```sh
-make -j16
-make check
+sudo python3 tests/ram_run.py --suite check
 ```
+
+Historical commands and observations below do not waive that storage boundary.
+Bare `make check` now refuses unless its actual scratch/cgroup/core limits pass
+the same guard. The larger recovery workload is not currently authorized.
 
 `make check` builds `build/pyxis-fs-tests` and runs `--suite pr`. It links the same
 freestanding `libpyxis-fs.a` as the ordinary tools, with no alternate core or
@@ -123,8 +126,8 @@ throughput.
 
 ## CI and scope limits
 
-The `Filesystem` workflow runs the ordinary build and `make check` on each PR and
-push to main, using the existing Pyxis builder image. The `host-contract` job has a
+The `Filesystem` workflow builds and runs the quick suite on each PR and push
+to main in the verified RAM boundary, using the existing Pyxis builder image. The `host-contract` job has a
 five-minute timeout; the quick suite is intended to stay comfortably below one
 minute on the normal runner. The emitted status is `Filesystem / host-contract (pull_request)`; the repository
 owner must add that exact pattern to required status checks in branch protection. This repository owns the check; the parent

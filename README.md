@@ -31,8 +31,10 @@ supply both `--gpt-partition N --sector-size 512|4096` explicitly.
 See [host-tool usage and limits](docs/host-tools.md),
 [core build and API boundaries](docs/core.md) and the
 [format contract](docs/format.md). Run the maintained host contract suite with
-`make -j16 check`. Longer campaigns use `make check-extended`; populated workload
-commands and resource requirements are in [testing](docs/testing.md).
+`sudo python3 tests/ram_run.py --suite check` in the
+[bounded RAM setup](docs/ram-validation.md). The same launcher provides
+`--suite extended` and the small comparative `--suite baseline`. Larger populated
+workloads remain suspended pending a separately approved RAM execution plan.
 
 ## License
 

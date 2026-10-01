@@ -657,6 +657,14 @@ main(int argc, char **argv)
   double start = now();
   run_case();
   final_boundary();
+  uint64_t extents = 0, metadata = 0;
+  size_t map_records = 0;
+  if (!native) {
+    const struct pfs_admit_state *state = &pool.writer->states[pool.writer->selected];
+    extents = state->volumes[0].file_extents;
+    metadata = state->volumes[0].metadata_blocks;
+    map_records = state->map_count;
+  }
   close_core();
   double elapsed = now() - start;
   phase_marker("measurement_end");
@@ -674,12 +682,19 @@ main(int argc, char **argv)
   require(close(root_fd) == 0, "close root directory");
   printf("{\"filesystem\":\"%s\",\"population\":%u,\"case\":\"%s\","
     "\"durability\":\"%s\",\"seed\":1,\"geometry_bytes\":1073741824,"
-    "\"extent_limit\":8192,\"metadata_limit\":4096,\"block_bytes\":4096,"
-    "\"batch_unit\":\"16 create/write/rename/remove calls\",\"elapsed_seconds\":%.9f,",
-    native ? "native" : "pyxis", population, case_name, batch ? "batch" : "operation", elapsed);
+    "\"block_bytes\":4096,\"batch_unit\":%s,\"elapsed_seconds\":%.9f,",
+    native ? "native" : "pyxis", population, case_name, batch ? "batch" : "operation",
+    batch ? "\"16 create/write/rename/remove calls\"" : "null", elapsed);
+  if (!native) {
+    printf("\"extent_limit\":8192,\"metadata_limit\":4096,");
+  }
   print_phase("preparation", &preparation);
   printf(",");
   print_phase("measurement", &measurement);
+  if (!native) {
+    printf(",\"selected_state\":{\"extents\":%" PRIu64 ",\"metadata_blocks\":%" PRIu64
+      ",\"map_records\":%zu}", extents, metadata, map_records);
+  }
   printf(",\"verification\":{\"oracle\":\"seed1-operation-ledger\",\"contents_verified\":true,"
     "\"files\":%" PRIu64 ",\"bytes\":%" PRIu64 "}}\n", verified_files, verified_bytes);
   return EXIT_SUCCESS;
