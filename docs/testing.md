@@ -600,10 +600,19 @@ the full changed command's successful completion.
 | 288 MiB cumulative mutation seconds, samples 1 / 2 | 256.390 / 255.264 | 184.981 / 184.554 |
 | Two-sample mean seconds | 255.827 | 184.768 |
 | Sample spread / mean | 0.440% | 0.231% |
+| 314.25 MiB: sequential-file extents (excluding 790 imported) | 7397 | 1257 |
+| 314.25 MiB: allocation-map records | 7572 | 2812 |
+| 314.25 MiB: user metadata bytes | 512,024,576 | 214,421,504 |
+| 314.25 MiB: maintenance metadata bytes | 971,857,920 | 382,631,936 |
+| 314.25 MiB: total metadata bytes/useful byte | 4.503232 | 1.811916 |
 
 At that checkpoint the mean is about 27.8% lower with contiguous selection.
 Two samples show local repeatability, not a confidence interval or a general
-hardware speedup; they include the simulator and host callback costs.
+hardware speedup; they include the simulator and host callback costs. At the
+same 314.25 MiB prefix, metadata bytes decrease by about 59.8%. Publication and
+flush counts remain identical: 1257 user plus 2514 maintenance publications,
+each with two flushes. The improvement comes from placement and fewer map/extent
+records, without changing durability granularity.
 
 The full changed run passes every requested mutation and durable verification:
 all 1 GiB of sequential output, 8,192,000 appended bytes, all 790 imported files
