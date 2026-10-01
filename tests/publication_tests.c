@@ -227,6 +227,239 @@ overwrite(uint8_t byte)
   return edit_file(byte, false);
 }
 
+static bool
+selection_block_eligible(uint64_t block)
+{
+  for (size_t retained = 0; retained < 2; retained++) {
+    const struct pfs_admit_state *state = &pool.writer->states[retained];
+    bool free = false;
+    for (size_t i = 0; i < state->map_count; i++) {
+      const struct pfs_allocation_record *record = &state->maps[i];
+      if (block >= record->first && block - record->first < record->count) {
+        free = record->state == PFS_ALLOCATION_FREE ||
+          (retained != pool.writer->selected && record->state == PFS_ALLOCATION_RETIRED);
+      }
+    }
+    if (!free) {
+      return false;
+    }
+    for (size_t i = 0; i < state->claim_count; i++) {
+      const struct check_claim *claim = &state->claims[i];
+      if (block >= claim->first && block - claim->first < claim->count) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static uint64_t
+first_selection_run(void)
+{
+  size_t length = 0;
+  for (uint64_t block = 1; block < PFS_POOL_BLOCKS_MIN - 1; block++) {
+    length = selection_block_eligible(block) ? length + 1 : 0;
+    if (length == PFS_PLAN_VOLUME_NEW) {
+      return block + 1 - length;
+    }
+  }
+  return 0;
+}
+
+static void
+expect_selection(const struct pfs_batch *batch, bool contiguous)
+{
+  TEST_ASSERT_EQUAL_UINT(PFS_PLAN_VOLUME_NEW, batch->available_count);
+  for (size_t i = 0; i < batch->available_count; i++) {
+    TEST_ASSERT_TRUE(selection_block_eligible(batch->available[i]));
+    if (i) {
+      TEST_ASSERT_TRUE(batch->available[i] > batch->available[i - 1]);
+      if (contiguous) {
+        TEST_ASSERT_EQUAL_UINT64(batch->available[i - 1] + 1, batch->available[i]);
+      }
+    }
+  }
+  uint64_t first_run = first_selection_run();
+  if (contiguous) {
+    TEST_ASSERT_NOT_EQUAL(0, first_run);
+    TEST_ASSERT_EQUAL_UINT64(first_run, batch->available[0]);
+  } else {
+    TEST_ASSERT_EQUAL_UINT64(0, first_run);
+    size_t selected = 0;
+    for (uint64_t block = 1; selected < batch->available_count; block++) {
+      TEST_ASSERT_LESS_THAN_UINT64(PFS_POOL_BLOCKS_MIN - 1, block);
+      if (selection_block_eligible(block)) {
+        TEST_ASSERT_EQUAL_UINT64(block, batch->available[selected++]);
+      }
+    }
+  }
+}
+
+static struct pfs_batch *
+prepare_selection(void)
+{
+  uint64_t reads = device.ordinals[TEST_FAILURE_READ];
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+  uint64_t memory = device.memory->used;
+  struct pfs_batch *batch = NULL;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_writer_prepare(&pool, &batch));
+  TEST_ASSERT_EQUAL_UINT64(reads, device.ordinals[TEST_FAILURE_READ]);
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+  TEST_ASSERT_EQUAL_UINT64(memory, device.memory->used);
+  return batch;
+}
+
+static void
+contiguous_prepare_skips_reclaimed_holes_and_preserves_contents(void)
+{
+  build_seed();
+  open_device();
+  struct pfs_batch *batch = overwrite('B');
+  struct pfs_write_result result;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_writer_commit(&pool, batch, &result));
+  expect_read('B');
+  batch = prepare_selection();
+  expect_selection(batch, true);
+  bool earlier_hole = false;
+  for (uint64_t block = 1; block < batch->available[0]; block++) {
+    earlier_hole |= selection_block_eligible(block);
+  }
+  TEST_ASSERT_TRUE(earlier_hole);
+  pfs_writer_abort(&pool);
+  expect_read('B');
+  close_device();
+  struct pfs_check_result check;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&device.builder.reader, device.memory, NULL, NULL, &check));
+  TEST_ASSERT_TRUE(check.cross_complete);
+}
+
+/* These overlays isolate selection over sorted retained summaries. They are not
+ * admitted filesystem images: only prepare/abort run while installed, and the
+ * real admitted summaries are restored before reads, close or publication. */
+static struct pfs_admit_state selection_saved[2];
+static struct pfs_allocation_record selection_maps[2][6];
+static struct check_claim selection_claims[2][2];
+
+static void
+install_selection_maps(void)
+{
+  for (size_t retained = 0; retained < 2; retained++) {
+    selection_saved[retained] = pool.writer->states[retained];
+    pool.writer->states[retained].maps = selection_maps[retained];
+    pool.writer->states[retained].map_count = 1;
+    pool.writer->states[retained].claims = selection_claims[retained];
+    pool.writer->states[retained].claim_count = 0;
+    selection_maps[retained][0] = (struct pfs_allocation_record){.first = 1,
+      .count = PFS_POOL_BLOCKS_MIN - 2, .state = PFS_ALLOCATION_FREE};
+  }
+}
+
+static void
+restore_selection_maps(void)
+{
+  pfs_writer_abort(&pool);
+  for (size_t retained = 0; retained < 2; retained++) {
+    pool.writer->states[retained] = selection_saved[retained];
+  }
+}
+
+static void
+contiguous_prepare_joins_eligible_retained_map_boundaries(void)
+{
+  build_seed();
+  open_device();
+  install_selection_maps();
+  size_t older = 1 - pool.writer->selected;
+  struct pfs_admit_state *state = &pool.writer->states[older];
+  uint64_t first = state->maps[0].first, half = PFS_PLAN_VOLUME_NEW / 2;
+  state->map_count = 3;
+  state->maps[0].count = half;
+  state->maps[1] = (struct pfs_allocation_record){.first = first + half,
+    .count = half, .state = PFS_ALLOCATION_RETIRED};
+  state->maps[2] = (struct pfs_allocation_record){.first = first + 2 * half,
+    .count = PFS_POOL_BLOCKS_MIN - 2 - 2 * half, .state = PFS_ALLOCATION_FREE};
+  struct pfs_batch *batch = prepare_selection();
+  expect_selection(batch, true);
+  restore_selection_maps();
+  expect_read('A');
+  close_device();
+}
+
+static void
+contiguous_prepare_respects_each_retained_map_and_claim(void)
+{
+  build_seed();
+  open_device();
+  for (size_t retained = 0; retained < 2; retained++) {
+    for (unsigned claim = 0; claim < 2; claim++) {
+      install_selection_maps();
+      struct pfs_admit_state *selected = &pool.writer->states[pool.writer->selected];
+      uint64_t first = selected->maps[0].first, demand = PFS_PLAN_VOLUME_NEW;
+      selected->map_count = 4;
+      selected->maps[0].count = 2 * demand - 1;
+      selected->maps[1] = (struct pfs_allocation_record){.first = first + 2 * demand - 1,
+        .count = 1, .state = PFS_ALLOCATION_POOL};
+      selected->maps[2] = (struct pfs_allocation_record){.first = first + 2 * demand,
+        .count = demand, .state = PFS_ALLOCATION_FREE};
+      selected->maps[3] = (struct pfs_allocation_record){.first = first + 3 * demand,
+        .count = PFS_POOL_BLOCKS_MIN - 2 - 3 * demand, .state = PFS_ALLOCATION_POOL};
+      struct pfs_admit_state *protected = &pool.writer->states[retained];
+      uint64_t interrupted = first + demand - 1;
+      if (claim) {
+        protected->claims[0] = (struct check_claim){.first = first, .count = 1};
+        protected->claims[1] = (struct check_claim){.first = interrupted, .count = 1};
+        protected->claim_count = 2;
+      } else if (retained == pool.writer->selected) {
+        memmove(protected->maps + 3, protected->maps + 1, 3 * sizeof(*protected->maps));
+        protected->maps[0].count = demand - 1;
+        protected->maps[1] = (struct pfs_allocation_record){.first = interrupted,
+          .count = 1, .state = PFS_ALLOCATION_VOLUME};
+        protected->maps[2] = (struct pfs_allocation_record){.first = interrupted + 1,
+          .count = demand - 1, .state = PFS_ALLOCATION_FREE};
+        protected->map_count = 6;
+      } else {
+        protected->maps[0].count = demand - 1;
+        protected->maps[1] = (struct pfs_allocation_record){.first = interrupted,
+          .count = 1, .state = PFS_ALLOCATION_VOLUME};
+        protected->maps[2] = (struct pfs_allocation_record){.first = interrupted + 1,
+          .count = PFS_POOL_BLOCKS_MIN - 2 - demand, .state = PFS_ALLOCATION_FREE};
+        protected->map_count = 3;
+      }
+      struct pfs_batch *batch = prepare_selection();
+      expect_selection(batch, true);
+      TEST_ASSERT_TRUE(batch->available[0] > interrupted);
+      restore_selection_maps();
+    }
+  }
+  expect_read('A');
+  close_device();
+}
+
+static void
+contiguous_prepare_falls_back_when_only_short_runs_exist(void)
+{
+  build_seed();
+  open_device();
+  install_selection_maps();
+  struct pfs_admit_state *selected = &pool.writer->states[pool.writer->selected];
+  uint64_t first = selected->maps[0].first, demand = PFS_PLAN_VOLUME_NEW;
+  selected->map_count = 4;
+  selected->maps[0].count = demand - 1;
+  selected->maps[1] = (struct pfs_allocation_record){.first = first + demand - 1,
+    .count = 1, .state = PFS_ALLOCATION_POOL};
+  selected->maps[2] = (struct pfs_allocation_record){.first = first + demand,
+    .count = demand - 1, .state = PFS_ALLOCATION_FREE};
+  selected->maps[3] = (struct pfs_allocation_record){.first = first + 2 * demand - 1,
+    .count = PFS_POOL_BLOCKS_MIN - 1 - 2 * demand, .state = PFS_ALLOCATION_POOL};
+  struct pfs_batch *batch = prepare_selection();
+  expect_selection(batch, false);
+  restore_selection_maps();
+  expect_read('A');
+  close_device();
+}
+
 /* Read each durable root independently of publisher summaries/checker output.
  * Only explicit format codecs locate the payload; expected bytes come from the
  * workload, never from the writer, reader or checker agreeing with each other. */
@@ -1025,6 +1258,10 @@ run_publication_tests(void)
 {
   Unity.TestFile = __FILE__;
   RUN_TEST(real_publication_drains_and_preserves_retained_payloads);
+  RUN_TEST(contiguous_prepare_skips_reclaimed_holes_and_preserves_contents);
+  RUN_TEST(contiguous_prepare_joins_eligible_retained_map_boundaries);
+  RUN_TEST(contiguous_prepare_respects_each_retained_map_and_claim);
+  RUN_TEST(contiguous_prepare_falls_back_when_only_short_runs_exist);
   RUN_TEST(flush_boundaries_preserve_progress_and_stop_stickily);
   RUN_TEST(planning_read_failures_stop_all_access);
   RUN_TEST(maintenance_read_failures_preserve_confirmed_progress_and_stop_access);
