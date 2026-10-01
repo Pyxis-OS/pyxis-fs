@@ -58,7 +58,8 @@ parse_seed(const char *text, uint64_t *out)
 static int
 usage(void)
 {
-  fputs("usage: pyxis-fs-tests --suite pr|file-workloads\n"
+  fputs("usage: pyxis-fs-tests --suite pr [--ram-mode ci]\n"
+    "       pyxis-fs-tests --suite file-workloads\n"
     "       pyxis-fs-tests --suite extended --seed N\n"
     "       pyxis-fs-tests --suite workload --profile recovery --seed N --source PATH\n",
     stderr);
@@ -68,8 +69,7 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-  pfs_test_require_ram();
-  const char *suite = NULL, *profile = NULL, *source = NULL;
+  const char *suite = NULL, *profile = NULL, *source = NULL, *ram_mode = NULL;
   uint64_t seed = 0;
   bool seed_set = false;
   for (int i = 1; i < argc; i += 2) {
@@ -78,6 +78,8 @@ main(int argc, char **argv)
     }
     if (!strcmp(argv[i], "--suite") && !suite) {
       suite = argv[i + 1];
+    } else if (!strcmp(argv[i], "--ram-mode") && !ram_mode) {
+      ram_mode = argv[i + 1];
     } else if (!strcmp(argv[i], "--profile") && !profile) {
       profile = argv[i + 1];
     } else if (!strcmp(argv[i], "--source") && !source) {
@@ -94,10 +96,16 @@ main(int argc, char **argv)
   bool quick = !strcmp(suite, "pr"), files = !strcmp(suite, "file-workloads");
   bool extended = !strcmp(suite, "extended"), workload = !strcmp(suite, "workload");
   if ((!quick && !files && !extended && !workload) ||
+      (ram_mode && (!quick || strcmp(ram_mode, "ci"))) ||
       ((quick || files) && (seed_set || profile || source)) ||
       (extended && (!seed_set || profile || source)) ||
       (workload && (!seed_set || !profile || strcmp(profile, "recovery") || !source || !*source))) {
     return usage();
+  }
+  if (ram_mode) {
+    pfs_test_require_ci_ram();
+  } else {
+    pfs_test_require_ram();
   }
   if (seed_set) {
     setvbuf(stdout, NULL, _IOLBF, 0);

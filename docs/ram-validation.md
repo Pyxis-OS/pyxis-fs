@@ -108,14 +108,33 @@ storage evidence and the next proposed bounded investigation.
 
 ## CI
 
-The filesystem PR job requests 2 GiB tmpfs `noswap`, 4 GiB container memory and
-zero container swap (`--memory-swap` equals `--memory`), plus hard core limit zero.
-It invokes the same launcher inside that boundary and builds/tests in RAM. The
-runtime must support and honor these options; preflight and the C guard refuse
-otherwise. The current runner uses rootless Podman and rejects `noswap` at
-container creation. The owner must provide a rootful validation runner or an
-equivalent fresh, bounded, unswappable scratch mount per job before CI can pass. The private native-comparison loop/tracing privileges are not needed
-for the quick CI suite. No compiler-container rebuild is requested.
+The quick filesystem PR job uses an anonymous tmpfs volume capped at 2 GiB and
+65,536 inodes, a 4 GiB container memory limit and zero container swap
+(`--memory-swap` equals `--memory`), plus hard core limit zero. Podman's `--tmpfs`
+parser does not accept `nr_inodes`; the anonymous local-driver tmpfs mount passes
+that option without adding container privileges or using a shared named volume.
+Actual mount type and limits are verified before building or running fixtures;
+an ordinary disk-backed volume cannot substitute for it.
+
+`python3 tests/ram_run.py --inside --suite check --ci-quick` selects the accepted
+quick-only exception to mount-level `noswap`. The runner independently accepts
+`--ram-mode ci` only with `--suite pr`. Both verify the actual cgroup membership,
+memory limit, zero swap allowance/current usage and core limit. The launcher
+creates a new scratch directory, the C guard requires it to be empty, and fixture
+helpers create/unlink new files through its pinned descriptor. Consequently the
+fixture pages are first allocated by tasks already in the verified zero-swap job;
+preexisting or shared backing files are not reused. Administrators must not move
+tasks, relax limits or share this scratch during the job.
+
+This mode relies on the owning memory cgroup's swap limit, which the kernel's
+[tmpfs swap-out path](https://github.com/torvalds/linux/blob/v6.19/mm/shmem.c)
+enforces through [swap allocation](https://github.com/torvalds/linux/blob/v6.19/mm/swapfile.c).
+It is not a general exception for buffers created outside that cgroup. Default
+local runs, extended/file/recovery suites and the native comparison retain
+mount-level `noswap`; the CLI refuses the CI mode for those workloads. Runtime
+options alone are not proof: missing or unsupported effective controls still
+cause refusal, with no disk fallback or automatic resource increase. The quick
+job needs neither loop/tracing privileges nor a compiler-container rebuild.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the

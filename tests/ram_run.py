@@ -74,12 +74,13 @@ def job_cgroup():
     raise RuntimeError('cannot resolve the actual job cgroup')
 
 
-def preflight():
+def preflight(ci_quick=False):
     entry = mount_at(SCRATCH)
     require(entry is not None, 'dedicated scratch mount is missing')
     separator = entry.index('-')
-    require(entry[separator + 1] == 'tmpfs' and
-            'noswap' in entry[separator + 3].split(','), 'scratch must be tmpfs,noswap')
+    mount_noswap = 'noswap' in entry[separator + 3].split(',')
+    require(entry[separator + 1] == 'tmpfs' and (ci_quick or mount_noswap),
+            'scratch must be tmpfs; mount-level noswap is required outside quick CI')
     fs = os.statvfs(SCRATCH)
     require(0 < fs.f_blocks * fs.f_frsize <= SCRATCH_BYTES and
             0 < fs.f_files <= 65536, 'scratch byte/inode limits exceed the agreed bounds')
@@ -91,7 +92,8 @@ def preflight():
     require(resource.getrlimit(resource.RLIMIT_CORE) == (0, 0), 'hard core-dump limit must be zero')
     return {'scratch_bytes': fs.f_blocks * fs.f_frsize, 'scratch_inodes': fs.f_files,
             'memory_max': int(memory), 'swap_max': 0, 'cgroup': str(group),
-            'kernel': os.uname().release}
+            'kernel': os.uname().release, 'mount_noswap': mount_noswap,
+            'storage_mode': 'ci-quick' if ci_quick else 'strict'}
 
 
 def interrupted(signum, _frame):
@@ -502,8 +504,9 @@ def baseline(binary, name):
     return results
 
 
-def inner(suite, name):
-    evidence = preflight()
+def inner(suite, name, ci_quick=False):
+    require(not ci_quick or suite == 'check', 'CI storage mode is restricted to the quick suite')
+    evidence = preflight(ci_quick)
     os.environ['TMPDIR'] = str(SCRATCH / 'tmp')
     Path(os.environ['TMPDIR']).mkdir()
     build = SCRATCH / 'build'
@@ -517,6 +520,8 @@ def inner(suite, name):
         results = baseline(comparison, name)
     else:
         command = [str(runner), '--suite', 'pr' if suite == 'check' else 'extended']
+        if ci_quick:
+            command += ['--ram-mode', 'ci']
         if suite == 'extended':
             command += ['--seed', '1']
         output, _ = capture(command)
@@ -534,10 +539,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--suite', choices=('preflight', 'check', 'extended', 'baseline'), default='check')
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--ci-quick', action='store_true',
+                        help='quick suite only: verify zero-swap cgroup instead of requiring mount noswap')
     parser.add_argument('--cleanup-trace', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--result-socket', help=argparse.SUPPRESS)
     parser.add_argument('--name', default='pyxis-fs-ram', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    require(not args.ci_quick or (args.inside and args.suite == 'check'),
+            '--ci-quick requires --inside --suite check')
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     if args.cleanup_trace:
@@ -550,7 +559,8 @@ def main():
             connection.connect('\0' + args.result_socket)
             sys.stdout = connection.makefile('w', buffering=1)
             sys.stderr = sys.stdout
-        result = json.dumps(inner(args.suite, args.name), sort_keys=True, separators=(',', ':'))
+        result = json.dumps(inner(args.suite, args.name, args.ci_quick),
+                            sort_keys=True, separators=(',', ':'))
         require(len(result.encode()) <= 65536, 'summary exceeds 64 KiB')
         print(result)
         return

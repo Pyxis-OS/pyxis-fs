@@ -98,10 +98,15 @@ fixed capture without raising any limits. A deliberate SIGKILL after mounting an
 owned RAM-backed ext4 loop and creating a private trace instance left neither
 an attached loop nor a trace instance: autoclear, namespace teardown and
 ExecStopPost cleanup ran. No claim of forced-OOM testing or physical power-loss
-qualification is made. CI at `02a5c1a` refused before checkout/tests: the runner
-uses a rootless runtime, which rejects `tmpfs,noswap`. A rootful validation runner
-or a separately provisioned equivalent RAM boundary is required; the guard is
-not weakened to accommodate unsupported infrastructure.
+qualification is made. The initial CI configuration at `02a5c1a` refused before
+checkout/tests because the rootless runtime rejected `tmpfs,noswap`. The accepted
+[quick-only CI mode](ram-validation.md#ci) instead verifies a zero-swap cgroup
+and fresh fixture allocation on bounded ordinary tmpfs. A matching local rootless
+container passed all 111 groups with a 292,839,424-byte job peak, no swap and no
+max/OOM events. Mode checks refused all heavier suites; direct guard probes
+confirmed strict-mode refusal without `noswap`, quick-mode allowance, and refusal
+of missing, nonempty or disk-backed scratch. This changes the CI execution
+mechanism; the comparative measurements above used the unchanged strict launcher.
 
 ## Proposed next assignment, not implementation approval
 

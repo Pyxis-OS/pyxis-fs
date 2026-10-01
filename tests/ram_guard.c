@@ -3,6 +3,7 @@
 #include "ram_guard.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <linux/magic.h>
@@ -290,8 +291,33 @@ read_cgroup_path(char *path, size_t capacity)
   return true;
 }
 
-void
-pfs_test_require_ram(void)
+static bool
+directory_empty(int directory)
+{
+  int copy = dup(directory);
+  if (copy < 0) {
+    return false;
+  }
+  DIR *stream = fdopendir(copy);
+  if (!stream) {
+    close(copy);
+    return false;
+  }
+  bool empty = true;
+  errno = 0;
+  struct dirent *entry;
+  while ((entry = readdir(stream))) {
+    if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+      empty = false;
+      break;
+    }
+  }
+  bool valid = !errno;
+  return closedir(stream) == 0 && valid && empty;
+}
+
+static void
+require_ram(bool ci_quick)
 {
   if (scratch_directory >= 0) {
     return;
@@ -357,7 +383,8 @@ pfs_test_require_ram(void)
       refuse("malformed mountinfo");
     }
     if (id == scratch_id) {
-      scratch_valid = !strcmp(type, "tmpfs") && mount_option(super_options, "noswap", false) &&
+      scratch_valid = !strcmp(type, "tmpfs") &&
+        (ci_quick || mount_option(super_options, "noswap", false)) &&
         mount_option(super_options, "nr_inodes=", true);
     }
     if (!cgroup_valid && !strcmp(type, "cgroup2")) {
@@ -367,12 +394,28 @@ pfs_test_require_ram(void)
   bool read_failed = ferror(mounts);
   fclose(mounts);
   if (read_failed || !scratch_valid) {
-    refuse("TMPDIR mount must explicitly use noswap and an inode cap");
+    refuse(ci_quick ? "TMPDIR mount must use tmpfs and an explicit inode cap" :
+      "TMPDIR mount must explicitly use noswap and an inode cap");
   }
   if (!cgroup_valid) {
     refuse("require actual cgroup memory.max <= 4 GiB, swap.max = 0 and swap.current = 0");
   }
+  if (ci_quick && !directory_empty(directory)) {
+    refuse("quick CI requires an empty TMPDIR before creating fresh fixtures");
+  }
   scratch_directory = directory;
+}
+
+void
+pfs_test_require_ram(void)
+{
+  require_ram(false);
+}
+
+void
+pfs_test_require_ci_ram(void)
+{
+  require_ram(true);
 }
 
 int
