@@ -71,9 +71,9 @@ pfs_block_match(const struct pfs_block_header *header,
     .containing_birth = context->referring_birth,
     .features = context->features,
   };
-  enum pfs_status status = type == PFS_BLOCK_POOL ?
-    pfs_features_read(&context->features) :
-    pfs_volume_features_read(&context->features);
+  enum pfs_status status = type == PFS_BLOCK_TREE ?
+    pfs_volume_features_read(&context->features) :
+    pfs_features_read(&context->features);
   if (status != PFS_OK) {
     return status;
   }

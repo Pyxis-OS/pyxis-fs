@@ -28,6 +28,28 @@ independent_record(uint8_t *bytes, size_t length, uint16_t type)
 }
 
 static void
+standalone_block_matching_preserves_pool_feature_scope(void)
+{
+  struct pfs_block_header header = {
+    .type = PFS_BLOCK_TREE, .version = PFS_FORMAT_VERSION,
+    .pool = {{1}}, .block = 7, .birth = 1,
+  };
+  struct pfs_block_context context = {
+    .block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = 1, .referring_birth = 1,
+    .pool = {{1}}, .reference = {7, 1, PFS_BLOCK_TREE, PFS_FORMAT_VERSION},
+    .features = {.read_required = PFS_FEATURE_ORPHANS},
+  };
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_match(&header, &context, PFS_BLOCK_TREE));
+  header.type = context.reference.type = PFS_BLOCK_POOL;
+  TEST_ASSERT_EQUAL(PFS_UNSUPPORTED, pfs_block_match(&header, &context, PFS_BLOCK_POOL));
+  header.type = context.reference.type = PFS_BLOCK_SUPER;
+  header.block = context.reference.block = 0;
+  /* Pool feature refusal also precedes superblock reference-envelope checking. */
+  TEST_ASSERT_EQUAL(PFS_UNSUPPORTED, pfs_block_match(&header, &context, PFS_BLOCK_SUPER));
+}
+
+static void
 orphan_known_vector_and_feature_scope(void)
 {
   uint8_t bytes[32] = {0};
@@ -534,6 +556,7 @@ void
 run_codec_tests(void)
 {
   Unity.TestFile = __FILE__;
+  RUN_TEST(standalone_block_matching_preserves_pool_feature_scope);
   RUN_TEST(orphan_known_vector_and_feature_scope);
   RUN_TEST(volume_root_known_vector);
   RUN_TEST(reserved_record_bytes_and_checkpoint);
