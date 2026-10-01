@@ -12,9 +12,7 @@ jobs:
     timeout-minutes: 5
     container:
       image: git.internal/pyxisos/pyxis-builder:pyxis-gcc16.2-binutils2.47
-      options: >-
-        --memory=4g --memory-swap=4g --ulimit core=0:0
-        --mount 'type=volume,destination=/run/pyxis-fs-ram,volume-opt=type=tmpfs,volume-opt=device=tmpfs,"volume-opt=o=rw,nosuid,nodev,size=2g,nr_inodes=65536"'
+      options: --memory=4g
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:

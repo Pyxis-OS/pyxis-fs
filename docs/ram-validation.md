@@ -112,8 +112,8 @@ The quick filesystem PR job requires tmpfs capped at 2 GiB and 65,536 inodes,
 a 4 GiB container memory limit and zero container swap (`--memory-swap` equals
 `--memory`), plus hard core limit zero. Actual mount type and limits are verified
 before building or running fixtures; a disk-backed volume cannot substitute.
-The current anonymous-volume configuration fails on the CI runtime as described
-below. The named-volume alternative is proposed, not yet agreed or deployed.
+The accepted named-volume configuration is provisioned by the owner as described
+below; CI must verify it before this corrective step can be accepted.
 
 `python3 tests/ram_run.py --inside --suite check --ci-quick` selects the accepted
 quick-only exception to mount-level `noswap`. The runner independently accepts
@@ -154,9 +154,9 @@ driver. Direct `podman run` had honored the same options; that earlier CLI
 validation did not establish the API behavior. The API also rejects `nr_inodes`
 in `HostConfig.Tmpfs`. No test payloads were written in these failed probes.
 
-### Proposed named-volume alternative
+### Named-volume provisioning
 
-**Pending agreement:** provision one named tmpfs volume under the runner's exact
+**Accepted setup:** provision one named tmpfs volume under the runner's exact
 rootless user and Podman store, then attach it by name. Reserve it exclusively
 for this single validation runner, with capacity one. No other runner, helper
 container or manual mount may use it. Complete job-container removal and volume
@@ -172,7 +172,7 @@ podman volume create --driver local \
   --opt o=rw,nosuid,nodev,size=2g,nr_inodes=65536 pyxis-fs-ram
 ```
 
-The proposed trusted runner fragment replaces the anonymous mount and its
+The trusted runner fragment replaces the anonymous mount and its
 empty-source permission. Preserve other necessary settings and existing exact
 volume permissions; do not add a wildcard:
 
@@ -209,10 +209,11 @@ observed local runtime behavior, not successful CI provisioning or crash cleanup
 on the owner's runner. Probe containers and volumes were removed.
 
 Only filesystem jobs use this dedicated runner; ordinary image builds remain on
-`pyxis`. No production/core change or guard relaxation is needed. After agreement
-and provisioning, remove the obsolete anonymous mount declaration from both
-workflows, verify the effective boundary and passing checks at both published
-heads, then mark this corrective step complete.
+`pyxis`. No production/core change or guard relaxation is needed. The workflows
+declare only the memory limit; the trusted runner configuration supplies the
+mount, swap and core limits. Owner provisioning is pending verification. Verify
+the effective boundary and passing checks at both published heads before marking
+this corrective step complete.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the
