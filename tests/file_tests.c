@@ -24,7 +24,7 @@ static unsigned random_mode;
 static const struct pfs_object_id file_id = {{4}};
 static const struct pfs_volume_id volume_id = {{2}};
 static const struct pfs_rights file_rights = {
-  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE,
+  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE | PFS_FILE_CHECKPOINT,
 };
 
 static enum pfs_status
@@ -288,9 +288,12 @@ authority_noops_and_invalid_arguments_leave_media_unchanged(void)
   struct pfs_write_result before = result;
   TEST_ASSERT_EQUAL(PFS_INVALID, pfs_view_write(file_view, 0, NULL, 1, &result));
   TEST_ASSERT_EQUAL(PFS_INVALID, pfs_view_write(file_view, UINT64_MAX, "X", 1, &result));
-  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_view_resize(file_view, PFS_FILE_SIZE_MAX + 1, &result));
   TEST_ASSERT_EQUAL(PFS_INVALID, pfs_view_resize(NULL, 0, &result));
   TEST_ASSERT_EQUAL_MEMORY(&before, &result, sizeof(result));
+  TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_view_resize(file_view, PFS_FILE_SIZE_MAX + 1, &result));
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+  TEST_ASSERT_TRUE(result.confirmed_length_valid);
+  TEST_ASSERT_EQUAL_UINT64(expected_length, result.confirmed_length);
   TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   expect_bytes(file_view, expected, expected_length);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view));
