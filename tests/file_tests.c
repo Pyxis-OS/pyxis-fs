@@ -227,8 +227,12 @@ cold_reopen_expected(void)
 static void
 partial_sparse_overwrites_and_old_eof_zeroing_survive_reopen(void)
 {
-  build_seed(PFS_BLOCK_SIZE + 37, 1024, 64);
+  build_seed(5003, 1024, 64);
   open_device();
+  for (size_t i = 0; i < 12000; i++) {
+    payload[i] = (uint8_t)(i * 11u + 3u);
+  }
+  write_expected(2000, payload, 12000);
   static const uint8_t crossing[] = "partial block crossing";
   write_expected(PFS_BLOCK_SIZE - 9, crossing, sizeof(crossing));
   static const uint8_t tail[] = "sparse tail";
