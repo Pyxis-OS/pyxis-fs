@@ -177,6 +177,31 @@ pfs_features_check(const struct pfs_features *features)
 }
 
 enum pfs_status
+pfs_volume_features_read(const struct pfs_features *features)
+{
+  if (!features) {
+    return PFS_INVALID;
+  }
+  return features->read_required & ~PFS_FEATURE_ORPHANS ? PFS_UNSUPPORTED : PFS_OK;
+}
+
+enum pfs_status
+pfs_volume_features_write(const struct pfs_features *features)
+{
+  enum pfs_status status = pfs_volume_features_read(features);
+  if (status != PFS_OK) {
+    return status;
+  }
+  return features->write_required || features->optional ? PFS_UNSUPPORTED : PFS_OK;
+}
+
+enum pfs_status
+pfs_volume_features_check(const struct pfs_features *features)
+{
+  return pfs_volume_features_write(features);
+}
+
+enum pfs_status
 pfs_context_validate(const struct pfs_record_context *context)
 {
   if (!context || context->block_count < 3 || !context->selected_generation ||
@@ -186,7 +211,7 @@ pfs_context_validate(const struct pfs_record_context *context)
   if (context->block_count < PFS_POOL_BLOCKS_MIN || context->block_count > PFS_POOL_BLOCKS_MAX) {
     return PFS_LIMIT;
   }
-  return pfs_features_read(&context->features);
+  return pfs_volume_features_read(&context->features);
 }
 
 enum pfs_status
@@ -415,7 +440,7 @@ pfs_record_header_decode(const uint8_t *data, size_t slot_length,
   }
   uint16_t actual_type = pfs_get_u16(data);
   if (actual_type != type) {
-    bool known = (actual_type >= PFS_RECORD_VOLUME && actual_type <= PFS_RECORD_GRANT) ||
+    bool known = (actual_type >= PFS_RECORD_VOLUME && actual_type <= PFS_RECORD_ORPHAN) ||
                  actual_type == PFS_INTERNAL_RECORD_TYPE;
     return known ? PFS_CORRUPT : PFS_UNSUPPORTED;
   }

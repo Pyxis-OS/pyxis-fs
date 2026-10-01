@@ -42,7 +42,7 @@ encode_prepare(void *data, size_t capacity, size_t length,
   if (validation != PFS_OK) {
     return validation == PFS_CORRUPT ? PFS_INVALID : validation;
   }
-  return pfs_features_write(&context->features);
+  return pfs_volume_features_write(&context->features);
 }
 
 /* Catalog envelopes retain target versions without interpreting volume trees. */
@@ -89,6 +89,9 @@ pfs_volume_record_validate(const struct pfs_volume_record *record,
     return PFS_INVALID;
   }
   enum pfs_status status = pfs_context_validate(context);
+  if (status == PFS_OK) {
+    status = pfs_features_read(&context->features);
+  }
   if (status != PFS_OK) {
     return status;
   }
@@ -112,7 +115,15 @@ pfs_volume_record_validate(const struct pfs_volume_record *record,
   if (status != PFS_OK) {
     return status;
   }
-  return volume_reference_validate(&record->grant_root, context, true);
+  status = volume_reference_validate(&record->grant_root, context, true);
+  if (status != PFS_OK) {
+    return status;
+  }
+  if (!(record->features.read_required & PFS_FEATURE_ORPHANS)) {
+    return record->orphan_root.block || record->orphan_root.birth ||
+           record->orphan_root.type || record->orphan_root.version ? PFS_CORRUPT : PFS_OK;
+  }
+  return volume_reference_validate(&record->orphan_root, context, true);
 }
 
 enum pfs_status
@@ -153,6 +164,12 @@ pfs_volume_record_decode(const void *data, size_t slot_length,
   value.live_blocks = pfs_get_u64(bytes + 400);
   value.retired_blocks = pfs_get_u64(bytes + 408);
   value.object_count = pfs_get_u64(bytes + 416);
+  if (value.features.read_required & PFS_FEATURE_ORPHANS) {
+    status = volume_reference_decode(bytes + 424, context, true, &value.orphan_root);
+    if (status != PFS_OK) {
+      return status;
+    }
+  }
   status = pfs_record_length_validate(slot_length, PFS_VOLUME_RECORD_SIZE, &context->features);
   if (status != PFS_OK) {
     return status;
@@ -175,13 +192,16 @@ pfs_volume_record_encode(void *data, size_t capacity,
   if (status != PFS_OK) {
     return status;
   }
-  status = pfs_features_write(&record->features);
+  status = pfs_volume_features_write(&record->features);
   if (status != PFS_OK) {
     return status;
   }
   status = pfs_reference_validate(&record->object_root, context, PFS_BLOCK_TREE, false);
   if (status == PFS_OK) {
     status = pfs_reference_validate(&record->grant_root, context, PFS_BLOCK_TREE, true);
+  }
+  if (status == PFS_OK) {
+    status = pfs_reference_validate(&record->orphan_root, context, PFS_BLOCK_TREE, true);
   }
   if (status != PFS_OK) {
     return status == PFS_CORRUPT ? PFS_INVALID : status;
@@ -191,6 +211,9 @@ pfs_volume_record_encode(void *data, size_t capacity,
   pfs_bytes_copy(bytes + 16, record->id.bytes, PFS_ID_SIZE);
   pfs_put_u16(bytes + 32, record->name.length);
   pfs_bytes_copy(bytes + 40, record->name.bytes, record->name.length);
+  pfs_put_u64(bytes + 296, record->features.read_required);
+  pfs_put_u64(bytes + 304, record->features.write_required);
+  pfs_put_u64(bytes + 312, record->features.optional);
   pfs_bytes_copy(bytes + 320, record->root_object.bytes, PFS_ID_SIZE);
   pfs_reference_encode(bytes + 336, &record->object_root);
   pfs_reference_encode(bytes + 360, &record->grant_root);
@@ -199,6 +222,9 @@ pfs_volume_record_encode(void *data, size_t capacity,
   pfs_put_u64(bytes + 400, record->live_blocks);
   pfs_put_u64(bytes + 408, record->retired_blocks);
   pfs_put_u64(bytes + 416, record->object_count);
+  if (record->features.read_required & PFS_FEATURE_ORPHANS) {
+    pfs_reference_encode(bytes + 424, &record->orphan_root);
+  }
   pfs_record_header_encode(bytes, PFS_RECORD_VOLUME, PFS_VOLUME_RECORD_SIZE);
   *written = PFS_VOLUME_RECORD_SIZE;
   return PFS_OK;
@@ -212,6 +238,9 @@ pfs_volume_name_record_validate(const struct pfs_volume_name_record *record,
     return PFS_INVALID;
   }
   enum pfs_status status = pfs_context_validate(context);
+  if (status == PFS_OK) {
+    status = pfs_features_read(&context->features);
+  }
   if (status != PFS_OK) {
     return status;
   }
@@ -292,6 +321,9 @@ pfs_allocation_record_validate(const struct pfs_allocation_record *record,
     return PFS_INVALID;
   }
   enum pfs_status status = pfs_context_validate(context);
+  if (status == PFS_OK) {
+    status = pfs_features_read(&context->features);
+  }
   if (status != PFS_OK) {
     return status;
   }
@@ -443,7 +475,8 @@ pfs_object_record_validate(const struct pfs_object_record *record,
       pfs_bytes_are_zero(record->owner.bytes, PFS_ID_SIZE) ||
       (record->kind != PFS_OBJECT_FILE && record->kind != PFS_OBJECT_DIRECTORY) ||
       (record->kind == PFS_OBJECT_FILE &&
-       pfs_bytes_are_zero(record->parent.bytes, PFS_ID_SIZE)) ||
+       pfs_bytes_are_zero(record->parent.bytes, PFS_ID_SIZE) &&
+       !(context->features.read_required & PFS_FEATURE_ORPHANS)) ||
       (record->kind == PFS_OBJECT_DIRECTORY && record->file_length != 0)) {
     return PFS_CORRUPT;
   }
@@ -815,5 +848,66 @@ pfs_grant_record_encode(void *data, size_t capacity,
   pfs_put_u64(bytes + 72, record->admin_rights);
   pfs_record_header_encode(bytes, PFS_RECORD_GRANT, PFS_GRANT_RECORD_SIZE);
   *written = PFS_GRANT_RECORD_SIZE;
+  return PFS_OK;
+}
+
+enum pfs_status
+pfs_orphan_record_validate(const struct pfs_orphan_record *record,
+                           const struct pfs_record_context *context)
+{
+  if (!record) {
+    return PFS_INVALID;
+  }
+  enum pfs_status status = pfs_context_validate(context);
+  if (status != PFS_OK) {
+    return status;
+  }
+  if (!(context->features.read_required & PFS_FEATURE_ORPHANS) ||
+      pfs_bytes_are_zero(record->object.bytes, PFS_ID_SIZE)) {
+    return PFS_CORRUPT;
+  }
+  return PFS_OK;
+}
+
+enum pfs_status
+pfs_orphan_record_decode(const void *data, size_t slot_length,
+                         const struct pfs_record_context *context,
+                         struct pfs_orphan_record *out)
+{
+  if (!data || !out) {
+    return PFS_INVALID;
+  }
+  enum pfs_status status = pfs_record_header_decode(data, slot_length,
+    PFS_RECORD_ORPHAN, PFS_ORPHAN_RECORD_SIZE, context);
+  if (status == PFS_OK) {
+    status = pfs_record_length_validate(slot_length, PFS_ORPHAN_RECORD_SIZE,
+                                       &context->features);
+  }
+  if (status != PFS_OK) {
+    return status;
+  }
+  struct pfs_orphan_record value;
+  pfs_bytes_copy(value.object.bytes, (const uint8_t *)data + 16, PFS_ID_SIZE);
+  status = pfs_orphan_record_validate(&value, context);
+  if (status == PFS_OK) {
+    *out = value;
+  }
+  return status;
+}
+
+enum pfs_status
+pfs_orphan_record_encode(void *data, size_t capacity,
+                         const struct pfs_record_context *context,
+                         const struct pfs_orphan_record *record, size_t *written)
+{
+  enum pfs_status status = encode_prepare(data, capacity, PFS_ORPHAN_RECORD_SIZE,
+    context, written, pfs_orphan_record_validate(record, context));
+  if (status != PFS_OK) {
+    return status;
+  }
+  pfs_bytes_zero(data, PFS_ORPHAN_RECORD_SIZE);
+  pfs_bytes_copy((uint8_t *)data + 16, record->object.bytes, PFS_ID_SIZE);
+  pfs_record_header_encode(data, PFS_RECORD_ORPHAN, PFS_ORPHAN_RECORD_SIZE);
+  *written = PFS_ORPHAN_RECORD_SIZE;
   return PFS_OK;
 }

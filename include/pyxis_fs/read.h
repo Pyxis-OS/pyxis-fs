@@ -38,6 +38,8 @@ enum pfs_status pfs_volume_diagnostic_resolve(struct pfs_volume *volume,
 /* Copied chain includes volume root and target. NULL/zero performs a validated
  * sizing query. Otherwise capacity below the chain count returns LIMIT.
  * Metadata outputs/count remain unchanged on failure. */
+/* An unlinked object has no ordinary acquisition ancestry: return NOT_FOUND.
+ * Diagnostic object/read/grant access can inspect a validated orphan by ID. */
 enum pfs_status pfs_volume_diagnostic_ancestry(struct pfs_volume *volume,
   const struct pfs_object_id *id, struct pfs_object_record *out,
   size_t capacity, size_t *count);

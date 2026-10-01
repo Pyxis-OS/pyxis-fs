@@ -29,6 +29,7 @@ struct pfs_check_state_result {
   uint64_t directory_entries;
   uint64_t file_extents;
   uint64_t grants;
+  uint64_t orphans;
   uint64_t metadata_blocks;
   uint64_t file_blocks;
   uint64_t unsupported_volumes;

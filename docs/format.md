@@ -4,6 +4,10 @@ Status: implemented initial format and read-only host-tool contract;
 the [shared core](core.md), bounded bulk construction and source import,
 candidate selection, readonly traversal/acquisition, extraction and explicit GPT
 inspection and whole-image consistency checking are implemented.
+The volume ORPHANS representation, directory checkpoint right, canonical private
+COW editors and bounded allocation-map planners are implemented; their
+[core boundaries](core.md#private-candidate-planning) do not provide writable
+admission, publication or a public writer.
 [Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat`, `access`,
 `extract` and `check`.
 The [integration contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/devices/filesystem-readonly.md)
@@ -33,8 +37,12 @@ build with explicit source/output directories and `HOST_CC`. It produces
 `build/fs-tools/pyxisfs-inspect`. A standalone build
 in pyxis-fs produces the same tools and a freestanding core archive. Host adapters
 use host libc; the core uses neither libc services nor Pyxis kernel/ABI headers.
-Normal kernel, SDK, ports and image targets acquire no filesystem dependency yet.
-No new CI, container build, FUSE dependency or installation target is introduced.
+The Pyxis kernel compiles a pinned read-only core subset for native mounts.
+Private planners, construction, checking, host adapters and Unity stay out of
+that subset; this task adds no guest writable interface.
+The maintained [host contract suite](testing.md) has a filesystem CI gate.
+Normal builds use the existing compiler; no compiler-container build, FUSE
+dependency or installation target is introduced.
 
 ## Supported profile and units
 
@@ -148,15 +156,16 @@ are decoded field by field, not by casting a C structure.
 All initial versions are 1. Structure versions change only for incompatible
 encoding/meaning. Each pool and volume separately carries three `u64` feature
 masks: required-to-read, required-to-write and optional-for-safe-read/write.
-Initially all masks are zero; no hypothetical feature is enabled. Unknown read
-requirements prevent interpretation of that scope. Unknown write requirements
-permit read-only access. Optional features may be ignored for reads. Future
+The formatter emits zero masks. Volume read-required bit 0 is `ORPHANS`,
+recognized only in volume masks; pool masks recognize no enabled features.
+Unknown read requirements prevent interpretation of that scope. Unknown write
+requirements permit read-only access. Optional features may be ignored for reads. Future
 writers must preserve unknown extension bytes and their semantics or refuse
 mutation. Merely knowing a mask bit is optional does not prove that a particular
 writer can preserve it. Unknown required record types in a supported tree are
 `UNSUPPORTED`, never skipped as though absent.
 
-Read compatibility does not imply complete-check compatibility. The initial checker
+Read compatibility does not imply complete-check compatibility. The checker
 reports incomplete/unsupported for any unknown enabled pool or volume feature in
 any of the three masks. It may validate known structures, but cannot call the image
 clean or call unexplained allocation corrupt solely because the feature's semantics
@@ -333,12 +342,22 @@ complete walk proves that unvisited children and separators are globally correct
 | 5 directory | 5 | Name bytes, unsigned lexicographic order |
 | 6 file extents | 6 | Logical first block, `u64` numeric order |
 | 7 grants | 7 | Object ID, principal ID, scope byte; lexicographic tuple |
+| 8 orphans | 8 | Object ID, 16-byte lexicographic order; requires volume ORPHANS |
 
 Internal numeric keys encode eight little-endian bytes but compare numerically.
 Name keys have no terminator; ID keys have exactly 16 bytes; grant keys have
 33 bytes. Repeated grants for the same key are forbidden; union their rights in
 one record. Bounds, key types and owner context are concrete per index, not
 application-defined callbacks stored in the image.
+
+Directory and orphan private editors use a stronger occupancy profile within
+these encodings: non-root nodes hold at least six records or children; a root
+leaf may hold any positive count and an internal root at least two children.
+Actual byte fit, exact minima and uniform leaf depth still apply. The formatter
+repairs short final directory groups at every level using ordered adjacent
+merge/repartition. Ordinary read-only access and complete checking retain the
+broader nonempty-leaf/two-child internal shape contract. No occupancy feature
+bit or structure-version change is introduced.
 
 ## Leaf record layouts
 
@@ -363,7 +382,7 @@ compatible extensions, never by moving existing fields.
 | 384, 392 | 8 each | Guarantee and quota, in physical blocks |
 | 400, 408 | 8 each | Live and retired owned block counts |
 | 416 | 8 | Object count |
-| 424 | 24 | Reserved |
+| 424 | 24 | Nullable orphan-index root when read-required ORPHANS is set; otherwise reserved |
 
 Volume-name records have name length at +16 (`u16`), six reserved bytes at +18,
 volume ID at +24 (16 bytes), then name bytes at +40, rounded to eight-byte record
@@ -371,6 +390,15 @@ length. Both catalogs are one-to-one and agree exactly. Volume ownership policy
 is represented by its root object and grants, not a second implicit owner bypass.
 An unsupported volume's fixed envelope remains readable if its record version
 is supported; otherwise pool catalog interpretation is unsupported.
+
+The ORPHANS bit declares the use of offset 424; the volume record remains
+448 bytes. Its orphan tree has the owning volume set and owning object zero.
+An empty orphan index has a null root, and its entry count cannot exceed the
+volume object count. The feature permits a parentless non-root object only with
+the named-or-orphan validation described below. The formatter emits no orphan
+feature or entries. Future enabling must preserve the older state's own mask,
+require the formerly reserved bytes to be zero, and leave the bit enabled after
+cleanup; opening an image does not enable it or perform any write.
 
 ### Object record, 128 bytes
 
@@ -381,7 +409,7 @@ is supported; otherwise pool catalog interpretation is unsupported.
 | 34 | 2 | Storage kind: 0 none, 1 inline extent, 2 tree |
 | 36 | 4 | Reserved |
 | 40 | 16 | Policy-owner principal ID |
-| 56 | 16 | Parent object ID; zero only for the volume root |
+| 56 | 16 | Parent object ID; zero for the volume root or an ORPHANS-enabled orphan |
 | 72 | 8 | File byte length; zero for directories |
 | 80 | 32 | Storage payload, interpreted by kind below |
 | 112 | 16 | Reserved |
@@ -429,17 +457,32 @@ indexes and data allocation are unchanged; internal-tree and allocation-map effe
 are not included. At 158,000 tiny nonempty files, inline mappings save 158,000
 extent leaves, or 617.1875 MiB, while data still needs at least that much space.
 
-Every non-root object has exactly one naming entry and that directory as parent.
-The root is a directory and has no incoming naming entry. No hard links, cycles,
-cross-volume references or unreachable objects are valid in this initial profile.
-Retaining unlinked objects in a future writable format requires an explicit
-read-required feature and orphan-root semantics, not silently relaxing this rule.
+Without ORPHANS, every non-root object has exactly one naming entry and that
+directory as parent. With ORPHANS, every non-root object is either named exactly
+once with that parent or has zero parent, no naming entry and exactly one orphan
+entry. The root is a directory with zero parent, no incoming naming entry and no
+orphan entry. No hard links, cycles, cross-volume references or unexplained
+objects are valid. Object counts, grants, file mappings and live allocation
+claims include orphans; an orphan directory is empty and owns no directory tree.
+Full checking proves this rule independently in each retained state. Diagnostic
+object/read/grant APIs may inspect validated orphans by ID, but an orphan has no
+ordinary acquisition ancestry and returns `NOT_FOUND` there. It cannot be reached
+by namespace paths or listing.
 Persistent timestamps and host UID/GID/mode fields are absent.
 
 Directory-entry records have name length at +16 (`u16`), child kind at +18
 (`u16`), four reserved bytes at +20, object ID at +24, and name bytes at +40,
 rounded to eight-byte record length. Kind and parent must agree with the object
 record. Names are unique within the directory.
+
+### Orphan record, 32 bytes
+
+Record type 8 contains only its object ID at +16 after the 16-byte record header.
+The ID is nonzero and unique in the per-volume orphan index. Its target exists,
+is not the volume root and has zero parent. The record requires the volume's
+read-required ORPHANS bit. Cleanup progress uses the ordinary object, extent and
+grant indexes; there is no hidden progress record. Codecs and checking support
+this representation; creation, unlink and cleanup operations remain unimplemented.
 
 ### File extent, 64 bytes
 
@@ -511,6 +554,7 @@ The masks keep the three rights domains separate:
 | Directory | 3 | Create entries; later writable milestone |
 | Directory | 4 | Remove entries; later writable milestone |
 | Directory | 5 | Replace an existing entry; later writable milestone |
+| Directory | 6 | Request a volume checkpoint; later writable milestone |
 | Administration | 0 | Inspect owner and grants |
 | Administration | 1 | Edit grants; later writable milestone |
 | Administration | 2 | Change policy owner; later writable milestone |
@@ -524,6 +568,9 @@ change when existing validation would otherwise accept an unsafe interpretation.
 Writable admission must reject retained states containing rights it cannot
 validate. Adding a supported right never widens existing stored grants: their
 absent bit remains absent unless explicitly changed with the required authority.
+`dir.checkpoint` is an independent bit, with no feature declaration or version
+change. Existing stored grants gain no rights. Formatter owner grants retain
+directory bits 0..5 (`0x3f`), so they do not acquire checkpoint authority.
 
 The current grant decoder rejects unknown rights with `CORRUPT` before publishing
 the decoded record. Policy acquisition propagates the failure without returning
@@ -539,7 +586,8 @@ for the root and descendant directories, and administration rights for either
 kind. Object-only grants apply
 only to the named object and its relevant domains. Ownership alone adds no rights.
 The formatter gives each volume root an explicit owner subtree grant containing
-all defined bits; descendants inherit its owner and need no repeated grants.
+file bits 0..4, directory bits 0..5 and administration bits 0..2; descendants
+inherit its owner and need no repeated grants. Directory checkpoint is omitted.
 This records intended future policy, not successful mutation operations today.
 
 Policy acquisition takes a trusted principal context, a bounded root
@@ -767,11 +815,14 @@ may maintain equivalent validated summaries and reference tracking, but must
 specify how they stay complete across publication and recovery before relying
 on them. The offline checker's inability to observe runtime pins is unchanged.
 
-Before writable implementation, settle exact dirty-node/byte bounds, allocator
-self-hosting termination, orphan retention, recovery bookkeeping and numerical
-admission costs. Those are explicit review gates; the prototype reserve numbers
-are not substitutes for that work. Migration still needs its own publication
-and ownership-transfer protocol when a real second format exists.
+The [accepted writable milestone](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/writable-filesystem-core.md)
+defines bounded edits, allocator self-accounting, orphan retention and numerical
+admission/recovery promises. Task 2 implements the private planning and format
+support described in [the core document](core.md#private-candidate-planning).
+Writable admission, durable publication, pin tracking and funded reclamation
+remain unimplemented. Prototype reserve defaults do not establish those promises.
+Migration still needs its own publication and ownership-transfer protocol when
+a real second format exists.
 
 ## Core platform and object lifetime
 
@@ -884,7 +935,7 @@ same bounds as the formatter, and one command:
 Rights lists are comma-separated domain-qualified tokens, or `none`. File tokens
 are `file.metadata`, `file.read`, `file.write`, `file.resize`, `file.checkpoint`;
 directory tokens are `dir.metadata`, `dir.list`, `dir.lookup`, `dir.create`,
-`dir.remove`, `dir.replace`; administration tokens are `admin.inspect`,
+`dir.remove`, `dir.replace`, `dir.checkpoint`; administration tokens are `admin.inspect`,
 `admin.grants`, `admin.owner`, in the bit order defined above. Reject unknown or
 duplicate tokens. `--scope` selects the requested result scope; the diagnostic
 caller context is the subtree at `--root`, bounded by `--ceiling`. Requests for
@@ -970,7 +1021,8 @@ Walk each supported tree with bounded depth, track visited metadata identities
 and reject cycles, duplicate parents within a tree, misordered keys, separator
 violations and context mismatches. Reconcile both volume catalogs. Check object
 IDs, parent/entry agreement, namespace reachability, root rules, depths, entry
-counts, owners and grant targets. Check storage discriminators and canonical
+counts, owners, grant targets and named-or-orphan relationships in
+ORPHANS-enabled volumes. Check storage discriminators and canonical
 none/inline/tree modes, file ranges, logical lengths and allocation incarnations.
 Inline data claims are checked just like extent-tree claims. Collect extent claims
 for all metadata and file data, sort by physical range and compare them with the
@@ -1000,13 +1052,16 @@ before output creation. The diagnostic `pfs_check` API and host `check` command
 implement whole-image consistency inspection; interfaces and limits are recorded
 in [the core document](core.md#whole-image-consistency-checking).
 
-Writable work must settle the bounded admission and recovery costs listed above.
-Acceptance of this contract does not prove reserve defaults sufficient for
-writable operation. Repository licensing is established as MPL-2.0.
+Private canonical/edit/map planning, finite envelopes and their arena are
+implemented. The caller still supplies retained-state, reusable-range and runtime
+pin proofs; planning establishes no durable state. Writable admission and recovery
+must implement the accepted promises before any usable writer is exposed.
+Acceptance of this contract does not prove formatter reserve defaults sufficient
+for writable operation. Repository licensing is established as MPL-2.0.
 
 The shared core builds as a freestanding archive. Formatting, diagnostic
 reopening, populated extraction round trips and structural checking are recorded
-in [host validation](host-tools.md#validation), including source-review-only
-coverage. Validation uses ordinary builds and manual host commands; no tests,
-self-tests, damaged-image fixtures, fault injection or new CI are authorized by
-this specification.
+in [historical host validation](host-tools.md#validation). The maintained
+[host contract suite and CI gate](testing.md) add synthetic fixtures and
+independent expected results for the implemented Task 2 boundaries. These checks
+do not establish writable admission, publication or crash recovery.

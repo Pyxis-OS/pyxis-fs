@@ -9,6 +9,7 @@
 #define MIGRATION_FLOOR UINT64_C(1024)
 #define RECOVERY_FLOOR UINT64_C(256)
 #define BUILD_ANCESTRY_MAX 256u
+#define BUILD_NAMESPACE_MIN 6u
 
 struct build_node {
   uint64_t block;
@@ -423,6 +424,61 @@ internal_size(const struct build_state *state, const struct build_tree *tree, si
 }
 
 static enum pfs_status
+repair_namespace_tail(struct build_state *state, const struct build_tree *tree,
+                      size_t level_first)
+{
+  size_t level_count = state->node_count - level_first;
+  struct build_node *tail = &state->nodes[state->node_count - 1];
+  if (level_count == 1 || tail->count >= BUILD_NAMESPACE_MIN) {
+    return PFS_OK;
+  }
+  struct build_node *left = tail - 1;
+  size_t count = (size_t)left->count + tail->count;
+  size_t bytes = 0;
+  size_t prefix = 0;
+  for (size_t i = 0; i < count; ++i) {
+    size_t item = left->first + i;
+    bytes += left->level ? internal_size(state, tree, item) : leaf_size(state, tree, item);
+    size_t start = aligned_size(PFS_TREE_HEADER_SIZE + (i + 1) * PFS_TREE_SLOT_SIZE);
+    if (i + 1 <= PFS_TREE_SLOTS_MAX && start <= PFS_BLOCK_SIZE &&
+        bytes <= PFS_BLOCK_SIZE - start) {
+      prefix = i + 1;
+    } else {
+      break;
+    }
+  }
+  if (prefix == count) {
+    left->count = (uint16_t)count;
+    --state->node_count;
+    return PFS_OK;
+  }
+
+  /* Twelve maximum-size namespace items fit. A short greedy tail and its
+   * predecessor therefore merge or admit two fitting groups of at least six. */
+  if (prefix > count - BUILD_NAMESPACE_MIN) {
+    prefix = count - BUILD_NAMESPACE_MIN;
+  }
+  if (prefix < BUILD_NAMESPACE_MIN) {
+    return PFS_INVALID;
+  }
+  bytes = 0;
+  for (size_t i = prefix; i < count; ++i) {
+    size_t item = left->first + i;
+    bytes += left->level ? internal_size(state, tree, item) : leaf_size(state, tree, item);
+  }
+  size_t suffix = count - prefix;
+  size_t start = aligned_size(PFS_TREE_HEADER_SIZE + suffix * PFS_TREE_SLOT_SIZE);
+  if (suffix > PFS_TREE_SLOTS_MAX || start > PFS_BLOCK_SIZE ||
+      bytes > PFS_BLOCK_SIZE - start) {
+    return PFS_INVALID;
+  }
+  left->count = (uint16_t)prefix;
+  tail->first = left->first + prefix;
+  tail->count = (uint16_t)suffix;
+  return PFS_OK;
+}
+
+static enum pfs_status
 plan_tree(struct build_state *state, uint16_t kind, size_t volume, size_t object,
           size_t first, size_t records, size_t *index)
 {
@@ -445,6 +501,7 @@ plan_tree(struct build_state *state, uint16_t kind, size_t volume, size_t object
       }
       struct build_node *node = &state->nodes[state->node_count++];
       node->first = first;
+      node->count = 0;
       node->level = level;
       size_t bytes = 0;
       while (first < end) {
@@ -463,18 +520,27 @@ plan_tree(struct build_state *state, uint16_t kind, size_t volume, size_t object
         return PFS_LIMIT;
       }
     }
+    if (kind == PFS_INDEX_DIRECTORY) {
+      enum pfs_status status = repair_namespace_tail(state, tree, level_first);
+      if (status != PFS_OK) {
+        return status;
+      }
+    }
     size_t level_count = state->node_count - level_first;
-    if (level && state->nodes[state->node_count - 1].count == 1) {
+    if (level_count == 1) {
+      if (level && state->nodes[level_first].count == 1) {
+        --state->node_count;
+      }
+      tree->node_count = state->node_count - tree->first_node;
+      return PFS_OK;
+    }
+    if (kind != PFS_INDEX_DIRECTORY && level && state->nodes[state->node_count - 1].count == 1) {
       if (level_count < 2 || state->nodes[state->node_count - 2].count < 3) {
         return PFS_INVALID;
       }
       --state->nodes[state->node_count - 2].count;
       --state->nodes[state->node_count - 1].first;
       ++state->nodes[state->node_count - 1].count;
-    }
-    if (level_count == 1) {
-      tree->node_count = state->node_count - tree->first_node;
-      return PFS_OK;
     }
     if (++level >= PFS_TREE_DEPTH_MAX) {
       return PFS_LIMIT;
@@ -782,7 +848,8 @@ encode_leaf(const struct pfs_build_plan *plan, struct build_state *state,
     .principal = state->specs[tree->volume].owner,
     .scope = PFS_SCOPE_SUBTREE,
     .file_rights = PFS_FILE_RIGHTS_ALL,
-    .directory_rights = PFS_DIR_RIGHTS_ALL,
+    .directory_rights = PFS_DIR_METADATA | PFS_DIR_LIST | PFS_DIR_LOOKUP |
+                        PFS_DIR_CREATE | PFS_DIR_REMOVE | PFS_DIR_REPLACE,
     .admin_rights = PFS_ADMIN_RIGHTS_ALL,
   };
   return pfs_grant_record_encode(data, capacity, &context, &grant, written);

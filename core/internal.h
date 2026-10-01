@@ -4,6 +4,11 @@
 #include <pyxis_fs/base.h>
 
 struct pfs_block_header;
+struct pfs_key;
+/* Leaf codecs validate locally; ownership and reachability remain caller proofs. */
+enum pfs_status pfs_leaf_key_decode(const uint8_t *data, size_t length, uint16_t kind,
+                                    const struct pfs_record_context *context,
+                                    struct pfs_key *key, uint64_t *end);
 void pfs_block_header_encode(uint8_t *data, const struct pfs_block_header *header);
 void pfs_block_checksum_encode(uint8_t *data);
 

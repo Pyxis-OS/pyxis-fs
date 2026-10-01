@@ -71,7 +71,13 @@ pfs_block_match(const struct pfs_block_header *header,
     .containing_birth = context->referring_birth,
     .features = context->features,
   };
-  enum pfs_status status = pfs_context_validate(&record_context);
+  enum pfs_status status = type == PFS_BLOCK_TREE ?
+    pfs_volume_features_read(&context->features) :
+    pfs_features_read(&context->features);
+  if (status != PFS_OK) {
+    return status;
+  }
+  status = pfs_context_validate(&record_context);
   if (status != PFS_OK) {
     return status;
   }
