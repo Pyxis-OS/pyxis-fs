@@ -4,7 +4,7 @@
 #include "read_internal.h"
 #include "writer_access.h"
 #include "access_internal.h"
-#include "file.h"
+#include "writer.h"
 
 
 struct pfs_view_directory {
@@ -951,7 +951,7 @@ pfs_view_close(struct pfs_view **view, struct pfs_view_close_result *result)
   pfs_writer_end(pool, PFS_OK);
   if (last && health == PFS_WRITER_READY) {
     struct pfs_write_result cleanup = {0};
-    status = pfs_orphan_cleanup(volume, &object, &cleanup);
+    status = pool->writer->cleanup(volume, &object, &cleanup);
     closed.maintenance_completion = cleanup.maintenance_completion;
     closed.maintenance_status = cleanup.maintenance_status;
     closed.health = cleanup.health;

@@ -130,9 +130,9 @@ open_device(void)
 static void
 close_handles(void)
 {
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&parent_view));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view, &(struct pfs_view_close_result){0}));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&parent_view, &(struct pfs_view_close_result){0}));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_EQUAL_UINT64(0, device.memory->used);
@@ -305,7 +305,7 @@ authority_noops_and_invalid_arguments_leave_media_unchanged(void)
   TEST_ASSERT_EQUAL_UINT64(expected_length, result.confirmed_length);
   TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   expect_bytes(file_view, expected, expected_length);
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view, &(struct pfs_view_close_result){0}));
   rights = (struct pfs_rights){.file = PFS_FILE_RESIZE};
   acquire_file(&rights, &other_view);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_resize(other_view, 7, &result));
@@ -339,7 +339,7 @@ create_checks_held_authority_before_publication_and_preserves_policy(void)
     NULL, NULL, NULL, &result));
   expect_complete(&result);
   TEST_ASSERT_TRUE(result.namespace_confirmed);
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&parent_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&parent_view, &(struct pfs_view_close_result){0}));
   rights = (struct pfs_rights){.file = file_rights.file,
     .directory = PFS_DIR_CREATE | PFS_DIR_LOOKUP | PFS_DIR_LIST | PFS_DIR_METADATA,
     .admin = PFS_ADMIN_INSPECT};
@@ -391,7 +391,7 @@ create_checks_held_authority_before_publication_and_preserves_policy(void)
   TEST_ASSERT_EQUAL_MEMORY("empty", entries[0].name.bytes, 5);
   TEST_ASSERT_EQUAL_MEMORY("file", entries[1].name.bytes, 4);
   TEST_ASSERT_EQUAL_MEMORY("new", entries[2].name.bytes, 3);
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_lookup(parent_view, (const uint8_t *)"empty", 5,
     PFS_SCOPE_OBJECT, &file_rights, &other_view, &identity));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_metadata(other_view, &metadata));
@@ -798,7 +798,7 @@ long_name_creation_history_preserves_namespace_policy_and_reopens(void)
     TEST_ASSERT_EQUAL(PFS_OK, pfs_view_inspect(other_view, &owner, NULL, 0, &count));
     TEST_ASSERT_EQUAL_MEMORY(&expected_owner, &owner, sizeof(owner));
     TEST_ASSERT_EQUAL_UINT(0, count);
-    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&other_view, &(struct pfs_view_close_result){0}));
   }
   close_handles();
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));

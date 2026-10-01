@@ -270,7 +270,7 @@ new_id(struct pfs_writer *writer, const struct pfs_volume_id *volume, struct pfs
     if (pfs_bytes_are_zero(id->bytes, sizeof(id->bytes))) {
       continue;
     }
-    bool present = false;
+    bool present = pfs_runtime_references(writer->pool, volume, id);
     for (size_t slot = 0; slot < 2 && !present; slot++) {
       enum pfs_status status = id_present(writer, &writer->states[slot], volume, id, &present);
       if (status != PFS_OK) {
@@ -489,6 +489,7 @@ create_held(struct pfs_view *parent, const uint8_t *name, size_t length,
       (length == 1 && name[0] == '.') || (length == 2 && name[0] == '.' && name[1] == '.') ||
       (requested ? (!out || *out || !identity ||
         (kind == PFS_OBJECT_FILE && requested->directory) ||
+        (kind == PFS_OBJECT_DIRECTORY && requested->file) ||
         (requested->directory & ~PFS_DIR_RIGHTS_ALL) ||
         (requested->file & ~PFS_FILE_RIGHTS_ALL) || (requested->admin & ~PFS_ADMIN_RIGHTS_ALL)) :
         (out || identity))) {
@@ -623,7 +624,7 @@ namespace_directory_edit(struct pfs_mutation *mutation,
 {
   struct pfs_key key = {.length = (uint16_t)length};
   pfs_bytes_copy(key.bytes, name, length);
-  uint8_t bytes[PFS_NAME_RECORD_PREFIX_SIZE + PFS_NAME_MAX];
+  uint8_t bytes[(PFS_NAME_RECORD_PREFIX_SIZE + PFS_NAME_MAX + 7u) & ~7u];
   struct pfs_encoded_record encoded = {.data = bytes};
   enum pfs_status status = PFS_OK;
   if (operation != PFS_EDIT_DELETE) {

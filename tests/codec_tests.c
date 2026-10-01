@@ -389,7 +389,7 @@ retained_orphans_check_and_diagnostic_access(void)
 }
 
 static void
-writer_refuses_retained_orphans_before_any_write(void)
+writer_refuses_unfunded_orphan_recovery_before_any_write(void)
 {
   build_orphan_fixture();
   uint8_t bytes[PFS_BLOCK_SIZE];
@@ -406,7 +406,7 @@ writer_refuses_retained_orphans_before_any_write(void)
   struct pfs_pool pool = {0};
   const struct pfs_write_options options = {.extent_limit = 16, .metadata_limit = 16, .random = test_random};
   struct pfs_write_open_result opening;
-  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_pool_open_writer(&pool, &fixture.builder,
+  TEST_ASSERT_EQUAL(PFS_QUOTA, pfs_pool_open_writer(&pool, &fixture.builder,
     &fixture.memory, &options, &opening));
   TEST_ASSERT_NULL(pool.state.data);
   TEST_ASSERT_NULL(pool.writer);
@@ -592,7 +592,7 @@ run_codec_tests(void)
   RUN_TEST(canonical_orphan_tree_and_internal_keys);
   RUN_TEST(canonical_pool_blocks);
   RUN_TEST(retained_orphans_check_and_diagnostic_access);
-  RUN_TEST(writer_refuses_retained_orphans_before_any_write);
+  RUN_TEST(writer_refuses_unfunded_orphan_recovery_before_any_write);
   RUN_TEST(malformed_orphan_relations);
   RUN_TEST(named_or_orphan_exclusivity);
 }

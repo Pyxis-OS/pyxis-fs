@@ -26,6 +26,7 @@ pfs_status_string(enum pfs_status status)
   case PFS_EXISTS: return "already exists";
   case PFS_DETACHED: return "detached directory";
   case PFS_CHANGED: return "directory changed";
+  case PFS_NOT_EMPTY: return "directory not empty";
   }
   return "unknown status";
 }

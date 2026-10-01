@@ -175,7 +175,7 @@ print_access(struct pfs_volume *volume, const struct pfs_volume_record *metadata
                              options->scope, &options->rights, &view);
     if (status == PFS_OK) {
       fputs("Requested view acquired and released.\n", stdout);
-      status = pfs_view_close(&view);
+      status = pfs_view_close(&view, &(struct pfs_view_close_result){0});
     }
   }
   return status;

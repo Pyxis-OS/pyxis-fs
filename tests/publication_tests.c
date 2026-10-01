@@ -100,7 +100,7 @@ open_device(void)
 static void
 close_device(void)
 {
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_EQUAL_UINT64(0, device.memory->used);
@@ -684,7 +684,7 @@ cold_reopen_and_compare(uint8_t expected)
   for (size_t i = 0; i < count; i++) {
     TEST_ASSERT_EQUAL_UINT8(expected, bytes[i]);
   }
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&v));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&cold));
   struct pfs_check_result check;

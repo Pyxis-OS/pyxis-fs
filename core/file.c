@@ -1183,6 +1183,7 @@ cleanup_batches(struct pfs_pool *pool, const struct pfs_volume_id *volume,
       status = PFS_CORRUPT;
     }
     bool final = false;
+    uint64_t initial_work = status == PFS_OK ? mutation->state.volume.orphan_work : 0;
     if (status == PFS_OK) {
       mutation->state.orphan_object = true;
       for (size_t i = 0; i < mutation->source->claim_count; i++) {
@@ -1256,6 +1257,12 @@ cleanup_batches(struct pfs_pool *pool, const struct pfs_volume_id *volume,
     }
     if (status == PFS_OK) {
       status = pfs_mutation_finish(mutation);
+    }
+    if (status == PFS_OK &&
+        (batch->volume.metadata_blocks > mutation->state.volume.metadata_blocks ||
+         batch->volume.file_extents > mutation->state.volume.file_extents ||
+         batch->volume.orphan_work >= initial_work)) {
+      status = PFS_LIMIT;
     }
     if (status != PFS_OK) {
       pfs_writer_funded_failure(pool, status);

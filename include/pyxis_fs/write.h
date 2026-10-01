@@ -15,23 +15,10 @@ struct pfs_write_options {
   void *random_context;
 };
 
-enum pfs_writer_health {
-  PFS_WRITER_READY,
-  PFS_WRITER_READABLE_STOPPED,
-  PFS_WRITER_ACCESS_STOPPED,
-};
-
 enum pfs_completion {
   PFS_COMPLETE,
   PFS_STOPPED,
   PFS_UNKNOWN,
-};
-
-enum pfs_maintenance_completion {
-  PFS_MAINTENANCE_NONE,
-  PFS_MAINTENANCE_COMPLETE,
-  PFS_MAINTENANCE_STOPPED,
-  PFS_MAINTENANCE_UNKNOWN,
 };
 
 struct pfs_write_result {

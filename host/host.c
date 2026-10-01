@@ -114,6 +114,7 @@ host_exit_status(enum pfs_status status)
     case PFS_DENIED: return 1;
     case PFS_EXISTS:
     case PFS_DETACHED:
+    case PFS_NOT_EMPTY:
     case PFS_NOT_FOUND:
     case PFS_INVALID: return 2;
     case PFS_ABSENT:
