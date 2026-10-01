@@ -399,7 +399,7 @@ test_failure_open(struct test_failure *adapter, uint64_t blocks, size_t dirty_ca
     return status;
   }
   adapter->memory = &adapter->backing.memory;
-  adapter->log = tmpfile();
+  adapter->log = test_temporary_file();
   adapter->records = calloc(dirty_capacity, sizeof(*adapter->records));
   adapter->dirty_capacity = dirty_capacity;
   if (!adapter->log) {
