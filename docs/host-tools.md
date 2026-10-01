@@ -25,8 +25,10 @@ Repeat `--volume NAME [--source DIRECTORY] --owner ID` for up to 256 volumes.
 Each group imports its source directory's contents into the volume root; omitting
 `--source` creates an empty volume. Nested and empty directories and regular files
 are supported. Every object receives the selected owner; the root's explicit
-owner subtree grant covers all defined rights. Pool, volume and object IDs use OS
-strong randomness, with at most 16 attempts per identity to avoid zero/collisions.
+owner subtree grant carries the original file, directory and administration
+rights; it omits the added `dir.checkpoint` bit. Feature masks remain zero.
+Pool, volume and object IDs use OS strong randomness, with at most 16 attempts
+per identity to avoid zero/collisions.
 
 `--guarantee SIZE` and `--quota SIZE` apply to the preceding volume. Global
 `--cow-reserve`, `--migration-reserve` and `--recovery-reserve` override the agreed
@@ -78,6 +80,9 @@ layouts; file data streams through a bounded buffer instead of being retained in
 memory. A plan includes every occupied block and checks capacities, reserves,
 guarantees and quotas before creating output. A separate `--plan` invocation is
 not a source snapshot or authorization for a later build.
+Directory indexes satisfy the private six-entry non-root occupancy profile after
+byte-aware tail repair at every level. This does not establish writable
+admission or change reserves and quotas; existing images are never repacked.
 
 ## Inspect images
 
@@ -110,7 +115,10 @@ partial observations. Explicit GPT selection uses the same command.
 
 The checker reconciles catalogs, tree ordering and separators, namespaces, object
 storage and grants, physical claims, allocation ownership/incarnations, accounting
-and budget charges. Its traversal and bookkeeping share the memory cap. Unknown
+and budget charges, including ORPHANS-enabled named-or-orphan relationships in
+each retained state. Orphan object/storage claims are included in the checked
+counts. Six-entry namespace occupancy is a private editor precondition, not a
+read-only corruption rule. Traversal and bookkeeping share the memory cap. Unknown
 enabled features make the full result unsupported and incomplete, including
 read-compatible features; supported independent checks continue where meaningful.
 Skipped contents or exhausted resources never establish a clean image.
@@ -152,7 +160,7 @@ ceiling. `--scope object|subtree` selects the requested view scope. Supply both
 `--rights` and `--ceiling` as comma-separated exact tokens or `none`:
 
 - `file.metadata`, `file.read`, `file.write`, `file.resize`, `file.checkpoint`
-- `dir.metadata`, `dir.list`, `dir.lookup`, `dir.create`, `dir.remove`, `dir.replace`
+- `dir.metadata`, `dir.list`, `dir.lookup`, `dir.create`, `dir.remove`, `dir.replace`, `dir.checkpoint`
 - `admin.inspect`, `admin.grants`, `admin.owner`
 
 The command prints the policy decision and effective rights within the ceiling.
@@ -163,6 +171,10 @@ The command does not authenticate the supplied principal; diagnostic path
 selection can reveal a missing target before policy evaluation. The ordinary
 core acquisition APIs enforce lookup before resolving each path component.
 See [core interfaces](core.md#policy-acquisition-and-ordinary-views).
+Checkpoint is a recognized authority token; no checkpoint operation is provided,
+and formatter-created grants omit it. Orphans have no named path or ordinary
+acquisition ancestry. Core diagnostic object/read/grant APIs can inspect a
+validated orphan by ID; these host commands retain their namespace path selectors.
 
 ## Extract files and subtrees
 
@@ -244,10 +256,15 @@ then unsupported/limit, retaining both candidate diagnostics.
 
 These tools do not mount, mutate or repair existing images, or establish that
 recorded reserves suffice for writes.
-Imported images exercise contiguous inline extents; multi-extent and sparse-image
-runtime coverage remains limited.
+Formatter imports exercise contiguous inline extents. The maintained
+[host contract suite](testing.md) adds synthetic format/editor/planner fixtures;
+it does not provide a writable command or validate admission and publication.
 
 ## Validation
+
+This section records the historical read-only milestone and continuation checks.
+Its coverage limits describe those manual runs; current maintained-suite scope
+and evidence are recorded in [testing](testing.md).
 
 The read-only milestone closed on 2026-09-29 using merged implementation
 `144710d` (merge `c379afe`). Validation used ordinary host commands and debugger

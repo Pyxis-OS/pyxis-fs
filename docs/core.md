@@ -7,6 +7,9 @@ with no host-libc, kernel or Pyxis ABI dependency. Linux host tools populate
 standalone sparse images from source directories and provide diagnostic `info`,
 `volumes`, `list`, `stat`, `access`, `extract` and `check` commands. Explicit GPT
 partition selection belongs to the host adapter. See [host-tool usage](host-tools.md).
+Private canonical validators, COW tree editors and allocation-map planners are
+also implemented. They stage candidates without publishing them; writable open,
+admission, reclamation and a public mutation API remain unimplemented.
 
 ## Build
 
@@ -24,6 +27,7 @@ the compiler, `HOST_AR` the archiver; `CPPFLAGS` and `CFLAGS` add build options.
 Required language/freestanding/warning flags remain in force. Use a separate
 `BUILD` directory when changing compiler or flags. `make clean` removes only the
 known object/dependency files, archive and executables in that output directory.
+The maintained host contract suite is described in [testing](testing.md).
 
 For a freestanding cross build, select the archive target explicitly so the
 compiler is not asked to build the Linux tools:
@@ -46,7 +50,7 @@ Public headers are under `include/pyxis_fs/`:
 | --- | --- |
 | `base.h` | Distinct pool/volume/object/principal IDs, exact hexadecimal conversion, UTF-8 names, CRC32C, feature compatibility and status values |
 | `block.h` | One-block header, superblock and pool-root codecs and reference-context checks |
-| `record.h` | Seven leaf record codecs and local validators, including none/inline/tree object storage, allocation transitions and grant-mask domains |
+| `record.h` | Eight leaf record codecs and local validators, including none/inline/tree object storage, orphan IDs, allocation transitions and grant-mask domains |
 | `tree.h` | Internal records, typed key order, tightly packed tree blocks, slot/record validation and supplied owner/parent-level context |
 | `platform.h` | Bounded allocation ownership and synchronous exact block reader/builder interfaces |
 | `build.h` | Owned bulk planning and construction into a newly created output |
@@ -98,6 +102,14 @@ stricter than ordinary reads. Encoders construct initial-version records with
 zero extension bytes and reject unknown feature semantics. Decoding and encoding
 an existing record is not an extension-preserving mutation operation.
 
+Pool feature helpers recognize no enabled features. The corresponding
+`pfs_volume_features_*` helpers recognize read-required `PFS_FEATURE_ORPHANS`
+(bit 0); unknown volume write-required or optional bits still prevent encoding
+and complete checking. The volume's nullable orphan root occupies the declared
+24 bytes at offset 424. This feature leaves structure versions and record sizes
+unchanged. The formatter keeps its feature masks zero and its existing owner
+grant: directory bits 0..5, with the new `dir.checkpoint` bit 6 absent.
+
 Codec success proves local structure only. Pool counters are checked for local
 arithmetic consistency; they are not reconciled against allocation records.
 Tree decoding checks local ordering and ranges but never fetches children. Callers still need
@@ -128,6 +140,12 @@ builds object and directory trees with exact codec packing, and rejects capacity
 or quota excess. All objects use the selected volume owner and inherit the root's
 one explicit owner subtree grant. Empty objects need no storage tree. Nonempty
 files each have one contiguous inline extent, with zero final-block padding.
+Every non-root directory-index node has at least six records or children.
+Planning repairs a short final group at each level using its adjacent predecessor,
+with actual byte fit and exact minima recomputed before block/quota accounting.
+A sole root leaf may have fewer than six records; empty directories have no
+index, and a one-child internal root collapses. Other indexes retain their sparse
+shape contract. This packing alone does not establish writable admission.
 
 `pfs_build` requires a newly created, exclusively owned empty output. It uses the
 plan's allocated buffers without output reads or further allocation. A
@@ -173,7 +191,7 @@ proof storage is released before return. This diagnostic grants no object author
 
 `pfs_pool_diagnostic_volume_open` selects a volume by ID after catalog agreement
 and consulted-metadata allocation proof. Traversing its contents requires
-`pfs_features_read` compatibility and a supported object-root version. Unknown
+`pfs_volume_features_read` compatibility and supported target-root versions. Unknown
 write requirements and read-compatible optional features do not prevent reads.
 The volume retains the selected pool generation until close. Its metadata,
 objects, parent chains and explicit grants are copied into caller storage; no
@@ -186,6 +204,12 @@ an empty core path. Object access validates ancestry to the volume root, detects
 cycles and checks parent kind and unique naming for the consulted chain.
 Ancestry queries support a validated sizing call before copying the chain in
 root-to-target order. Selectors are not evidence of policy authority.
+
+With ORPHANS enabled, diagnostic object, file-read and grant operations may
+inspect a parentless non-root object by ID after proving its orphan-index entry
+and consulted allocation ownership. An orphan directory must be empty. Such an
+object has no ordinary acquisition ancestry: ancestry and ordinary acquisition
+return `PFS_NOT_FOUND`. Path traversal and listings expose the named namespace.
 
 Every incoming tree reference checks physical identity, generation, owner, kind,
 parent level and the supplied key bounds, including when its bytes were already
@@ -244,6 +268,14 @@ storage and allocation incarnations, including older live references protected
 by newer retired allocations. Historical free/retired entries are not treated
 as live references, and retired contents are not parsed.
 
+In each ORPHANS-enabled retained state, every non-root object is named exactly
+once with the matching parent, or has zero parent and exactly one orphan entry.
+It cannot be both. The root is never orphaned; orphan directories are empty.
+Object counts and allocation claims include orphan storage, and check results
+report orphan counts. The checker proves these representation rules but keeps
+the broader read-only tree occupancy contract; it does not perform six-entry
+writable admission or remove orphans.
+
 Traversal frames, identity tables, copied records and physical claims share the
 supplied memory cap across retained states. Profile or cap exhaustion returns
 `PFS_LIMIT`; allocator failure below the cap returns `PFS_NO_MEMORY`. A
@@ -264,6 +296,80 @@ The checker reads metadata and proves file-data allocation claims without readin
 payloads. File bytes have no integrity checksums and are not verified. It performs
 no writes, repair, reclamation or runtime-reader exclusion proof. Content
 validation remains the separate extraction/host-comparison workflow.
+
+## Private candidate planning
+
+`core/canonical.h`, `core/edit.h` and `core/plan.h` are private interfaces. Their
+success is a candidate plan, not authorization, retained-state admission or
+durability. The caller must establish ownership, exact subtree minima, understood
+features and the relevant tree profile before editing. Reusable block IDs must
+be distinct and disjoint from every published claim; runtime pins and both
+retained states remain caller proof obligations.
+
+Canonical validators decode then compare against exact version-1 encoding.
+They require fixed record/header lengths, exact variable payload lengths and
+zero reserved, alignment and unused bytes, except the declared orphan root.
+Pool masks are zero; volume masks permit only read-required ORPHANS. Ordinary
+read-only codecs retain their broader extension compatibility. Local canonical
+validation does not prove allocation ownership or global reachability.
+
+`pfs_edit_tree` edits object, extent, grant, directory and orphan indexes, and
+supports same-key, fixed-length volume-catalog updates. Insert/delete operations
+repair one path bottom-up, preserve exact minima and collapse roots. Directory
+and orphan nodes require six items outside the root; object/extent/grant indexes
+use the sparse empty-leaf and one-child internal repair. The caller reserves
+staging slots, retirement references and disjoint workspace before calling.
+Failure leaves the candidate root, slots and retirement list unchanged; workspace
+is scratch. Superseded private nodes are discarded, not durably retired.
+There are no device writes or heap allocations during an edit.
+
+At maximum depth eight, insert plans create at most 15 nodes and retire eight;
+fixed-length updates create/retire eight. Sparse deletes create/retire at most
+14, and six-entry namespace deletes at most 15. These are single-record plans,
+not complete transaction/admission costs.
+
+`pfs_plan_map_apply` overlays sorted disjoint deltas on a complete canonical map,
+checking the source state, owner, birth, retirement and charge before replacing
+each range and coalescing the result. Inputs remain unchanged; the result count
+is published only on success, while output bytes are scratch on failure.
+Protection and valid retire/free transitions require separate caller evidence.
+
+`pfs_plan_map_build` takes a canonical base after volume changes, old pool/map/
+catalog retirements and eligible frees, with no live pool allocation born in the
+candidate. For base count `R` and catalog path count `C <= 8`, it chooses
+`S = ceil(23*(R + 2*C + 4)/21)`, then `ceil(S/46)` map leaves and successive
+`ceil(previous/65)` internal levels. If `F(S)` counts those nodes, it reserves
+exactly `N = F(S) + C + 1` reusable blocks before overlaying their allocations.
+Arbitrary placement adds at most `2*N` records; the selected `S` bounds the final
+count without iterating allocation or allocating unused live padding.
+Every map node is reachable and nonempty; internal groups have at least two
+children. Map blocks are encoded in the arena; catalog and pool-root block IDs
+are reserved for the caller to encode. The planner verifies sorted reusable
+ranges and base-free containment. Those ranges must already be proven free in
+both retained states with runtime pins ended before this publication; freeing a
+range in this candidate does not make it eligible. Planning performs no I/O or
+further allocation, and its borrowed output expires on the next plan or destroy.
+
+`pfs_plan_limits` computes envelopes from explicit extent capacity `E`, volume
+metadata capacity `M` and volume count `v`; it chooses no defaults or admission
+policy. With `V=128`, `D=256`, and `Pcat=4*v-2`:
+
+```text
+K = 1 + 2*(E + M + D)
+S(H) = ceil(23*(K + 2*Pcat + 6*H + 20)/21)
+Hclosed = ceil((K + 2*Pcat + 231)/15)
+```
+
+It scans `H=10..Hclosed` for the first `F(S(H)) + 9 <= H`, subject to record
+and depth limits. Permanent pool capacity is `Pmax=Pcat+H`; recovery capacity is
+`3*H+V+D`. One capped arena reserves three S-entry map vectors at 80 bytes per
+slot, three `(E+M+Pmax)`-entry claim vectors at 96 bytes, 48 bytes per possible
+object (`min(1048576,29*M)`), `(H+V)` block buffers, `8*(H+V+D)` delta slots at
+128 bytes, and 8 MiB scratch. Opening validation and live handles are additional
+charges to the same memory owner. Arena creation owns one allocation; destroy
+clears its pointers. These computed envelopes and reserved storage do not prove
+physical backing, free capacity, permanent deletion promises or writable
+admission. See [maintained contract checks](testing.md) for exercised boundaries.
 
 ## Policy acquisition and ordinary views
 
