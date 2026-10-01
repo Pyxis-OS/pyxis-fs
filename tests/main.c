@@ -5,6 +5,11 @@
 #include "codec_tests.h"
 #include "edit_tests.h"
 #include "unity.h"
+#include "live_tests.h"
+#include "publication_tests.h"
+#include "failure.h"
+#include "failure_tests.h"
+#include "admit_tests.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +26,7 @@ setUp(void)
 void
 tearDown(void)
 {
+  test_failures_cleanup();
   test_fixtures_cleanup();
 }
 
@@ -37,6 +43,10 @@ main(int argc, char **argv)
   run_plan_tests();
   run_codec_tests();
   run_edit_tests();
+  run_live_tests();
+  run_failure_tests();
+  run_admit_tests();
+  run_publication_tests();
   UNITY_END();
   return Unity.NumberOfTests == 0 || Unity.TestFailures != 0 ||
          Unity.TestIgnores != 0 ? 1 : 0;

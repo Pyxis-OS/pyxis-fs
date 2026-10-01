@@ -163,8 +163,10 @@ state_complete(const struct check_state *state)
 }
 
 enum pfs_status
-pfs_check(const struct pfs_block_reader *reader, struct pfs_memory *memory,
-          pfs_check_report_fn report, void *context, struct pfs_check_result *result)
+check_capture(const struct pfs_block_reader *reader, struct pfs_memory *memory,
+              pfs_check_report_fn report, void *context,
+              check_capture_fn capture, void *capture_context,
+              struct pfs_check_result *result)
 {
   if (!reader || !reader->read || reader->geometry.block_count < 3 ||
       !reader->geometry.max_transfer_blocks || !memory || !memory->allocate ||
@@ -243,8 +245,20 @@ pfs_check(const struct pfs_block_reader *reader, struct pfs_memory *memory,
   status = check_primary(status, checked.cross_status);
   for (size_t i = 0; i < 2; ++i) {
     status = check_primary(status, checked.state[i].status);
+  }
+  if (status == PFS_OK && checked.cross_complete && capture) {
+    status = capture(capture_context, states);
+  }
+  for (size_t i = 0; i < 2; ++i) {
     state_release(&states[i]);
   }
   pfs_bytes_copy(result, &checked, sizeof(checked));
   return status;
+}
+
+enum pfs_status
+pfs_check(const struct pfs_block_reader *reader, struct pfs_memory *memory,
+          pfs_check_report_fn report, void *context, struct pfs_check_result *result)
+{
+  return check_capture(reader, memory, report, context, NULL, NULL, result);
 }

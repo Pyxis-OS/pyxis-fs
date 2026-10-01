@@ -9,6 +9,70 @@ static struct test_fixture fixture;
 static struct pfs_plan_arena arena;
 
 static void
+check_sorted_changes(const uint64_t *keys, size_t count)
+{
+  struct pfs_map_change changes[32], original[32];
+  bool seen[32] = {0};
+  TEST_ASSERT_LESS_OR_EQUAL_UINT(32, count);
+  memset(changes, 0, sizeof(changes));
+  for (size_t i = 0; i < count; i++) {
+    changes[i].before.first = keys[i];
+    changes[i].before.count = i + 1;
+    changes[i].before.state = i % 4;
+    changes[i].before.charge = i % 3;
+    changes[i].before.birth = 100 + i;
+    changes[i].before.retirement = 200 + i;
+    memset(changes[i].before.owner.bytes, 1 + i, PFS_ID_SIZE);
+    changes[i].after.first = UINT64_MAX - i;
+    changes[i].after.count = 300 + i;
+    changes[i].after.state = (i + 1) % 4;
+    changes[i].after.charge = (i + 1) % 3;
+    changes[i].after.birth = 400 + i;
+    changes[i].after.retirement = 500 + i;
+    memset(changes[i].after.owner.bytes, 33 + i, PFS_ID_SIZE);
+  }
+  memcpy(original, changes, sizeof(changes));
+  pfs_plan_sort_changes(changes, count);
+  for (size_t i = 0; i < count; i++) {
+    if (i) {
+      TEST_ASSERT_TRUE(changes[i - 1].before.first <= changes[i].before.first);
+    }
+    size_t source = 0;
+    while (source < count && memcmp(&changes[i], &original[source], sizeof(changes[i]))) {
+      source++;
+    }
+    TEST_ASSERT_LESS_THAN_UINT(count, source);
+    TEST_ASSERT_FALSE(seen[source]);
+    seen[source] = true;
+  }
+  /* Sorting only the requested entries preserves the unused tail as well. */
+  TEST_ASSERT_EQUAL_MEMORY(original + count, changes + count,
+    (32 - count) * sizeof(*changes));
+}
+
+static void
+allocation_deltas_sort_without_changing_contents(void)
+{
+  pfs_plan_sort_changes(NULL, 0);
+  check_sorted_changes(NULL, 0);
+  const uint64_t single[] = {UINT64_MAX};
+  check_sorted_changes(single, 1);
+  const uint64_t sorted[] = {0, 1, 2, 3, 4, 5, 6, 7, UINT64_MAX};
+  check_sorted_changes(sorted, 9);
+  const uint64_t reverse[] = {UINT64_MAX, 7, 6, 5, 4, 3, 2, 1, 0};
+  check_sorted_changes(reverse, 9);
+  const uint64_t mixed[] = {4, UINT64_MAX, 0, 4, 1, 7, 1, 0, 3, UINT64_MAX, 4};
+  check_sorted_changes(mixed, 11);
+  const uint64_t equal[] = {3, 3, 3, 3, 3, 3};
+  check_sorted_changes(equal, 6);
+  /* Include even-length heaps and short tails without assuming stable ties. */
+  for (size_t count = 2; count <= 8; count++) {
+    check_sorted_changes(reverse, count);
+    check_sorted_changes(mixed, count);
+  }
+}
+
+static void
 limits_and_arena(void)
 {
   struct pfs_plan_limits limits;
@@ -162,6 +226,23 @@ selected(const struct pfs_map_plan *plan, uint64_t block)
 }
 
 static void
+check_exact_map(const struct pfs_map_plan *plan,
+                const struct pfs_allocation_record *expected, size_t count)
+{
+  TEST_ASSERT_EQUAL_UINT(count, plan->record_count);
+  for (size_t i = 0; i < count; i++) {
+    const struct pfs_allocation_record *record = &plan->records[i];
+    TEST_ASSERT_EQUAL_UINT64(expected[i].first, record->first);
+    TEST_ASSERT_EQUAL_UINT64(expected[i].count, record->count);
+    TEST_ASSERT_EQUAL_UINT(expected[i].state, record->state);
+    TEST_ASSERT_EQUAL_UINT(expected[i].charge, record->charge);
+    TEST_ASSERT_EQUAL_UINT64(expected[i].birth, record->birth);
+    TEST_ASSERT_EQUAL_UINT64(expected[i].retirement, record->retirement);
+    TEST_ASSERT_EQUAL_MEMORY(expected[i].owner.bytes, record->owner.bytes, PFS_ID_SIZE);
+  }
+}
+
+static void
 check_map(const struct pfs_map_plan *plan, const struct pfs_block_context *context,
           const struct pfs_allocation_record *base, size_t base_count)
 {
@@ -286,6 +367,21 @@ fragmented_map_accounts_for_itself(void)
   TEST_ASSERT_EQUAL_UINT64(allocation_calls, fixture.allocation_calls);
   TEST_ASSERT_EQUAL_UINT64(reads, fixture.reads);
   TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  /* Preserve the separate-input result, then repeat the same multilevel plan
+   * with the candidate vector holding the original source intervals. */
+  size_t record_count = plan.record_count;
+  memcpy(arena.maps[1], plan.records, record_count * sizeof(*plan.records));
+  memcpy(arena.maps[2], base, 4096 * sizeof(*base));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, arena.maps[2], 4096,
+    ranges, 2048, 8, &plan));
+  TEST_ASSERT_EQUAL_PTR(arena.maps[2], plan.records);
+  TEST_ASSERT_EQUAL_UINT(110, plan.allocation_count);
+  TEST_ASSERT_EQUAL_UINT(101, plan.node_count);
+  check_exact_map(&plan, arena.maps[1], record_count);
+  check_map(&plan, &context, base, 4096);
+  TEST_ASSERT_EQUAL_UINT64(allocation_calls, fixture.allocation_calls);
+  TEST_ASSERT_EQUAL_UINT64(reads, fixture.reads);
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
   /* Insufficient caller-proven reusable capacity refuses the plan. */
   const struct pfs_reusable_range one = {2, 1};
   TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_plan_map_build(&arena, &context, base, 4096, &one, 1, 8, &plan));
@@ -293,6 +389,112 @@ fragmented_map_accounts_for_itself(void)
   const struct pfs_reusable_range live = {1, 1};
   TEST_ASSERT_EQUAL(PFS_INVALID, pfs_plan_map_build(&arena, &context, base, 4096, &live, 1, 0, &plan));
   TEST_ASSERT_NULL(plan.records);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_destroy(&arena));
+}
+
+static void
+in_place_map_claim_boundaries(void)
+{
+  TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, PFS_POOL_BLOCKS_MIN, 0));
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 1, &limits));
+  arena = (struct pfs_plan_arena){0};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_create(&fixture.memory, &limits, &arena));
+  struct pfs_block_context context = {
+    .block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = 4, .pool = {{8}},
+  };
+  /* Two reservations consume a free source exactly, at either edge, or inside
+   * it. The following live source must survive every backward expansion. */
+  const uint64_t lengths[] = {2, 5, 5, 5};
+  const uint64_t starts[] = {1, 1, 4, 2};
+  for (size_t i = 0; i < 4; i++) {
+    struct pfs_allocation_record base[] = {
+      {.first = 1, .count = lengths[i]},
+      {.first = lengths[i] + 1, .count = PFS_POOL_BLOCKS_MIN - 2 - lengths[i],
+       .state = PFS_ALLOCATION_VOLUME, .owner = {{9}}, .birth = 1},
+    };
+    struct pfs_allocation_record expected[4];
+    size_t count = 0;
+    if (starts[i] > 1) {
+      expected[count++] = (struct pfs_allocation_record){.first = 1, .count = starts[i] - 1};
+    }
+    expected[count++] = (struct pfs_allocation_record){.first = starts[i], .count = 2,
+      .state = PFS_ALLOCATION_POOL, .birth = 4};
+    if (starts[i] + 2 < lengths[i] + 1) {
+      expected[count++] = (struct pfs_allocation_record){.first = starts[i] + 2,
+        .count = lengths[i] + 1 - starts[i] - 2};
+    }
+    expected[count++] = base[1];
+    memcpy(arena.maps[2], base, sizeof(base));
+    struct pfs_reusable_range range = {starts[i], 2};
+    struct pfs_map_plan plan;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, arena.maps[2], 2,
+      &range, 1, 0, &plan));
+    TEST_ASSERT_EQUAL_PTR(arena.maps[2], plan.records);
+    TEST_ASSERT_EQUAL_UINT(2, plan.allocation_count);
+    TEST_ASSERT_EQUAL_UINT(1, plan.node_count);
+    check_exact_map(&plan, expected, count);
+    check_map(&plan, &context, base, 2);
+  }
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_destroy(&arena));
+}
+
+static void
+in_place_map_preserves_fragmented_intervals(void)
+{
+  TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, PFS_POOL_BLOCKS_MIN, 0));
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 1, &limits));
+  arena = (struct pfs_plan_arena){0};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_create(&fixture.memory, &limits, &arena));
+  const struct pfs_allocation_record base[] = {
+    {.first = 1, .count = 8},
+    {.first = 9, .count = 3, .state = PFS_ALLOCATION_VOLUME, .owner = {{9}}, .birth = 1},
+    {.first = 12, .count = 12},
+    {.first = 24, .count = 4, .state = PFS_ALLOCATION_POOL, .birth = 1},
+    {.first = 28, .count = 3, .state = PFS_ALLOCATION_RETIRED,
+     .charge = PFS_CHARGE_RECOVERY, .owner = {{9}}, .birth = 1, .retirement = 3},
+    {.first = 31, .count = 10},
+    {.first = 41, .count = PFS_POOL_BLOCKS_MIN - 42,
+     .state = PFS_ALLOCATION_VOLUME, .owner = {{8}}, .birth = 2},
+  };
+  const struct pfs_reusable_range ranges[] = {
+    {1, 1}, {2, 1}, {4, 1}, {7, 2}, {12, 1}, {17, 1}, {23, 1}, {31, 1}, {40, 1},
+  };
+  const struct pfs_allocation_record expected[] = {
+    {.first = 1, .count = 2, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    {.first = 3, .count = 1},
+    {.first = 4, .count = 1, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    {.first = 5, .count = 2},
+    {.first = 7, .count = 2, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    base[1],
+    {.first = 12, .count = 1, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    {.first = 13, .count = 4},
+    {.first = 17, .count = 1, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    {.first = 18, .count = 5},
+    {.first = 23, .count = 1, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    base[3], base[4],
+    {.first = 31, .count = 1, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    {.first = 32, .count = 8},
+    {.first = 40, .count = 1, .state = PFS_ALLOCATION_POOL, .birth = 4},
+    base[6],
+  };
+  struct pfs_block_context context = {
+    .block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = 4, .pool = {{8}},
+  };
+  memcpy(arena.maps[2], base, sizeof(base));
+  struct pfs_map_plan plan;
+  size_t allocation_calls = fixture.allocation_calls;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, arena.maps[2], 7,
+    ranges, 9, 8, &plan));
+  TEST_ASSERT_EQUAL_PTR(arena.maps[2], plan.records);
+  TEST_ASSERT_EQUAL_UINT(10, plan.allocation_count);
+  TEST_ASSERT_EQUAL_UINT(1, plan.node_count);
+  check_exact_map(&plan, expected, 17);
+  check_map(&plan, &context, base, 7);
+  TEST_ASSERT_EQUAL_UINT64(allocation_calls, fixture.allocation_calls);
+  TEST_ASSERT_EQUAL_UINT64(0, fixture.reads);
+  TEST_ASSERT_EQUAL_UINT64(0, fixture.writes);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_destroy(&arena));
 }
 
@@ -327,9 +529,12 @@ void
 run_plan_tests(void)
 {
   Unity.TestFile = __FILE__;
+  RUN_TEST(allocation_deltas_sort_without_changing_contents);
   RUN_TEST(limits_and_arena);
   RUN_TEST(interval_changes_are_private_and_canonical);
   RUN_TEST(interval_failures_distinguish_source_and_delta);
   RUN_TEST(fragmented_map_accounts_for_itself);
   RUN_TEST(single_leaf_map_and_reserved_blocks);
+  RUN_TEST(in_place_map_claim_boundaries);
+  RUN_TEST(in_place_map_preserves_fragmented_intervals);
 }

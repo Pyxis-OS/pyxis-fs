@@ -7,18 +7,18 @@ HOST_AR ?= ar
 CFLAGS ?= -O2 -g3
 WARNINGS := -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Werror
 CORE_FLAGS := -std=gnu23 -ffreestanding -fno-builtin -fno-stack-protector
-SOURCES := plan edit canonical base block record tree platform build pool access check check_walk check_reconcile
+SOURCES := writer writer_access admit plan edit canonical base block record tree platform build pool access check check_walk check_reconcile
 OBJECTS := $(addprefix $(BUILD)/core/,$(addsuffix .o,$(SOURCES)))
 ARCHIVE := $(BUILD)/libpyxis-fs.a
-HOST_OBJECTS := $(addprefix $(BUILD)/host/,host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o)
-TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect
+HOST_OBJECTS := $(addprefix $(BUILD)/host/,write.o host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o)
+TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect $(BUILD)/pyxisfs-write
 
 .DEFAULT_GOAL := all
 .PHONY: all clean check
 
 all: $(ARCHIVE) $(TOOLS)
 
-TEST_SOURCES := main support baseline_tests build_tests plan_tests codec_tests edit_tests
+TEST_SOURCES := publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests codec_tests edit_tests
 TEST_OBJECTS := $(addprefix $(BUILD)/tests/,$(addsuffix .o,$(TEST_SOURCES)))
 UNITY_OBJECT := $(BUILD)/tests/unity.o
 TEST_RUNNER := $(BUILD)/pyxis-fs-tests
@@ -38,6 +38,9 @@ $(UNITY_OBJECT): $(SOURCE)/third_party/unity/unity.c
 	@mkdir -p $(@D)
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/third_party/unity $(CFLAGS) -std=gnu23 -MMD -MP -c $< -o $@
 
+
+$(BUILD)/pyxisfs-write: $(addprefix $(BUILD)/host/,write.o host.o gpt.o) $(ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BUILD)/mkpyxisfs: $(addprefix $(BUILD)/host/,mkpyxisfs.o source.o host.o gpt.o) $(ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@

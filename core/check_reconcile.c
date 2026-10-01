@@ -57,14 +57,9 @@ sift_claims(struct check_claim *claims, size_t root, size_t count)
   }
 }
 
-static void
-sort_claims(struct check_state *state)
+void
+check_sort_claims(struct check_claim *claims, size_t count)
 {
-  if (state->claims_sorted) {
-    return;
-  }
-  struct check_claim *claims = state->claims.data;
-  size_t count = state->claim_count;
   for (size_t i = count / 2; i > 0; --i) {
     sift_claims(claims, i - 1, count);
   }
@@ -72,6 +67,15 @@ sort_claims(struct check_state *state)
     swap_claims(&claims[0], &claims[i - 1]);
     sift_claims(claims, 0, i - 1);
   }
+}
+
+static void
+sort_claims(struct check_state *state)
+{
+  if (state->claims_sorted) {
+    return;
+  }
+  check_sort_claims(state->claims.data, state->claim_count);
   state->claims_sorted = true;
 }
 
@@ -362,7 +366,7 @@ check_accounting(struct check_state *state)
 }
 
 void
-check_reconcile_state(struct check_state *state)
+check_reconcile_storage(struct check_state *state)
 {
   sort_claims(state);
   check_claim_overlap(state);
@@ -374,6 +378,12 @@ check_reconcile_state(struct check_state *state)
       check_live_coverage(state);
     }
   }
+}
+
+void
+check_reconcile_state(struct check_state *state)
+{
+  check_reconcile_storage(state);
   if (state->map_complete) {
     check_accounting(state);
   }

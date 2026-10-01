@@ -9,7 +9,7 @@ build/mkpyxisfs --image /tmp/pool.raw --size 256MiB \
   --owner 0a32efc079ed4c7bab58e224cf119315 --plan
 ```
 
-The build produces `libpyxis-fs.a`, `mkpyxisfs` and `pyxisfs-inspect` under `build/`.
+The build produces `libpyxis-fs.a`, `mkpyxisfs`, `pyxisfs-inspect` and `pyxisfs-write` under `build/`.
 The example principal ID is illustrative; supply an explicitly provisioned owner.
 Omit `--plan` to create the new sparse image; omit `--source` for an empty volume.
 Inspect, check or extract into a fresh destination:

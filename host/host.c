@@ -119,7 +119,10 @@ host_exit_status(enum pfs_status status)
     case PFS_UNSUPPORTED:
     case PFS_LIMIT:
     case PFS_BUSY:
-    case PFS_READ_ONLY: return 4;
+    case PFS_READ_ONLY:
+    case PFS_NO_SPACE:
+    case PFS_QUOTA:
+    case PFS_RECOVERY_REQUIRED: return 4;
     case PFS_IO:
     case PFS_NO_MEMORY: return 5;
   }
@@ -317,10 +320,11 @@ open_parent(struct host_image *image, struct pfs_memory *memory, const char *pat
 }
 
 static enum pfs_status
-image_open_locked(struct host_image *image, const char *path)
+image_open_locked(struct host_image *image, const char *path, bool writable)
 {
   *image = (struct host_image){.fd = -1, .parent_fd = -1, .error_block = UINT64_MAX};
-  image->fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  image->fd = open(path, (writable ? O_RDWR : O_RDONLY) |
+                        O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
   if (image->fd < 0) {
     return image_error(image, "open image", errno, UINT64_MAX);
   }
@@ -332,7 +336,7 @@ image_open_locked(struct host_image *image, const char *path)
     image->operation = "require regular image";
     return PFS_INVALID;
   }
-  if (flock(image->fd, LOCK_SH | LOCK_NB) != 0) {
+  if (flock(image->fd, (writable ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0) {
     int error_number = errno;
     image_error(image, "lock image", error_number, UINT64_MAX);
     return error_number == EWOULDBLOCK ? PFS_BUSY : PFS_IO;
@@ -360,12 +364,56 @@ host_image_open(struct host_image *image, struct pfs_memory *memory,
                  const char *path, struct pfs_block_reader *reader)
 {
   (void)memory;
-  enum pfs_status status = image_open_locked(image, path);
+  enum pfs_status status = image_open_locked(image, path, false);
   if (status != PFS_OK) {
     return status;
   }
   image->length_bytes = image->bytes;
   return image_reader_init(image, reader);
+}
+
+/* Writable sessions never retry a partial or interrupted transfer. The core
+ * owns the resulting publication uncertainty and stops ordinary access. */
+static enum pfs_status
+image_write_exact(void *context, uint64_t first, uint32_t count, const void *buffer)
+{
+  struct host_image *image = context;
+  if (image_unchanged(image) != PFS_OK) {
+    return PFS_IO;
+  }
+  uint64_t blocks = image->length_bytes / PFS_BLOCK_SIZE;
+  if (first >= blocks || count > blocks - first) {
+    return image_error(image, "write outside selected extent", 0, first);
+  }
+  size_t length = (size_t)count * PFS_BLOCK_SIZE;
+  ssize_t written = pwrite(image->fd, buffer, length,
+                           (off_t)(image->offset_bytes + first * PFS_BLOCK_SIZE));
+  if (written < 0 || (size_t)written != length) {
+    return image_error(image, "write image exactly", written < 0 ? errno : EIO, first);
+  }
+  return image_unchanged(image);
+}
+
+enum pfs_status
+host_image_open_writer(struct host_image *image, const char *path,
+                        struct pfs_block_builder *builder)
+{
+  enum pfs_status status = image_open_locked(image, path, true);
+  if (status != PFS_OK) {
+    return status;
+  }
+  if (image->bytes % PFS_BLOCK_SIZE) {
+    image->operation = "require block-aligned image";
+    return PFS_INVALID;
+  }
+  image->length_bytes = image->bytes;
+  uint64_t blocks = image->length_bytes / PFS_BLOCK_SIZE;
+  if (blocks < PFS_POOL_BLOCKS_MIN || blocks > PFS_POOL_BLOCKS_MAX) {
+    return PFS_LIMIT;
+  }
+  struct pfs_geometry geometry = {blocks, PFS_IO_BLOCKS_MAX};
+  return pfs_block_builder_init(builder, image, &geometry, image_read,
+                                image_write_exact, image_flush);
 }
 
 enum pfs_status
@@ -380,7 +428,7 @@ host_image_open_gpt(struct host_image *image, struct pfs_memory *memory,
       (selection->sector_size != 512 && selection->sector_size != 4096)) {
     return PFS_INVALID;
   }
-  enum pfs_status status = image_open_locked(image, path);
+  enum pfs_status status = image_open_locked(image, path, false);
   if (status == PFS_OK) {
     status = host_gpt_select(image, memory, selection, diagnostic);
   }

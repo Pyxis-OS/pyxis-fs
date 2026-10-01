@@ -20,6 +20,9 @@ pfs_status_string(enum pfs_status status)
   case PFS_BUSY: return "busy";
   case PFS_DENIED: return "permission denied";
   case PFS_NOT_FOUND: return "not found";
+  case PFS_NO_SPACE: return "no space";
+  case PFS_QUOTA: return "quota exceeded";
+  case PFS_RECOVERY_REQUIRED: return "recovery required";
   }
   return "unknown status";
 }

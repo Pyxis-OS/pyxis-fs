@@ -85,9 +85,21 @@ enum pfs_status check_add_claim(struct check_state *state,
 struct check_volume *check_find_volume(struct check_state *state,
                                        const struct pfs_volume_id *id);
 void check_walk_state(struct check_state *state);
+void check_sort_claims(struct check_claim *claims, size_t count);
+/* Complete physical ownership/coverage proof without persisted accounting or
+ * quota policy. Candidate admission applies its policy before media accounting. */
+void check_reconcile_storage(struct check_state *state);
 void check_reconcile_state(struct check_state *state);
 enum pfs_status check_compare_states(struct check_state *first,
                                       struct check_state *second,
                                       bool *complete);
+
+/* Called only after complete successful two-state validation, with borrowed
+ * sorted tables. Tables remain owned by the checker and expire on return. */
+typedef enum pfs_status (*check_capture_fn)(void *context,
+                                          const struct check_state states[2]);
+enum pfs_status check_capture(const struct pfs_block_reader *reader,
+  struct pfs_memory *memory, pfs_check_report_fn report, void *context,
+  check_capture_fn capture, void *capture_context, struct pfs_check_result *result);
 
 #endif

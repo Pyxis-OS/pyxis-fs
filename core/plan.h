@@ -56,6 +56,11 @@ struct pfs_map_change {
   struct pfs_allocation_record after;
 };
 
+/* Sorts the caller's complete deltas in place by before.first, without I/O or
+ * allocation. Equal keys have unspecified relative order. NULL is permitted
+ * only for count zero. Sorting does not validate or coalesce the deltas. */
+void pfs_plan_sort_changes(struct pfs_map_change *changes, size_t count);
+
 /* Sorted, disjoint deltas replace exactly matching state, owner, birth,
  * retirement and charge of their source ranges. Input is a canonical complete
  * map. Output may not alias input/deltas; count is published only on success.
@@ -64,7 +69,7 @@ struct pfs_map_change {
  * A malformed base returns PFS_CORRUPT; a delta that does not match the validated
  * base returns PFS_INVALID.
  * Protection/admission evidence for retire/free/claim transitions belongs to the
- * future publisher; this is a bounded private interval editor, not that proof. */
+ * publisher; this is a bounded private interval editor, not that proof. */
 enum pfs_status pfs_plan_map_apply(const struct pfs_record_context *context,
   const struct pfs_allocation_record *base, size_t base_count,
   const struct pfs_map_change *changes, size_t change_count,
@@ -98,15 +103,18 @@ struct pfs_map_plan {
 
 /* Base already includes volume deltas, old pool/map/catalog retirement and
  * eligible frees; it has no live pool allocation born in this candidate.
- * Reusable ranges must independently have been proven free in both retained
- * states with runtime pins ended BEFORE this publication. A same-publication
+ * Reusable ranges must independently have been proven durably free in the
+ * selected state and without live claims in either retained state, with runtime
+ * pins ended BEFORE this publication. Historical retired entries alone are not
+ * live protection. A same-publication
  * free is not eligible. This function verifies sorted ranges and base-free
  * containment, but cannot establish their cross-state/lifetime provenance.
  *
  * Produces every map block, with all map/catalog/pool-root allocations accounted
  * for. Catalog/root IDs are reserved; caller encodes those blocks separately.
  * Does no I/O, heap allocation or publication. Uses maps[2], deltas and blocks;
- * invalidates a prior plan in this arena. Input must not alias those regions.
+ * invalidates a prior plan in this arena. Base may be exactly maps[2] (expanded
+ * in place); other inputs must not alias those regions.
  * Output is empty on failure and owned by arena until next plan/destroy.
  * Catalog count is 0..8. Geometry and generation come from validated context. */
 enum pfs_status pfs_plan_map_build(struct pfs_plan_arena *arena,

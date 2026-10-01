@@ -31,6 +31,11 @@ void host_error(const char *operation, enum pfs_status status,
  * new file in place; close never removes it. Path scratch is charged to memory. */
 enum pfs_status host_image_open(struct host_image *image, struct pfs_memory *memory,
                                 const char *path, struct pfs_block_reader *reader);
+/* Healthy-session writer over an existing regular image. Retains an exclusive
+ * flock until close; uses buffered exact writes and fsync. This establishes no
+ * durable post-error recovery boundary. It neither creates nor resizes files. */
+enum pfs_status host_image_open_writer(struct host_image *image, const char *path,
+  struct pfs_block_builder *builder);
 /* Explicit whole-disk GPT selection only. Both options are mandatory; no type
  * filtering or probing occurs. Diagnostic survives failed opens. */
 enum pfs_status host_image_open_gpt(struct host_image *image, struct pfs_memory *memory,

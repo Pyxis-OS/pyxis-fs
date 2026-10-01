@@ -8,8 +8,10 @@ standalone sparse images from source directories and provide diagnostic `info`,
 `volumes`, `list`, `stat`, `access`, `extract` and `check` commands. Explicit GPT
 partition selection belongs to the host adapter. See [host-tool usage](host-tools.md).
 Private canonical validators, COW tree editors and allocation-map planners are
-also implemented. They stage candidates without publishing them; writable open,
-admission, reclamation and a public mutation API remain unimplemented.
+also implemented. Explicit writable open adds retained-state validation, bounded
+admission, ordered publication and synchronous reclamation. File and namespace
+mutation APIs remain unimplemented; a private editor interface exercises real
+content replacement in the maintained host suite.
 
 ## Build
 
@@ -21,7 +23,7 @@ make -j16 BUILD=/tmp/pyxis-fs-build HOST_CC=cc HOST_AR=ar
 ```
 
 The default outputs are `build/libpyxis-fs.a`, `build/mkpyxisfs` and
-`build/pyxisfs-inspect`. `SOURCE` and `BUILD` can be supplied
+`build/pyxisfs-inspect` and `build/pyxisfs-write`. `SOURCE` and `BUILD` can be supplied
 explicitly when invoking this Makefile from another directory. `HOST_CC` selects
 the compiler, `HOST_AR` the archiver; `CPPFLAGS` and `CFLAGS` add build options.
 Required language/freestanding/warning flags remain in force. Use a separate
@@ -58,6 +60,7 @@ Public headers are under `include/pyxis_fs/`:
 | `read.h` | Diagnostic volume/object access, relative paths, ancestry, explicit grants, file reads and directory cursors |
 | `access.h` | Trusted acquisition contexts, policy evaluation and opaque views with checked ordinary operations |
 | `check.h` | Full diagnostic traversal, per-state reconciliation and retained-state overlap checking |
+| `write.h` | Explicit writable open/profile, writer health, ordinary volume opening and authority-checked checkpoint |
 
 The codecs do not allocate. Callers own input and output storage and must supply
 the stated accessible lengths; buffers and typed structures must be disjoint.
@@ -173,7 +176,7 @@ unsupported, limit and operational failures prevent selection.
 
 Initialize pool handles to zero and never copy them. A pool borrows its reader,
 memory owner and adapter contexts, which remain alive and unchanged until close.
-The adapter must keep the image unchanged for this lifetime. Failed open leaves
+This read-only entry point requires an unchanged image for its lifetime. Failed open leaves
 the handle empty. Close releases owned state without I/O. `pfs_pool_close` returns
 `PFS_BUSY` while volume handles remain open.
 Volume close similarly returns `PFS_BUSY` while views or directory cursors retain
@@ -352,8 +355,9 @@ count without iterating allocation or allocating unused live padding.
 Every map node is reachable and nonempty; internal groups have at least two
 children. Map blocks are encoded in the arena; catalog and pool-root block IDs
 are reserved for the caller to encode. The planner verifies sorted reusable
-ranges and base-free containment. Those ranges must already be proven free in
-both retained states with runtime pins ended before this publication; freeing a
+ranges and base-free containment. Those ranges must already be proven durably free in
+the selected state without live protection in either retained state, with runtime
+pins ended before this publication; freeing a
 range in this candidate does not make it eligible. Planning performs no I/O or
 further allocation, and its borrowed output expires on the next plan or destroy.
 
@@ -526,3 +530,96 @@ and the containing parent before successful completion. Failure leaves reported
 partial output for explicit removal. The host owns and closes all source/output
 descriptors; core readers and builders borrow their adapter contexts. Checking
 uses that same read-only adapter and shared lock without modifying the image.
+
+
+## Admitted writer and publication
+
+`pfs_pool_open_writer` borrows an exclusive block builder and capped memory owner.
+It requires explicit E/M limits, complete supported validation of both retained
+states, canonical metadata, the namespace occupancy profile, unchanged volume
+identities/promises, permanent deletion headroom and the computed workspace
+reserves. It rejects degraded states, live workspace charges, occupied migration
+charges and nonempty orphan indexes. Startup orphan cleanup is task 6; it is not
+silently skipped. Opening reserves the three map/claim vectors and commit/drain
+arena before exposing the writer. Views cannot consume that reservation.
+
+Opening returns the pool diagnostic, confirmed startup generation, health, cleanup
+outcome and computed arena/recovery/permanent-pool requirements. E counts mappings,
+including inline mappings; M covers actual metadata plus namespace deletion
+headroom. Both retained states must fit. No capacity defaults are inferred from
+image size. Admission is logical capacity: it does not preallocate sparse-file
+host storage. The existing 1 GiB core memory cap still applies.
+
+The private `core/writer.h` batch interface accepts the output of trusted COW
+editors. Those editors establish semantic changes and complete changed-path
+claims; the publisher independently reconciles physical maps/claims, counts,
+limits, charges and retained protection. It does not rescan unchanged file trees
+for each transaction. `prepare` holds the serial operation gate until `commit` or
+`abort`; candidate refusal performs no device writes and leaves a healthy writer
+usable. There is no public test transaction interface or public file mutation.
+
+Every admitted publication writes its complete replacement blocks, flushes,
+attempts the older slot once, then flushes again. No short/failed write is retried.
+All map nodes, pool root and changed catalog path are included in allocation
+accounting. Only the final successful flush rotates the confirmed in-memory
+state. A user batch retiring volume blocks runs up to two maintenance publications:
+advance the older slot, then durably free eligible volume debt. Startup drains
+selected-state volume debt before successful opening. Maintenance frees eligible
+pool debt on every publication and leaves the bounded, recovery-charged remainder;
+it does not chase zero retired metadata.
+
+Free/reuse decisions use both complete retained summaries and ended synchronous
+operation/I/O borrows. A selected free record must already be durably published
+before allocation. Historical retired entries in the older map are not live
+protection; either state's live map allocation or live claim still prevents
+reuse. A publication cannot allocate a range it frees in that same publication.
+Retained object views identify objects, not immutable physical snapshots. Ordinary
+operations refresh their volume description and observe the latest confirmed
+state under their held authority. Immutable diagnostic calls and cursors remain
+read-only-mode facilities. Callback reentry into ordinary/lifetime operations is
+`PFS_BUSY`; in-memory health reporting remains available.
+
+`pfs_view_checkpoint` requires the held `file.checkpoint` or `dir.checkpoint`
+right independently of read/lookup rights. Existing grants are unchanged. With
+synchronous funded drains complete it performs no publication. A stopped instance
+cannot use checkpoint, reopening its handles or close to retry maintenance.
+Closing releases runtime resources without writes or an implicit flush.
+
+| Failure | Confirmed state and subsequent access |
+| --- | --- |
+| Profile/quota/space/memory refusal before admission | `STOPPED`; healthy writer remains usable |
+| Replacement write or pre-slot flush error | `STOPPED`, `READABLE_STOPPED`; confirmed-state reads remain authorized |
+| Slot-write attempt or final flush error | `UNKNOWN`, `ACCESS_STOPPED`; no ordinary access |
+| Cleanup error after confirmed user publication | User remains `COMPLETE`; cleanup reports stopped/unknown independently with the corresponding health |
+| Unexpected resource failure during admitted drain | Admission/editor invariant failure; mutation remains stopped and cannot retry itself healthy |
+| Integrity failure or any backing read failure during an ordinary operation, publication planning or maintenance | `ACCESS_STOPPED`, pool-wide, even for a transient read error |
+
+The initial writer deliberately uses this conservative read-error policy. Even a
+transient backing read failure requires a fresh validated reopen under the
+adapter recovery preconditions; clearing the error does not restore this instance.
+A read error during maintenance preserves all already confirmed user progress.
+
+`PFS_NO_SPACE`, `PFS_QUOTA` and `PFS_LIMIT` distinguish capacity/profile refusal.
+`PFS_RECOVERY_REQUIRED` refuses operations prohibited by stopped health. Unknown
+outcomes may include additional committed bytes and are not automatically
+retryable. The result's confirmed bytes/length/namespace fields are independent of
+health; private batches do not acknowledge application bytes. Public mutation
+operations will populate these fields with their behavior in tasks 5/6.
+
+Recovery is an adapter/operator precondition, not a core history detector. The
+adapter must establish an appropriate durable backing state and quiesce I/O;
+close/reopen, cached validation and a later successful flush do not establish it
+after writeback failure. The simulator supplies explicitly durable images for
+recovery tests. The ordinary Linux host adapter has no qualified post-error or
+unknown-history interrupted-session recovery route, no registry and no force
+clear. See [healthy host operation](host-tools.md#healthy-writer-sessions).
+
+Whole-map rebuilding is the initial correctness implementation. Each publication
+rewrites the complete planned allocation map, even for a small useful update;
+a retiring batch can require three maps and six flushes. These are calculated
+protocol costs, not desired performance. Record metadata bytes per useful data
+byte, latency and throughput on populated images with write history before
+selecting the later incremental strategy. Current bounded measurements and test
+limits are in [testing](testing.md). Private writer/planner/encoder stack use
+still needs resolution before native writable integration; the kernel links only
+the read-only core and its small mode/health bridge, not the publisher.

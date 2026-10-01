@@ -2,6 +2,7 @@
 #include "codec_tests.h"
 #include "support.h"
 #include "unity.h"
+#include <pyxis_fs/write.h>
 
 #include "canonical.h"
 #include <pyxis_fs/access.h>
@@ -388,6 +389,33 @@ retained_orphans_check_and_diagnostic_access(void)
 }
 
 static void
+writer_refuses_retained_orphans_before_any_write(void)
+{
+  build_orphan_fixture();
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(&fixture.builder.reader, 1, 1, bytes, sizeof(bytes)));
+  struct pfs_block_context context = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = 1, .referring_birth = 1, .pool = {{1}},
+    .reference = {1, 1, PFS_BLOCK_POOL, PFS_FORMAT_VERSION}};
+  struct pfs_pool_root root;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_root_decode(bytes, sizeof(bytes), &context, &root));
+  root.cow.capacity = root.migration.capacity = root.recovery.capacity = 1024;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_root_encode(bytes, sizeof(bytes), &context, &root));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, 1, 1, bytes, sizeof(bytes)));
+  uint64_t writes = fixture.writes, flushes = fixture.flushes;
+  struct pfs_pool pool = {0};
+  const struct pfs_write_options options = {16, 16};
+  struct pfs_write_open_result opening;
+  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_pool_open_writer(&pool, &fixture.builder,
+    &fixture.memory, &options, &opening));
+  TEST_ASSERT_NULL(pool.state.data);
+  TEST_ASSERT_NULL(pool.writer);
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_EQUAL_UINT64(flushes, fixture.flushes);
+  TEST_ASSERT_EQUAL_UINT64(0, fixture.memory.used);
+}
+
+static void
 rewrite_byte(uint64_t block, size_t offset, uint8_t value, size_t record_offset, size_t record_length)
 {
   uint8_t bytes[PFS_BLOCK_SIZE];
@@ -564,6 +592,7 @@ run_codec_tests(void)
   RUN_TEST(canonical_orphan_tree_and_internal_keys);
   RUN_TEST(canonical_pool_blocks);
   RUN_TEST(retained_orphans_check_and_diagnostic_access);
+  RUN_TEST(writer_refuses_retained_orphans_before_any_write);
   RUN_TEST(malformed_orphan_relations);
   RUN_TEST(named_or_orphan_exclusivity);
 }
