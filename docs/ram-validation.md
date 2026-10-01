@@ -165,7 +165,10 @@ This is a required-settings fragment, not a replacement for the owner's full run
 configuration. Preserve necessary existing options and permitted volume sources.
 The empty-string permission admits the anonymous mount's empty source in this
 runner's volume filter; it does not permit arbitrary host paths. Do not add a
-wildcard permission. Anonymous volumes are removed when the runner removes the
+wildcard permission. If the job log reports `[] is not a valid volume, will be
+ignored`, verify that the empty-string entry is in the active configuration and
+reload the runner; the guard will refuse the resulting missing scratch mount.
+Anonymous volumes are removed when the runner removes the
 job container. Keep ordinary image builds on the existing `pyxis` runner so this
 job limit does not constrain them. No rootful runtime, global swap change or
 additional container capabilities are required.
