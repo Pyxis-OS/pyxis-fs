@@ -180,10 +180,9 @@ and require the drain to finish. Ordinary refusal before admission leaves the
 writer usable. Final orphan release and its resource cases remain with task 6;
 nonempty orphan indexes are currently refused before any write.
 
-File and namespace mutation cases follow with tasks 5/6. Larger pressure,
-populated-source/write-history and extended failure campaigns receive explicit
-commands and coverage limits when delivered; there is no empty extended-suite
-command today. Task 7 records combined results rather than first adding tests.
+Task 5 adds public file mutation and the separate populated write-history command
+below. Namespace/orphan cases follow with task 6. Larger pressure and extended
+failure campaigns remain task 7; the file-workload command is not those campaigns. Task 7 records combined results rather than first adding tests.
 Host tests remain maintained after milestone closure. Ordinary native builds,
 freestanding target compilation and later guest validation remain separate checks.
 
@@ -194,3 +193,106 @@ and requires the host compiler's sanitizer runtimes:
 make -j16 BUILD=/tmp/pyxis-fs-sanitize \
   CFLAGS='-O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer' check
 ```
+
+
+## Task 5 file mutation validation
+
+At implementation `fa78682` with workload reporting `0245e12`, the ordinary host
+build and Pyxis GCC 16.2.0 freestanding archive pass. The maintained quick suite
+now has 86 groups (the final allocation-failure campaign is `25760f9`). It covers
+public create/write/resize, complete-request authority checks, sparse and partial
+blocks, crossing the old EOF, shrink/regrow zeroing, live reads, partial progress,
+quota/profile/generation refusal, and publication/cleanup failure provenance.
+Every discovered allocation point in a create-with-child request is denied in
+turn and must fail before namespace publication. Long-name history creates 120
+files across tree splits, independently checks names, ownership, empty contents
+and grants, then validates/reopens. Live tokens check local invalidation and
+instance binding; ordinary writer identities suppress the pool generation.
+
+The public overwrite/reuse/shrink scenario compares both retained durable payloads
+after replacement writes and before each user and maintenance slot write. Its
+expected bytes/lengths come from the workload. It complements the broader private
+publication boundary matrix; it is not an exhaustive public-operation crash matrix.
+The same 86 groups and the separate workload below pass ASan/UBSan in the existing
+GCC 14.2.0 builder container. Healthy Linux command/extraction observations are
+recorded in [host validation](host-tools.md#file-command-validation).
+
+### Separate populated file workload
+
+```sh
+make -j16 all check
+build/pyxis-fs-tests --suite file-workloads
+# Optional instrumentation, including the same larger scenario:
+make -j16 BUILD=/tmp/pyxis-fs-sanitize \
+  CFLAGS='-O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer' check
+/tmp/pyxis-fs-sanitize/pyxis-fs-tests --suite file-workloads
+```
+
+`make check` remains the deterministic per-PR gate. `file-workloads` is one
+separate deterministic scenario using the same real core and bounded failure
+adapter; no second writer or failure framework is used. It snapshots 12 actual
+core/header source files (154978 bytes at the measured revision), in two source
+directories, into a 4 GiB sparse image, then creates two output files. E=8192,
+M=4096, a 128 MiB core cap, and 8192 blocks in each persisted reserve are explicit.
+It writes 4 MiB sequentially in sixteen 256 KiB calls, appends sixty-four separately
+committed 4 KiB blocks to the other file, performs sixteen deterministic partial
+overwrites (seed 1), and shrinks/regrows. After an explicitly durable cold cut,
+it independently compares both output files and every imported source byte.
+Source/layout changes are allowed; no current fixture bytes or allocator placements
+are golden test expectations. The binary locates source inputs beside its compiled
+source path, so retain that source checkout when running this optional workload.
+
+On Linux 6.19.10 x86_64, native GCC 16.2.1, `-O2 -g3`, three sequential uninstrumented
+samples at `0245e12` gave the following observations. No build or sanitizer job
+ran concurrently. These timings include core planning and synchronous simulator
+I/O/drain, not real-device flush latency or guest/NVMe performance. Metadata bytes
+include slots and both volume/pool metadata; useful bytes count supplied write
+payloads, not zero-filled sparse growth or logical bytes removed.
+
+| Phase | Useful bytes | Elapsed seconds, three samples | Mean call, sample 1 | Throughput range | User / drain metadata bytes per useful byte |
+| --- | ---: | --- | ---: | ---: | --- |
+| Sixteen 256 KiB writes | 4194304 | 1.099903, 1.099280, 1.098652 | 68.744 ms | 3.637–3.641 MiB/s | 0.124 / 0.162 |
+| Sixty-four separate 4 KiB appends | 262144 | 0.343110, 0.342810, 0.343171 | 5.361 ms | 0.728–0.729 MiB/s | 10.281 / 15.344 |
+| Sixteen partial overwrites | 131088 | 0.206778, 0.206403, 0.206301 | 12.924 ms | 0.605–0.606 MiB/s | 6.812 / 9.249 |
+| Shrink and regrow | 0 | 0.093596, 0.093294, 0.093493 | 46.798 ms | Not a useful-byte throughput measure | 598016 / 868352 metadata bytes total |
+
+Sample 1 maximum call latencies were 89.325, 6.119, 14.522 and 87.931 ms in phase
+order. Sequential writing used 16 user and 32 maintenance publications; separate
+appends used 64 and 128. The sequential file had 84 extents after its 16 calls,
+reflecting actual fragmented reuse rather than an assumed contiguous allocation;
+the independently appended file had 64 extents. After overwrites the sequential
+file had 116 extents, and after shrink/regrow it had 51. The final total included
+12 imported extents: 127 file extents, 9 volume metadata blocks and 153 allocation
+records. Charged core memory after reopen with the two views was 30,585,592 bytes;
+this is not a peak RSS measurement and excludes simulator files/logs and workload
+buffers. The live file editor occupies 1,315,288 bytes of already reserved scratch
+(`sizeof`, not an extra allocation).
+
+These are small populated/history examples, not validation of full E/M occupancy,
+64/256 GiB workload capacity, all possible fragmentation or performance targets.
+The image's sparse 4 GiB size alone establishes none of those properties. Whole-map
+rebuilding remains provisional. Code inspection also identifies full admitted-claim
+scans and a 581,272-byte staging checkpoint copy per attempted write block; the
+measured latency is not a profiler attribution to either. Revisit these costs with
+the larger task-7 workloads before selecting allocation/planning optimizations.
+
+### Matched unchanged host commands
+
+A separate 64 MiB image imported `342e92d`'s `core`, `include`, `host`, `docs` and
+`tests` via `git archive`: 86 objects, 295 allocated volume blocks, guarantee=0,
+quota=8192 blocks, and 1024 blocks in each reserve. Prior `e768b6c` (same filesystem
+source as merged `342e92d`) and task-5 `fa78682` host tools used the same unchanged
+warm image and default memory cap. `open` used E=512/M=256. Each table entry is the
+mean of twenty separate invocations measured with Python `time.monotonic`; five
+samples alternated prior/current order. No concurrent build/instrumentation ran.
+
+| Command | Prior mean milliseconds per call, five samples | Task 5 mean milliseconds per call, five samples |
+| --- | --- | --- |
+| `pyxisfs-inspect --image IMAGE check` | 2.840, 2.855, 2.765, 2.879, 2.688 | 3.128, 3.030, 2.726, 2.690, 3.035 |
+| `pyxisfs-write --image IMAGE --extents 512 --metadata 256 open` | 8.355, 8.327, 7.998, 8.113, 8.051 | 8.321, 8.188, 8.214, 7.971, 8.127 |
+
+The check sample ranges overlap, with the task-5 average roughly 4% higher; this
+small noisy observation does not isolate a regression or establish equal cost.
+Writable-open timings are similar. Public mutation has no prior implementation
+baseline; the workload table measures its first implementation without claiming
+an improvement over absent behavior. No QEMU/build defaults changed.
