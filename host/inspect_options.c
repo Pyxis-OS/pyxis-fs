@@ -55,6 +55,7 @@ rights_parse(const char *text, struct pfs_rights *rights)
     {"dir.create", 1, PFS_DIR_CREATE},
     {"dir.remove", 1, PFS_DIR_REMOVE},
     {"dir.replace", 1, PFS_DIR_REPLACE},
+    {"dir.checkpoint", 1, PFS_DIR_CHECKPOINT},
     {"admin.inspect", 2, PFS_ADMIN_INSPECT},
     {"admin.grants", 2, PFS_ADMIN_GRANTS},
     {"admin.owner", 2, PFS_ADMIN_OWNER},

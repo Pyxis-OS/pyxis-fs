@@ -134,6 +134,7 @@ failed_open_releases_memory(void)
 void
 run_baseline_tests(void)
 {
+  Unity.TestFile = __FILE__;
   RUN_TEST(crc_known_answer);
   RUN_TEST(read_list_authority_and_lifetimes);
   RUN_TEST(failed_open_releases_memory);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MPL-2.0 */
 #include "canonical.h"
 
 #include <pyxis_fs/record.h>

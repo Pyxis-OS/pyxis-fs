@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "support.h"
+#include "build_tests.h"
+#include "plan_tests.h"
+#include "codec_tests.h"
+#include "edit_tests.h"
 #include "unity.h"
 
 #include <stdio.h>
@@ -29,6 +33,10 @@ main(int argc, char **argv)
   }
   UNITY_BEGIN();
   run_baseline_tests();
+  run_build_tests();
+  run_plan_tests();
+  run_codec_tests();
+  run_edit_tests();
   UNITY_END();
   return Unity.NumberOfTests == 0 || Unity.TestFailures != 0 ||
          Unity.TestIgnores != 0 ? 1 : 0;

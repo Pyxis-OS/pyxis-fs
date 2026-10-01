@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MPL-2.0 */
 #ifndef PFS_CANONICAL_H
 #define PFS_CANONICAL_H
 

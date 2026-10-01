@@ -46,11 +46,12 @@ inspect_check(const struct pfs_block_reader *reader, struct pfs_memory *memory)
     if (result.pool.selected != PFS_POOL_NO_SELECTION) {
       fputs(result.pool.selected == i ? " (selected)" : " (retained)", stdout);
     }
-    printf("\n  visited: volumes=%llu objects=%llu directory-entries=%llu extents=%llu grants=%llu\n"
+    printf("\n  visited: volumes=%llu objects=%llu directory-entries=%llu extents=%llu grants=%llu orphans=%llu\n"
            "  claimed blocks: metadata=%llu file-data=%llu; unsupported-volumes=%llu\n",
            (unsigned long long)state->volumes, (unsigned long long)state->objects,
            (unsigned long long)state->directory_entries, (unsigned long long)state->file_extents,
-           (unsigned long long)state->grants, (unsigned long long)state->metadata_blocks,
+           (unsigned long long)state->grants, (unsigned long long)state->orphans,
+           (unsigned long long)state->metadata_blocks,
            (unsigned long long)state->file_blocks, (unsigned long long)state->unsupported_volumes);
   }
   printf("Across-state check: %s; %s\n",
