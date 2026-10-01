@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "writer.h"
 #include "canonical.h"
+#include "file.h"
 
 /* Planning performs backing reads only. Keep its I/O failures distinct from
  * replacement writes/flushes and the slot publication uncertainty window. */
@@ -126,6 +127,19 @@ stop_writer(struct pfs_writer *writer, enum pfs_status status, enum publication_
     PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED;
   writer->status.failure = status;
   writer->status.invariant_failure = admitted && status != PFS_IO && status != PFS_CORRUPT;
+}
+
+void
+pfs_writer_funded_failure(struct pfs_pool *pool, enum pfs_status status)
+{
+  if (!pool || !pool->writer || status == PFS_OK || status == PFS_BUSY ||
+      status == PFS_RECOVERY_REQUIRED) {
+    return;
+  }
+  struct pfs_writer *writer = pool->writer;
+  if (writer->status.health == PFS_WRITER_READY) {
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
+  }
 }
 
 static enum pfs_status
@@ -778,6 +792,7 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
     pfs_memory_move(memory, &allocation, &pool->writer->allocation);
     pool->writer->pool = pool;
     pool->writer->backing = backing;
+    pool->writer->cleanup = pfs_orphan_cleanup;
     pool->writer->random = options->random;
     pool->writer->random_context = options->random_context;
     status = pfs_admit_open(&backing->reader, memory, options->extent_limit, options->metadata_limit,
@@ -821,6 +836,11 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
       status = pfs_block_flush(backing);
       if (status == PFS_OK) {
         status = drain(writer, &diagnostic->recovery);
+        if (status == PFS_OK) {
+          pool->writer_busy = false;
+          status = pfs_orphan_recover(pool, &diagnostic->recovery);
+          pool->writer_busy = true;
+        }
       } else {
         stop_writer(writer, status, PUBLICATION_REPLACEMENTS, false);
         diagnostic->recovery.completion = PFS_STOPPED;

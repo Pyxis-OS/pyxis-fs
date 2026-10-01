@@ -29,4 +29,13 @@ enum pfs_status pfs_file_write(struct pfs_volume *volume,
 enum pfs_status pfs_file_resize(struct pfs_volume *volume,
   const struct pfs_object_id *id, uint64_t length, struct pfs_write_result *result);
 
+/* No heap allocation. Named objects are a no-op; unheld orphans finish their
+ * admitted bounded cleanup and drains. The caller keeps the volume alive and
+ * ends all runtime object references before entry. Failure is sticky and is
+ * reported as maintenance independently of confirmed namespace progress. */
+enum pfs_status pfs_orphan_cleanup(struct pfs_volume *volume,
+  const struct pfs_object_id *id, struct pfs_write_result *result);
+/* Opening only, after initial retirement drain and before exposing the pool. */
+enum pfs_status pfs_orphan_recover(struct pfs_pool *pool, struct pfs_write_result *result);
+
 #endif
