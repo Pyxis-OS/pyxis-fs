@@ -8,7 +8,10 @@ sudo python3 tests/ram_run.py --suite check
 
 Historical commands and observations below do not waive that storage boundary.
 Bare `make check` now refuses unless its actual scratch/cgroup/core limits pass
-the same guard. The larger recovery workload is not currently authorized.
+the same guard. The larger recovery workload is not currently authorized. The
+[initial small RAM baseline](ram-baseline.md) records current scoped validation
+and the Pyxis/ext4/Btrfs comparison; historical disk-backed timings below remain
+historical evidence.
 
 `make check` builds `build/pyxis-fs-tests` and runs `--suite pr`. It links the same
 freestanding `libpyxis-fs.a` as the ordinary tools, with no alternate core or

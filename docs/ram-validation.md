@@ -103,6 +103,9 @@ completion, useful bytes, total submitted bytes and Pyxis phase counts alongside
 timing. Serial matched runs are evidence for a later focused improvement proposal,
 not acceptance of writable deployment or authorization for another implementation.
 
+The [initial baseline report](ram-baseline.md) records two completed matrices,
+storage evidence and the next proposed bounded investigation.
+
 ## CI
 
 The filesystem PR job requests 2 GiB tmpfs `noswap`, 4 GiB container memory and
