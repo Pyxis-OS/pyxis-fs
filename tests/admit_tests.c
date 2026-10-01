@@ -382,6 +382,52 @@ historical_retirement_does_not_protect_reusable_storage(void)
   release_opening();
 }
 
+static void
+projected_growth_refuses_quota_before_media_accounting(void)
+{
+  build_image(4, 1024);
+  struct pfs_check_result check;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_open(&fixture.builder.reader, &fixture.memory,
+    1, 16, &arena, states, &check));
+  copy_candidate();
+  uint64_t block = states[2].candidate.root.header.block + 1;
+  struct pfs_map_change add = {
+    .before = {.first = block, .count = 1},
+    .after = {.first = block, .count = 1, .state = PFS_ALLOCATION_VOLUME,
+      .owner = {{2}}, .birth = 2},
+  };
+  struct pfs_record_context context = {
+    .block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = 2, .containing_birth = 2,
+  };
+  struct pfs_allocation_record projected[32];
+  size_t count = 0;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_apply(&context, states[2].maps, states[2].map_count,
+    &add, 1, projected, 32, &count));
+  memcpy(states[2].maps, projected, count * sizeof(*projected));
+  states[2].map_count = count;
+  states[2].claims[states[2].claim_count++] = (struct check_claim){
+    .first = block, .count = 1, .birth = 2, .volume = {{2}}, .object = {{4}},
+  };
+  states[2].file_extents++;
+  states[2].volumes[0].file_extents++;
+  states[2].volumes[0].record.live_blocks++;
+  states[2].candidate.root.live_volume++;
+  states[2].candidate.root.free--;
+  uint64_t reads = fixture.reads, writes = fixture.writes;
+  size_t allocations = fixture.allocation_calls;
+  TEST_ASSERT_EQUAL(PFS_QUOTA, pfs_admit_candidate(&arena, &states[2], &states[0], true));
+  TEST_ASSERT_EQUAL_MEMORY(states[0].maps, states[1].maps,
+    states[0].map_count * sizeof(*states[0].maps));
+  TEST_ASSERT_EQUAL_MEMORY(states[0].claims, states[1].claims,
+    states[0].claim_count * sizeof(*states[0].claims));
+  states[2].claims[states[2].claim_count - 1].birth = 1;
+  TEST_ASSERT_EQUAL(PFS_CORRUPT, pfs_admit_candidate(&arena, &states[2], &states[0], true));
+  TEST_ASSERT_EQUAL_UINT64(reads, fixture.reads);
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_EQUAL_UINT64(allocations, fixture.allocation_calls);
+  release_opening();
+}
+
 void
 run_admit_tests(void)
 {
@@ -395,4 +441,5 @@ run_admit_tests(void)
   RUN_TEST(candidate_admission_is_private_and_reserves_exact_generations);
   RUN_TEST(candidate_rejects_unproven_claims_and_live_workspace_charges);
   RUN_TEST(historical_retirement_does_not_protect_reusable_storage);
+  RUN_TEST(projected_growth_refuses_quota_before_media_accounting);
 }

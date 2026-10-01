@@ -334,9 +334,13 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   }
   state->retired_pool = 0;
   state->retired_volume = 0;
+  uint64_t charges[4] = {0};
   struct pfs_volume_id retired_owner = {0};
   for (size_t i = 0; i < state->map_count; i++) {
     const struct pfs_allocation_record *record = &state->maps[i];
+    if (record->state != PFS_ALLOCATION_FREE) {
+      charges[record->charge] += record->count;
+    }
     if ((record->state == PFS_ALLOCATION_POOL || record->state == PFS_ALLOCATION_VOLUME) &&
         record->charge != PFS_CHARGE_PERMANENT) {
       return PFS_UNSUPPORTED;
@@ -357,6 +361,13 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
       retired_owner = record->owner;
       state->retired_volume += record->count;
     }
+  }
+  if (charges[PFS_CHARGE_ORDINARY] > root->cow.capacity ||
+      charges[PFS_CHARGE_RECOVERY] > root->recovery.capacity) {
+    return PFS_NO_SPACE;
+  }
+  if (charges[PFS_CHARGE_MIGRATION]) {
+    return PFS_UNSUPPORTED;
   }
   protected_retirements(state, older);
   if (state->retired_pool > 2 * limits->pool_blocks ||
@@ -536,24 +547,6 @@ pfs_admit_candidate(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   if (state->map_count > arena->limits.records || state->claim_count > arena->limits.claims) {
     return PFS_LIMIT;
   }
-  uint8_t encoded[PFS_BLOCK_SIZE];
-  enum pfs_status encoded_status = pfs_superblock_encode(encoded, sizeof(encoded),
-                                                         &state->candidate.superblock);
-  struct pfs_block_context block_context = {
-    .block_count = state->candidate.superblock.block_count,
-    .selected_generation = state->candidate.superblock.header.birth,
-    .referring_birth = state->candidate.superblock.header.birth,
-    .pool = state->candidate.superblock.header.pool,
-    .reference = state->candidate.superblock.root,
-    .features = state->candidate.superblock.features,
-  };
-  if (encoded_status == PFS_OK) {
-    encoded_status = pfs_pool_root_encode(encoded, sizeof(encoded), &block_context,
-                                          &state->candidate.root);
-  }
-  if (encoded_status != PFS_OK) {
-    return encoded_status;
-  }
   struct pfs_record_context context = {
     .block_count = state->candidate.superblock.block_count,
     .selected_generation = state->candidate.superblock.header.birth,
@@ -631,9 +624,11 @@ pfs_admit_candidate(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   for (size_t i = 0; i < state->volume_count; i++) {
     if (observed[i][0] != state->volumes[i].file_extents ||
         observed[i][1] != state->volumes[i].metadata_blocks ||
-        observed[i][2] != state->volumes[i].namespace_nodes ||
-        state->volumes[i].grants > PFS_RECORD_COUNT_MAX) {
+        observed[i][2] != state->volumes[i].namespace_nodes) {
       return PFS_CORRUPT;
+    }
+    if (state->volumes[i].grants > PFS_RECORD_COUNT_MAX) {
+      return PFS_LIMIT;
     }
     grants += state->volumes[i].grants;
   }
@@ -649,6 +644,32 @@ pfs_admit_candidate(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   struct pfs_check_state_result results[2] = {0};
   borrow_state(&checked[0], state, volumes, &results[0]);
   borrow_state(&checked[1], older, volumes + PFS_VOLUME_MAX, &results[1]);
+  check_reconcile_storage(&checked[0]);
+  if (results[0].status != PFS_OK) {
+    return results[0].status;
+  }
+  enum pfs_status policy = admit_limits(arena, state, older, user_batch);
+  if (policy != PFS_OK) {
+    return policy;
+  }
+  uint8_t encoded[PFS_BLOCK_SIZE];
+  enum pfs_status encoded_status = pfs_superblock_encode(encoded, sizeof(encoded),
+                                                         &state->candidate.superblock);
+  struct pfs_block_context block_context = {
+    .block_count = state->candidate.superblock.block_count,
+    .selected_generation = state->candidate.superblock.header.birth,
+    .referring_birth = state->candidate.superblock.header.birth,
+    .pool = state->candidate.superblock.header.pool,
+    .reference = state->candidate.superblock.root,
+    .features = state->candidate.superblock.features,
+  };
+  if (encoded_status == PFS_OK) {
+    encoded_status = pfs_pool_root_encode(encoded, sizeof(encoded), &block_context,
+                                          &state->candidate.root);
+  }
+  if (encoded_status != PFS_OK) {
+    return encoded_status;
+  }
   check_reconcile_state(&checked[0]);
   if (results[0].status != PFS_OK) {
     return results[0].status;
@@ -658,5 +679,5 @@ pfs_admit_candidate(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   if (status != PFS_OK || !complete) {
     return status == PFS_OK ? PFS_CORRUPT : status;
   }
-  return admit_limits(arena, state, older, user_batch);
+  return PFS_OK;
 }
