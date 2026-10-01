@@ -15,6 +15,9 @@ applied: MPL's standard secondary-license provisions remain available.
 
 ## Third-party material
 
-There is currently no vendored implementation. Any future imported code or data
-must retain its license, attribution and provenance in its own files or directory.
-Do not replace an upstream notice with the project's default MPL notice.
+The host test executable uses [Unity](third_party/unity/README.md), licensed under
+the [MIT license](third_party/unity/LICENSE.txt). Its pinned source subset retains
+upstream notices and formatting. Unity is not part of the freestanding core.
+
+Imported code or data must retain its license, attribution and provenance. Do not
+replace an upstream notice with the project's default MPL notice.

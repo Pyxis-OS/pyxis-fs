@@ -14,9 +14,30 @@ HOST_OBJECTS := $(addprefix $(BUILD)/host/,host.o gpt.o source.o mkpyxisfs.o ins
 TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect
 
 .DEFAULT_GOAL := all
-.PHONY: all clean
+.PHONY: all clean check
 
 all: $(ARCHIVE) $(TOOLS)
+
+TEST_SOURCES := main support baseline_tests
+TEST_OBJECTS := $(addprefix $(BUILD)/tests/,$(addsuffix .o,$(TEST_SOURCES)))
+UNITY_OBJECT := $(BUILD)/tests/unity.o
+TEST_RUNNER := $(BUILD)/pyxis-fs-tests
+
+check: $(TEST_RUNNER)
+	$(TEST_RUNNER) --suite pr
+
+$(TEST_RUNNER): $(TEST_OBJECTS) $(UNITY_OBJECT) $(ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+$(BUILD)/tests/%.o: $(SOURCE)/tests/%.c
+	@mkdir -p $(@D)
+	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include -I$(SOURCE)/core -I$(SOURCE)/third_party/unity $(CFLAGS) -std=gnu23 $(WARNINGS) -MMD -MP -c $< -o $@
+
+# Preserve upstream formatting and compile the host-only dependency separately.
+$(UNITY_OBJECT): $(SOURCE)/third_party/unity/unity.c
+	@mkdir -p $(@D)
+	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/third_party/unity $(CFLAGS) -std=gnu23 -MMD -MP -c $< -o $@
+
 
 $(BUILD)/mkpyxisfs: $(addprefix $(BUILD)/host/,mkpyxisfs.o source.o host.o gpt.o) $(ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
@@ -37,6 +58,6 @@ $(BUILD)/core/%.o: $(SOURCE)/core/%.c
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include -I$(SOURCE)/core $(CFLAGS) $(CORE_FLAGS) $(WARNINGS) -MMD -MP -c $< -o $@
 
 clean:
-	$(RM) $(OBJECTS) $(OBJECTS:.o=.d) $(ARCHIVE) $(HOST_OBJECTS) $(HOST_OBJECTS:.o=.d) $(TOOLS)
+	$(RM) $(OBJECTS) $(OBJECTS:.o=.d) $(ARCHIVE) $(HOST_OBJECTS) $(HOST_OBJECTS:.o=.d) $(TOOLS) $(TEST_OBJECTS) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT) $(UNITY_OBJECT:.o=.d) $(TEST_RUNNER)
 
--include $(OBJECTS:.o=.d) $(HOST_OBJECTS:.o=.d)
+-include $(OBJECTS:.o=.d) $(HOST_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT:.o=.d)
