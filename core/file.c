@@ -1182,6 +1182,7 @@ cleanup_batches(struct pfs_pool *pool, const struct pfs_volume_id *volume,
         (object.kind == PFS_OBJECT_DIRECTORY && object.directory_count))) {
       status = PFS_CORRUPT;
     }
+    batch->orphan_cleanup = true;
     bool final = false;
     uint64_t initial_work = status == PFS_OK ? mutation->state.volume.orphan_work : 0;
     if (status == PFS_OK) {

@@ -29,6 +29,8 @@ struct pfs_batch {
   size_t remove_count;
   const struct check_claim *add;
   size_t add_count;
+  /* Cleanup volume retirements consume recovery, not ordinary workspace. */
+  bool orphan_cleanup;
 };
 
 struct pfs_changed_directory {

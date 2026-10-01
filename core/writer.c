@@ -401,7 +401,8 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
       }
       retired += claim->count;
       status = change_add(writer, &changes_count, claim->first, claim->count,
-        PFS_ALLOCATION_RETIRED, &claim->volume, claim->birth, PFS_CHARGE_ORDINARY);
+        PFS_ALLOCATION_RETIRED, &claim->volume, claim->birth,
+        batch->orphan_cleanup ? PFS_CHARGE_RECOVERY : PFS_CHARGE_ORDINARY);
       if (status != PFS_OK) {
         return status;
       }

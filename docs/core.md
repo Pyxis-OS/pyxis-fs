@@ -772,9 +772,11 @@ paired object/orphan removal use separate batches. The object and marker remain
 paired until final deletion; every intermediate state is valid and resumable.
 Empty sparse files can proceed directly to grant/final cleanup. Each batch reduces
 remaining orphan work, and its usual retained-root drain finishes before the next
-batch. Last release and startup recovery use the reserved arena for tree reads
-and edits, with no further heap allocation. Unexpected resource failure is an
-admission/editor invariant failure and stops the instance; I/O/integrity failures
+batch. Cleanup volume retirements charge recovery workspace; user mutations,
+including writes through retained orphan handles, charge ordinary workspace.
+Last release and startup recovery use the reserved arena for tree reads and edits,
+with no further heap allocation. Unexpected resource failure is an admission/editor
+invariant failure and stops the instance; I/O/integrity failures
 retain their documented phase-specific health and uncertainty.
 
 Protected deletion headroom remains enforced against volume quota, metadata
