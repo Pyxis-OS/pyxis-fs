@@ -396,39 +396,54 @@ pfs_plan_map_build(struct pfs_plan_arena *arena, const struct pfs_block_context 
   if (selected != total) {
     return PFS_LIMIT;
   }
+  /* Each canonical source interval expands independently: candidate-born pool
+   * claims cannot merge with a source neighbour. Count first, then expand from
+   * the end so maps[2] can also be the input without a fourth map vector. */
   size_t produced = 0, next = 0;
   for (size_t i = 0; i < base_count; i++) {
     uint64_t position = base[i].first;
     uint64_t end = position + base[i].count;
     while (next < selected && allocated[next].block < end) {
-      struct pfs_allocation_record prefix = base[i];
-      prefix.first = position;
-      prefix.count = allocated[next].block - position;
-      status = append(arena->maps[2], (size_t)arena->limits.records, &produced, prefix);
-      if (status != PFS_OK) {
-        return status;
-      }
-      uint64_t first = allocated[next++].block;
-      position = first + 1;
+      produced += allocated[next].block > position;
+      position = allocated[next++].block + 1;
       while (next < selected && allocated[next].block == position) {
         position++;
         next++;
       }
-      struct pfs_allocation_record claim = {
-        .first = first, .count = position - first,
+      produced++;
+    }
+    produced += position < end;
+  }
+  if (produced > arena->limits.records) {
+    return PFS_LIMIT;
+  }
+  size_t output = produced;
+  next = selected;
+  for (size_t i = base_count; i; i--) {
+    struct pfs_allocation_record source = base[i - 1];
+    uint64_t end = source.first + source.count;
+    while (next && allocated[next - 1].block >= source.first) {
+      uint64_t last = allocated[--next].block;
+      if (last + 1 < end) {
+        struct pfs_allocation_record suffix = source;
+        suffix.first = last + 1;
+        suffix.count = end - suffix.first;
+        arena->maps[2][--output] = suffix;
+      }
+      uint64_t first = last;
+      while (next && allocated[next - 1].block + 1 == first &&
+             allocated[next - 1].block >= source.first) {
+        first = allocated[--next].block;
+      }
+      arena->maps[2][--output] = (struct pfs_allocation_record){
+        .first = first, .count = last - first + 1,
         .state = PFS_ALLOCATION_POOL, .birth = context->selected_generation,
       };
-      status = append(arena->maps[2], (size_t)arena->limits.records, &produced, claim);
-      if (status != PFS_OK) {
-        return status;
-      }
+      end = first;
     }
-    struct pfs_allocation_record suffix = base[i];
-    suffix.first = position;
-    suffix.count = end - position;
-    status = append(arena->maps[2], (size_t)arena->limits.records, &produced, suffix);
-    if (status != PFS_OK) {
-      return status;
+    if (end > source.first) {
+      source.count = end - source.first;
+      arena->maps[2][--output] = source;
     }
   }
   if (produced > s || produced < levels[0]) {

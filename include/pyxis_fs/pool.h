@@ -24,10 +24,14 @@ struct pfs_pool_diagnostic {
 /* Zero initialize handles. Reader, memory and their contexts are borrowed and
  * remain unchanged and alive until close. Handles are serial and never copied.
  * The adapter must keep the underlying image unchanged while the pool is open. */
+struct pfs_writer;
+
 struct pfs_pool {
   const struct pfs_block_reader *reader;
   struct pfs_memory *memory;
   struct pfs_allocation state;
+  struct pfs_writer *writer;
+  bool writer_busy;
 };
 
 /* Both slots are examined independently. Diagnostic is published even on media

@@ -106,7 +106,8 @@ struct pfs_map_plan {
  * Produces every map block, with all map/catalog/pool-root allocations accounted
  * for. Catalog/root IDs are reserved; caller encodes those blocks separately.
  * Does no I/O, heap allocation or publication. Uses maps[2], deltas and blocks;
- * invalidates a prior plan in this arena. Input must not alias those regions.
+ * invalidates a prior plan in this arena. Base may be exactly maps[2] (expanded
+ * in place); other inputs must not alias those regions.
  * Output is empty on failure and owned by arena until next plan/destroy.
  * Catalog count is 0..8. Geometry and generation come from validated context. */
 enum pfs_status pfs_plan_map_build(struct pfs_plan_arena *arena,

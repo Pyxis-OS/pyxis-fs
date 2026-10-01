@@ -57,14 +57,9 @@ sift_claims(struct check_claim *claims, size_t root, size_t count)
   }
 }
 
-static void
-sort_claims(struct check_state *state)
+void
+check_sort_claims(struct check_claim *claims, size_t count)
 {
-  if (state->claims_sorted) {
-    return;
-  }
-  struct check_claim *claims = state->claims.data;
-  size_t count = state->claim_count;
   for (size_t i = count / 2; i > 0; --i) {
     sift_claims(claims, i - 1, count);
   }
@@ -72,6 +67,15 @@ sort_claims(struct check_state *state)
     swap_claims(&claims[0], &claims[i - 1]);
     sift_claims(claims, 0, i - 1);
   }
+}
+
+static void
+sort_claims(struct check_state *state)
+{
+  if (state->claims_sorted) {
+    return;
+  }
+  check_sort_claims(state->claims.data, state->claim_count);
   state->claims_sorted = true;
 }
 
