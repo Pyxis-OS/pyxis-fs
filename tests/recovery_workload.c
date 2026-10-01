@@ -219,8 +219,12 @@ static bool
 require_complete(const char *operation, enum pfs_status status,
                  const struct pfs_write_result *result)
 {
-  if (status != PFS_OK || result->completion != PFS_COMPLETE ||
-      result->health != PFS_WRITER_READY) {
+  bool failed = status != PFS_OK || result->completion != PFS_COMPLETE ||
+    result->operation_status != PFS_OK || result->maintenance_status != PFS_OK ||
+    (result->maintenance_completion != PFS_MAINTENANCE_NONE &&
+     result->maintenance_completion != PFS_MAINTENANCE_COMPLETE) ||
+    result->health != PFS_WRITER_READY;
+  if (failed) {
     printf("UNEXPECTED workload refusal/failure: %s status=%s completion=%u "
            "operation=%s confirmed=%llu maintenance=%u/%s health=%u\n", operation,
       pfs_status_string(status), result->completion, pfs_status_string(result->operation_status),
@@ -228,8 +232,7 @@ require_complete(const char *operation, enum pfs_status status,
       pfs_status_string(result->maintenance_status), result->health);
     report_state("failed-call");
   }
-  if (status != PFS_OK || result->completion != PFS_COMPLETE ||
-      result->health != PFS_WRITER_READY) {
+  if (failed) {
     workload_failed = true;
     healthy_refusal = result->health == PFS_WRITER_READY &&
       result->completion != PFS_UNKNOWN && !device.infrastructure_failure &&
@@ -320,7 +323,10 @@ close_file(struct pfs_view **view)
   double start = now();
   enum pfs_status status = pfs_view_close(view, &result);
   account_call(start, 0);
-  if (status != PFS_OK || !result.released || result.health != PFS_WRITER_READY) {
+  if (status != PFS_OK || !result.released || result.health != PFS_WRITER_READY ||
+      result.maintenance_status != PFS_OK ||
+      (result.maintenance_completion != PFS_MAINTENANCE_NONE &&
+       result.maintenance_completion != PFS_MAINTENANCE_COMPLETE)) {
     struct pfs_write_result failure = {.completion = PFS_STOPPED,
       .operation_status = status, .health = result.health,
       .maintenance_completion = result.maintenance_completion,
