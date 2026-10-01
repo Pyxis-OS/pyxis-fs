@@ -306,6 +306,14 @@ tools, the Pyxis GCC 16.2.0 freestanding archive and the parent read-only kernel
 build pass. No QEMU/guest writer validation or new performance measurement is
 claimed by these correctness runs.
 
+The review correction adds one persisted-accounting regression (107 groups total,
+all passing natively and under ASan/UBSan). It traverses the durable allocation
+map after successful flushes: orphan cleanup on final release and startup must
+charge retired volume blocks to recovery workspace, while named writes, unlink
+and retained-orphan writes use ordinary workspace. Recorded workspace occupancy
+must equal the corresponding map charges. Relinking against the prior publisher
+from `044c5e2` fails exactly this new group on the incorrect retirement charge.
+
 The maintained quick suite now covers directory creation/removal, same-volume
 regular-file rename/replacement, explicit replacement intent, exact held rights,
 parent ownership, retained file identity/content, narrowed delegation, detached
