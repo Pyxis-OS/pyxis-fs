@@ -192,10 +192,12 @@ visit_record(struct check_walk *walk, const uint8_t *data, size_t length,
     }
     state->volume_count++;
     state->result->volumes++;
-    volume->supported = pfs_features_check(&volume->record.features) == PFS_OK &&
+    volume->supported = pfs_volume_features_check(&volume->record.features) == PFS_OK &&
                          volume->record.object_root.version == PFS_FORMAT_VERSION &&
                          (!volume->record.grant_root.block ||
-                          volume->record.grant_root.version == PFS_FORMAT_VERSION);
+                          volume->record.grant_root.version == PFS_FORMAT_VERSION) &&
+                         (!volume->record.orphan_root.block ||
+                          volume->record.orphan_root.version == PFS_FORMAT_VERSION);
     if (!volume->supported) {
       state->result->unsupported_volumes++;
       check_problem(state, PFS_UNSUPPORTED, "volume features or tree versions",
@@ -266,6 +268,29 @@ visit_record(struct check_walk *walk, const uint8_t *data, size_t length,
     }
     if (child->record.kind != record.child_kind ||
         !id_equal(child->record.parent.bytes, walk->object->record.id.bytes)) {
+      return PFS_CORRUPT;
+    }
+    return PFS_OK;
+  }
+  case PFS_INDEX_ORPHANS: {
+    struct pfs_orphan_record record;
+    status = pfs_orphan_record_decode(data, length, context, &record);
+    if (status != PFS_OK) {
+      return status;
+    }
+    if (walk->records >= walk->volume->record.object_count) {
+      return PFS_CORRUPT;
+    }
+    state->result->orphans++;
+    struct check_object *object = find_object(walk->volume, &record.object);
+    if (!object) {
+      return walk->objects_complete ? PFS_CORRUPT : PFS_OK;
+    }
+    if (++object->orphans != 1 ||
+        id_equal(object->record.id.bytes, walk->volume->record.root_object.bytes) ||
+        !pfs_bytes_are_zero(object->record.parent.bytes, PFS_ID_SIZE) ||
+        (object->record.kind == PFS_OBJECT_DIRECTORY &&
+         (object->record.storage_kind != PFS_STORAGE_NONE || object->record.directory_count))) {
       return PFS_CORRUPT;
     }
     return PFS_OK;
@@ -466,13 +491,14 @@ object_parent(struct check_volume *volume, struct check_object *object)
 }
 
 static bool
-check_namespace(struct check_state *state, struct check_volume *volume, bool directories_complete)
+check_namespace(struct check_state *state, struct check_volume *volume,
+                bool directories_complete, bool orphans_complete)
 {
   struct check_object *objects = volume->objects.data;
   struct check_object *root = find_object(volume, &volume->record.root_object);
   bool valid = true;
   if (!root || root->record.kind != PFS_OBJECT_DIRECTORY ||
-      !pfs_bytes_are_zero(root->record.parent.bytes, PFS_ID_SIZE) || root->incoming) {
+      !pfs_bytes_are_zero(root->record.parent.bytes, PFS_ID_SIZE) || root->incoming || root->orphans) {
     check_problem(state, PFS_CORRUPT, "volume root object", UINT64_MAX,
                   &volume->record.id, &volume->record.root_object);
     valid = false;
@@ -483,14 +509,23 @@ check_namespace(struct check_state *state, struct check_volume *volume, bool dir
   for (size_t i = 0; i < volume->object_count; ++i) {
     struct check_object *object = &objects[i];
     bool is_root = id_equal(object->record.id.bytes, volume->record.root_object.bytes);
-    if (!is_root && (pfs_bytes_are_zero(object->record.parent.bytes, PFS_ID_SIZE) ||
-                     object->incoming > 1 || (directories_complete && object->incoming != 1))) {
+    bool parentless = pfs_bytes_are_zero(object->record.parent.bytes, PFS_ID_SIZE);
+    if (!is_root && (object->incoming > 1 || object->orphans > 1 ||
+        (object->incoming && object->orphans) ||
+        (object->orphans && !parentless) ||
+        (parentless && !(volume->record.features.read_required & PFS_FEATURE_ORPHANS)) ||
+        (directories_complete && !parentless && object->incoming != 1) ||
+        (directories_complete && parentless && object->incoming) ||
+        (orphans_complete && parentless && object->orphans != 1))) {
       check_problem(state, PFS_CORRUPT, "object namespace entry", UINT64_MAX,
                     &volume->record.id, &object->record.id);
       valid = false;
     }
     if (is_root) {
       object->depth = 1;
+      continue;
+    }
+    if (parentless) {
       continue;
     }
     struct check_object *slow = object;
@@ -587,7 +622,18 @@ walk_volume(struct check_state *state, struct check_volume *volume)
       }
     }
   }
-  if (objects_complete && !check_namespace(state, volume, directories_complete)) {
+  walk = (struct check_walk) {
+    .state = state,
+    .volume = volume,
+    .objects_complete = objects_complete,
+    .kind = PFS_INDEX_ORPHANS,
+  };
+  bool orphans_complete = walk_tree(&walk, &volume->record.orphan_root,
+                                    state->candidate->superblock.header.birth);
+  if (!orphans_complete) {
+    valid = false;
+  }
+  if (objects_complete && !check_namespace(state, volume, directories_complete, orphans_complete)) {
     valid = false;
   }
   walk = (struct check_walk) {

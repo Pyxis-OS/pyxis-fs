@@ -266,7 +266,7 @@ struct catalog_operation {
   size_t table_capacity;
   size_t nodes;
   uint64_t allocation_records;
-  uint64_t volume_records[8];
+  uint64_t volume_records[PFS_INDEX_ORPHANS + 1];
   struct consulted_node *root_dependencies[PFS_TREE_DEPTH_MAX];
   uint16_t root_dependency_count;
   struct walk_frame frames[PFS_TREE_DEPTH_MAX];
@@ -881,6 +881,15 @@ record_key(struct catalog_operation *operation, struct consulted_node *node,
     }
     return status;
   }
+  case PFS_INDEX_ORPHANS: {
+    struct pfs_orphan_record record;
+    status = pfs_orphan_record_decode(data, location->length, &context, &record);
+    if (status == PFS_OK) {
+      key->length = PFS_ID_SIZE;
+      pfs_bytes_copy(key->bytes, record.object.bytes, key->length);
+    }
+    return status;
+  }
   case PFS_INDEX_DIRECTORY: {
     struct pfs_dirent_record record;
     status = pfs_dirent_record_decode(data, location->length, &context, &record);
@@ -1115,7 +1124,8 @@ naming_match(struct catalog_operation *operation, const struct pfs_object_record
 }
 
 static enum pfs_status
-ancestry_collect(struct catalog_operation *operation, const struct pfs_object_id *id)
+ancestry_collect(struct catalog_operation *operation, const struct pfs_object_id *id,
+                 bool allow_orphan)
 {
   operation->chain_count = 0;
   struct pfs_object_id current;
@@ -1156,7 +1166,27 @@ ancestry_collect(struct catalog_operation *operation, const struct pfs_object_id
       return PFS_OK;
     }
     if (pfs_bytes_are_zero(object->parent.bytes, PFS_ID_SIZE)) {
-      return PFS_CORRUPT;
+      if (operation->chain_count != 1 ||
+          !(operation->volume->record.features.read_required & PFS_FEATURE_ORPHANS) ||
+          !operation->volume->record.orphan_root.block ||
+          (object->kind == PFS_OBJECT_DIRECTORY && object->storage_kind != PFS_STORAGE_NONE)) {
+        return PFS_CORRUPT;
+      }
+      struct pfs_key key = { .length = PFS_ID_SIZE };
+      pfs_bytes_copy(key.bytes, object->id.bytes, PFS_ID_SIZE);
+      struct pfs_key found;
+      struct consulted_node *node;
+      uint16_t slot;
+      status = record_next(operation, &operation->volume->record.orphan_root,
+        operation->volume->birth, PFS_INDEX_ORPHANS, NULL, &key, false,
+        &node, &slot, &found, NULL);
+      if (status != PFS_OK) {
+        return status == PFS_NOT_FOUND ? PFS_CORRUPT : status;
+      }
+      if (pfs_key_compare(PFS_INDEX_ORPHANS, &key, &found)) {
+        return PFS_CORRUPT;
+      }
+      return allow_orphan ? PFS_OK : PFS_NOT_FOUND;
     }
     pfs_bytes_copy(&current, &object->parent, sizeof(current));
   }
@@ -1198,9 +1228,10 @@ pfs_pool_diagnostic_volume_open(struct pfs_pool *pool, const struct pfs_volume_i
   }
   if (status == PFS_OK) {
     const struct pfs_volume_record *record = &operation->volumes[index];
-    status = pfs_features_read(&record->features);
+    status = pfs_volume_features_read(&record->features);
     if (status == PFS_OK && (record->object_root.version != PFS_FORMAT_VERSION ||
-        (record->grant_root.block && record->grant_root.version != PFS_FORMAT_VERSION))) {
+        (record->grant_root.block && record->grant_root.version != PFS_FORMAT_VERSION) ||
+        (record->orphan_root.block && record->orphan_root.version != PFS_FORMAT_VERSION))) {
       status = PFS_UNSUPPORTED;
     }
   }
@@ -1214,12 +1245,18 @@ pfs_pool_diagnostic_volume_open(struct pfs_pool *pool, const struct pfs_volume_i
     pfs_bytes_copy(&state->record, &operation->volumes[index], sizeof(state->record));
     state->birth = operation->volume_births[index];
     operation->volume = state;
-    status = ancestry_collect(operation, &state->record.root_object);
+    status = ancestry_collect(operation, &state->record.root_object, false);
     if (status == PFS_OK && state->record.grant_root.block) {
       struct consulted_node *node;
       pfs_bytes_zero(&operation->object, sizeof(operation->object));
       status = node_get(operation, &state->record.grant_root, state->birth,
         PFS_INDEX_GRANTS, NULL, NULL, NULL, &node);
+    }
+    if (status == PFS_OK && state->record.orphan_root.block) {
+      struct consulted_node *node;
+      pfs_bytes_zero(&operation->object, sizeof(operation->object));
+      status = node_get(operation, &state->record.orphan_root, state->birth,
+        PFS_INDEX_ORPHANS, NULL, NULL, NULL, &node);
     }
     if (status == PFS_OK) {
       status = proof_complete(operation);
@@ -1326,7 +1363,7 @@ pfs_volume_diagnostic_ancestry(struct pfs_volume *volume, const struct pfs_objec
   if (status != PFS_OK) {
     return status;
   }
-  status = ancestry_collect(operation, id);
+  status = ancestry_collect(operation, id, false);
   if (status == PFS_OK && out && capacity < operation->chain_count) {
     status = PFS_LIMIT;
   }
@@ -1357,7 +1394,7 @@ pfs_volume_diagnostic_object(struct pfs_volume *volume, const struct pfs_object_
   if (status != PFS_OK) {
     return status;
   }
-  status = ancestry_collect(operation, id);
+  status = ancestry_collect(operation, id, true);
   status = operation_result(operation, status);
   if (status == PFS_OK) {
     pfs_bytes_copy(out, &operation->chain[0], sizeof(*out));
@@ -1400,7 +1437,7 @@ pfs_volume_diagnostic_resolve(struct pfs_volume *volume, const struct pfs_object
   if (status != PFS_OK) {
     return status;
   }
-  status = ancestry_collect(operation, root);
+  status = ancestry_collect(operation, root, false);
   struct pfs_object_record object;
   uint64_t birth = 0;
   if (status == PFS_OK) {
@@ -1441,7 +1478,7 @@ pfs_volume_diagnostic_resolve(struct pfs_volume *volume, const struct pfs_object
     offset = end < length ? end + 1 : end;
   }
   if (status == PFS_OK) {
-    status = ancestry_collect(operation, &object.id);
+    status = ancestry_collect(operation, &object.id, false);
   }
   status = operation_result(operation, status);
   if (status == PFS_OK) {
@@ -1466,7 +1503,7 @@ pfs_volume_diagnostic_grants(struct pfs_volume *volume, const struct pfs_object_
   if (status != PFS_OK) {
     return status;
   }
-  status = ancestry_collect(operation, id);
+  status = ancestry_collect(operation, id, true);
   uint16_t kind = status == PFS_OK ? operation->chain[0].kind : 0;
   struct pfs_key lower;
   pfs_bytes_zero(&lower, sizeof(lower));
@@ -1675,7 +1712,7 @@ pfs_volume_diagnostic_read(struct pfs_volume *volume, const struct pfs_object_id
   if (status != PFS_OK) {
     return status;
   }
-  status = ancestry_collect(operation, id);
+  status = ancestry_collect(operation, id, true);
   struct pfs_object_record file;
   uint64_t birth = 0;
   if (status == PFS_OK) {
@@ -1961,7 +1998,7 @@ pfs_directory_next(struct pfs_directory_cursor *cursor, struct pfs_dirent_record
   struct directory_page page = {.started = state->started};
   pfs_bytes_copy(&page.previous, &state->previous, sizeof(page.previous));
   if (status == PFS_OK) {
-    status = ancestry_collect(operation, &state->object);
+    status = ancestry_collect(operation, &state->object, true);
   }
   struct pfs_object_record directory;
   uint64_t birth;
@@ -2015,7 +2052,7 @@ pfs_volume_directory_page(struct pfs_volume *volume, const struct pfs_object_id 
   status = pfs_memory_allocate(volume->pool->memory, capacity * sizeof(*out),
     _Alignof(struct pfs_dirent_record), &output);
   if (status == PFS_OK) {
-    status = ancestry_collect(operation, id);
+    status = ancestry_collect(operation, id, true);
   }
   struct pfs_object_record directory;
   uint64_t birth;

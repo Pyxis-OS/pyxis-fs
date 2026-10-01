@@ -9,6 +9,7 @@
 #define PFS_OBJECT_RECORD_SIZE 128u
 #define PFS_EXTENT_RECORD_SIZE 64u
 #define PFS_GRANT_RECORD_SIZE 80u
+#define PFS_ORPHAN_RECORD_SIZE 32u
 
 enum pfs_object_kind {
   PFS_OBJECT_FILE = 1,
@@ -52,7 +53,8 @@ enum pfs_grant_scope {
 #define PFS_DIR_CREATE (UINT64_C(1) << 3)
 #define PFS_DIR_REMOVE (UINT64_C(1) << 4)
 #define PFS_DIR_REPLACE (UINT64_C(1) << 5)
-#define PFS_DIR_RIGHTS_ALL UINT64_C(0x3f)
+#define PFS_DIR_CHECKPOINT (UINT64_C(1) << 6)
+#define PFS_DIR_RIGHTS_ALL UINT64_C(0x7f)
 #define PFS_ADMIN_INSPECT (UINT64_C(1) << 0)
 #define PFS_ADMIN_GRANTS (UINT64_C(1) << 1)
 #define PFS_ADMIN_OWNER (UINT64_C(1) << 2)
@@ -65,11 +67,16 @@ struct pfs_volume_record {
   struct pfs_object_id root_object;
   struct pfs_reference object_root;
   struct pfs_reference grant_root;
+  struct pfs_reference orphan_root;
   uint64_t guarantee;
   uint64_t quota;
   uint64_t live_blocks;
   uint64_t retired_blocks;
   uint64_t object_count;
+};
+
+struct pfs_orphan_record {
+  struct pfs_object_id object;
 };
 
 struct pfs_volume_name_record {
@@ -129,7 +136,7 @@ struct pfs_grant_record {
 /* Local validators use CORRUPT for malformed fields and LIMIT for profile limits.
  * They do not establish allocation ownership, tree kind/owners, or reachability.
  * Decode publishes an owned copy only on success. Encode emits version 1 with
- * zero extension bytes and refuses enabled features; it is for new images only.
+ * zero extension bytes and refuses unsupported features; it does not preserve extensions.
  * Encoding inputs must not overlap the destination. */
 /* Volume validation exposes the fixed envelope without interpreting its feature
  * masks or nonzero target-tree versions. Check features and target versions before
@@ -213,5 +220,14 @@ enum pfs_status pfs_grant_record_encode(void *data, size_t capacity,
 /* Apply after local grant validation and resolving the target object. */
 enum pfs_status pfs_grant_target_validate(const struct pfs_grant_record *record,
                                          uint16_t target_kind);
+
+enum pfs_status pfs_orphan_record_validate(const struct pfs_orphan_record *record,
+                                          const struct pfs_record_context *context);
+enum pfs_status pfs_orphan_record_decode(const void *data, size_t slot_length,
+                                        const struct pfs_record_context *context,
+                                        struct pfs_orphan_record *out);
+enum pfs_status pfs_orphan_record_encode(void *data, size_t capacity,
+                                        const struct pfs_record_context *context,
+                                        const struct pfs_orphan_record *record, size_t *written);
 
 #endif

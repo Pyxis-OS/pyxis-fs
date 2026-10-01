@@ -50,6 +50,8 @@ struct pfs_name {
   uint8_t bytes[PFS_NAME_MAX];
 };
 
+#define PFS_FEATURE_ORPHANS (UINT64_C(1) << 0)
+
 struct pfs_features {
   uint64_t read_required;
   uint64_t write_required;
@@ -70,6 +72,7 @@ enum pfs_index_kind {
   PFS_INDEX_DIRECTORY = 5,
   PFS_INDEX_EXTENTS = 6,
   PFS_INDEX_GRANTS = 7,
+  PFS_INDEX_ORPHANS = 8,
 };
 
 enum pfs_record_type {
@@ -80,6 +83,7 @@ enum pfs_record_type {
   PFS_RECORD_DIRENT = 5,
   PFS_RECORD_EXTENT = 6,
   PFS_RECORD_GRANT = 7,
+  PFS_RECORD_ORPHAN = 8,
   PFS_INTERNAL_RECORD_TYPE = 256,
 };
 
@@ -105,6 +109,10 @@ enum pfs_status pfs_name_validate(const uint8_t *bytes, size_t length);
 enum pfs_status pfs_features_read(const struct pfs_features *features);
 enum pfs_status pfs_features_write(const struct pfs_features *features);
 enum pfs_status pfs_features_check(const struct pfs_features *features);
+/* ORPHANS is recognized only in a volume feature mask. */
+enum pfs_status pfs_volume_features_read(const struct pfs_features *features);
+enum pfs_status pfs_volume_features_write(const struct pfs_features *features);
+enum pfs_status pfs_volume_features_check(const struct pfs_features *features);
 
 enum pfs_status pfs_pool_id_parse(const char *text, size_t length, struct pfs_pool_id *out);
 enum pfs_status pfs_volume_id_parse(const char *text, size_t length, struct pfs_volume_id *out);

@@ -8,12 +8,13 @@
 
 #define CHECK_ANCESTRY_MAX 256u
 #define CHECK_METADATA_MAX (2 * (2 * PFS_VOLUME_MAX + PFS_ALLOCATION_COUNT_MAX + \
-                                  4 * PFS_RECORD_COUNT_MAX) + 1)
+                                  5 * PFS_RECORD_COUNT_MAX) + 1)
 
 struct check_object {
   struct pfs_object_record record;
   uint64_t birth;
   uint32_t incoming;
+  uint32_t orphans;
   uint32_t depth;
   uint32_t grants;
 };
