@@ -9,6 +9,70 @@ static struct test_fixture fixture;
 static struct pfs_plan_arena arena;
 
 static void
+check_sorted_changes(const uint64_t *keys, size_t count)
+{
+  struct pfs_map_change changes[32], original[32];
+  bool seen[32] = {0};
+  TEST_ASSERT_LESS_OR_EQUAL_UINT(32, count);
+  memset(changes, 0, sizeof(changes));
+  for (size_t i = 0; i < count; i++) {
+    changes[i].before.first = keys[i];
+    changes[i].before.count = i + 1;
+    changes[i].before.state = i % 4;
+    changes[i].before.charge = i % 3;
+    changes[i].before.birth = 100 + i;
+    changes[i].before.retirement = 200 + i;
+    memset(changes[i].before.owner.bytes, 1 + i, PFS_ID_SIZE);
+    changes[i].after.first = UINT64_MAX - i;
+    changes[i].after.count = 300 + i;
+    changes[i].after.state = (i + 1) % 4;
+    changes[i].after.charge = (i + 1) % 3;
+    changes[i].after.birth = 400 + i;
+    changes[i].after.retirement = 500 + i;
+    memset(changes[i].after.owner.bytes, 33 + i, PFS_ID_SIZE);
+  }
+  memcpy(original, changes, sizeof(changes));
+  pfs_plan_sort_changes(changes, count);
+  for (size_t i = 0; i < count; i++) {
+    if (i) {
+      TEST_ASSERT_TRUE(changes[i - 1].before.first <= changes[i].before.first);
+    }
+    size_t source = 0;
+    while (source < count && memcmp(&changes[i], &original[source], sizeof(changes[i]))) {
+      source++;
+    }
+    TEST_ASSERT_LESS_THAN_UINT(count, source);
+    TEST_ASSERT_FALSE(seen[source]);
+    seen[source] = true;
+  }
+  /* Sorting only the requested entries preserves the unused tail as well. */
+  TEST_ASSERT_EQUAL_MEMORY(original + count, changes + count,
+    (32 - count) * sizeof(*changes));
+}
+
+static void
+allocation_deltas_sort_without_changing_contents(void)
+{
+  pfs_plan_sort_changes(NULL, 0);
+  check_sorted_changes(NULL, 0);
+  const uint64_t single[] = {UINT64_MAX};
+  check_sorted_changes(single, 1);
+  const uint64_t sorted[] = {0, 1, 2, 3, 4, 5, 6, 7, UINT64_MAX};
+  check_sorted_changes(sorted, 9);
+  const uint64_t reverse[] = {UINT64_MAX, 7, 6, 5, 4, 3, 2, 1, 0};
+  check_sorted_changes(reverse, 9);
+  const uint64_t mixed[] = {4, UINT64_MAX, 0, 4, 1, 7, 1, 0, 3, UINT64_MAX, 4};
+  check_sorted_changes(mixed, 11);
+  const uint64_t equal[] = {3, 3, 3, 3, 3, 3};
+  check_sorted_changes(equal, 6);
+  /* Include even-length heaps and short tails without assuming stable ties. */
+  for (size_t count = 2; count <= 8; count++) {
+    check_sorted_changes(reverse, count);
+    check_sorted_changes(mixed, count);
+  }
+}
+
+static void
 limits_and_arena(void)
 {
   struct pfs_plan_limits limits;
@@ -465,6 +529,7 @@ void
 run_plan_tests(void)
 {
   Unity.TestFile = __FILE__;
+  RUN_TEST(allocation_deltas_sort_without_changing_contents);
   RUN_TEST(limits_and_arena);
   RUN_TEST(interval_changes_are_private_and_canonical);
   RUN_TEST(interval_failures_distinguish_source_and_delta);

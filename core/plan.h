@@ -56,6 +56,11 @@ struct pfs_map_change {
   struct pfs_allocation_record after;
 };
 
+/* Sorts the caller's complete deltas in place by before.first, without I/O or
+ * allocation. Equal keys have unspecified relative order. NULL is permitted
+ * only for count zero. Sorting does not validate or coalesce the deltas. */
+void pfs_plan_sort_changes(struct pfs_map_change *changes, size_t count);
+
 /* Sorted, disjoint deltas replace exactly matching state, owner, birth,
  * retirement and charge of their source ranges. Input is a canonical complete
  * map. Output may not alias input/deltas; count is published only on success.

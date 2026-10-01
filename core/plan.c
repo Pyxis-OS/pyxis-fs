@@ -141,6 +141,43 @@ same_allocation(const struct pfs_allocation_record *a, const struct pfs_allocati
     pfs_bytes_compare(a->owner.bytes, PFS_ID_SIZE, b->owner.bytes, PFS_ID_SIZE) == 0;
 }
 
+static void
+swap_changes(struct pfs_map_change *first, struct pfs_map_change *second)
+{
+  struct pfs_map_change temporary;
+  pfs_bytes_copy(&temporary, first, sizeof(temporary));
+  pfs_bytes_copy(first, second, sizeof(*first));
+  pfs_bytes_copy(second, &temporary, sizeof(*second));
+}
+
+static void
+sift_changes(struct pfs_map_change *changes, size_t root, size_t count)
+{
+  while (root < count / 2) {
+    size_t child = 2 * root + 1;
+    if (child + 1 < count && changes[child + 1].before.first > changes[child].before.first) {
+      child++;
+    }
+    if (changes[root].before.first >= changes[child].before.first) {
+      return;
+    }
+    swap_changes(&changes[root], &changes[child]);
+    root = child;
+  }
+}
+
+void
+pfs_plan_sort_changes(struct pfs_map_change *changes, size_t count)
+{
+  for (size_t i = count / 2; i; i--) {
+    sift_changes(changes, i - 1, count);
+  }
+  for (size_t remaining = count; remaining > 1; remaining--) {
+    swap_changes(&changes[0], &changes[remaining - 1]);
+    sift_changes(changes, 0, remaining - 1);
+  }
+}
+
 static enum pfs_status
 map_validate(const struct pfs_record_context *context,
              const struct pfs_allocation_record *base, size_t count)
