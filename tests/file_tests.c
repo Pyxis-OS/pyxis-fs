@@ -337,6 +337,15 @@ create_checks_held_authority_before_publication_and_preserves_policy(void)
   acquire_parent(PFS_SCOPE_SUBTREE, &rights);
   struct pfs_rights child = file_rights;
   child.admin = PFS_ADMIN_INSPECT;
+  writes = device.ordinals[TEST_FAILURE_WRITE];
+  test_failure_memory_fail_after(&device, 0);
+  TEST_ASSERT_EQUAL(PFS_NO_MEMORY, pfs_view_create_file(parent_view, (const uint8_t *)"new", 3,
+    &child, &other_view, &identity, &result));
+  TEST_ASSERT_NULL(other_view);
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+  TEST_ASSERT_FALSE(result.namespace_confirmed);
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  device.backing.fail_after = SIZE_MAX;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(parent_view, (const uint8_t *)"new", 3,
     &child, &other_view, &identity, &result));
   expect_complete(&result);
