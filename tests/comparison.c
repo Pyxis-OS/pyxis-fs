@@ -30,6 +30,11 @@
 #define REQUEST_MAX (256u * 1024u)
 #define CORE_MEMORY_MAX (128u * 1024u * 1024u)
 #define MOUNT_LINE_BYTES 16384u
+#define EXT4_SUPERBLOCK_OFFSET 1024u
+#define EXT4_JOURNAL_UUID_OFFSET 0xd0u
+#define EXT4_JOURNAL_UUID_BYTES 16u
+#define EXT4_JOURNAL_INODE_BYTES 4u
+#define EXT4_JOURNAL_DEVICE_BYTES 4u
 
 struct patch {
   uint64_t offset;
@@ -364,6 +369,30 @@ require_loop_node(const char *path, dev_t loop_device)
 }
 
 static void
+verify_ext4_journal(void)
+{
+  /* Linux ext4_super_block: external UUID, internal inode, external device.
+   * An ext4 root on RAM can otherwise send journal writes to another device. */
+  uint8_t journal[EXT4_JOURNAL_UUID_BYTES + EXT4_JOURNAL_INODE_BYTES + EXT4_JOURNAL_DEVICE_BYTES];
+  require(pread(native_backing_fd, journal, sizeof(journal),
+    EXT4_SUPERBLOCK_OFFSET + EXT4_JOURNAL_UUID_OFFSET) == (ssize_t)sizeof(journal),
+    "read held ext4 journal fields");
+  for (size_t i = 0; i < EXT4_JOURNAL_UUID_BYTES; i++) {
+    require(journal[i] == 0, "native ext4 must not use an external journal UUID");
+  }
+  bool internal = false;
+  for (size_t i = EXT4_JOURNAL_UUID_BYTES;
+       i < EXT4_JOURNAL_UUID_BYTES + EXT4_JOURNAL_INODE_BYTES; i++) {
+    internal = internal || journal[i] != 0;
+  }
+  require(internal, "native ext4 must have an internal journal inode");
+  for (size_t i = EXT4_JOURNAL_UUID_BYTES + EXT4_JOURNAL_INODE_BYTES;
+       i < sizeof(journal); i++) {
+    require(journal[i] == 0, "native ext4 must not use an external journal device");
+  }
+}
+
+static void
 verify_native_mount(uint64_t id, dev_t loop_device)
 {
   struct statfs filesystem;
@@ -398,6 +427,7 @@ verify_native_mount(uint64_t id, dev_t loop_device)
     struct stat attributes;
     require(fstat(root_fd, &attributes) == 0 && attributes.st_dev == loop_device,
       "ext4 root must use the held loop");
+    verify_ext4_journal();
   } else {
     /* Btrfs has an anonymous st_dev; inspect its sole device explicitly. */
     struct btrfs_ioctl_fs_info_args information = {0};
