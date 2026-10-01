@@ -118,6 +118,75 @@ select_free(struct pfs_writer *writer, uint64_t *blocks, size_t demand,
   return count == demand ? PFS_OK : PFS_NO_SPACE;
 }
 
+static const struct check_claim *
+next_claim(const struct pfs_admit_state *state, size_t *index, uint64_t first)
+{
+  while (*index < state->claim_count &&
+         state->claims[*index].first + state->claims[*index].count <= first) {
+    (*index)++;
+  }
+  return *index < state->claim_count ? &state->claims[*index] : NULL;
+}
+
+/* A volume batch prefers one run, but its admission promise only guarantees
+ * aggregate capacity. Walk eligible intervals without scanning free disk blocks. */
+static bool
+select_contiguous(struct pfs_writer *writer, uint64_t *blocks, size_t demand)
+{
+  const struct pfs_admit_state *a = &writer->states[writer->selected];
+  const struct pfs_admit_state *b = &writer->states[1 - writer->selected];
+  size_t ai = 0, bi = 0, ac = 0, bc = 0;
+  uint64_t run_first = 0, run_end = 0;
+  while (ai < a->map_count && bi < b->map_count) {
+    const struct pfs_allocation_record *left = &a->maps[ai], *right = &b->maps[bi];
+    uint64_t end_a = left->first + left->count, end_b = right->first + right->count;
+    uint64_t first = left->first > right->first ? left->first : right->first;
+    uint64_t end = end_a < end_b ? end_a : end_b;
+    if (left->state == PFS_ALLOCATION_FREE &&
+        (right->state == PFS_ALLOCATION_FREE || right->state == PFS_ALLOCATION_RETIRED)) {
+      while (first < end) {
+        const struct check_claim *claims[] = {
+          next_claim(a, &ac, first), next_claim(b, &bc, first),
+        };
+        uint64_t blocked_end = first, free_end = end;
+        for (size_t i = 0; i < 2; i++) {
+          const struct check_claim *claim = claims[i];
+          if (!claim) {
+            continue;
+          }
+          if (claim->first <= first) {
+            uint64_t claim_end = claim->first + claim->count;
+            if (claim_end > blocked_end) {
+              blocked_end = claim_end;
+            }
+          } else if (claim->first < free_end) {
+            free_end = claim->first;
+          }
+        }
+        if (blocked_end > first) {
+          first = blocked_end;
+          run_end = 0;
+          continue;
+        }
+        if (run_end != first) {
+          run_first = first;
+        }
+        run_end = free_end;
+        if (run_end - run_first >= demand) {
+          for (size_t i = 0; i < demand; i++) {
+            blocks[i] = run_first + i;
+          }
+          return true;
+        }
+        first = free_end;
+      }
+    }
+    ai += end_a <= end_b;
+    bi += end_b <= end_a;
+  }
+  return false;
+}
+
 static void
 stop_writer(struct pfs_writer *writer, enum pfs_status status, enum publication_phase phase,
             bool admitted)
@@ -684,7 +753,9 @@ pfs_writer_prepare(struct pfs_pool *pool, struct pfs_batch **batch)
   }
   writer->batch = (struct pfs_batch){.generation = source->candidate.superblock.header.birth + 1,
     .available_count = PFS_PLAN_VOLUME_NEW};
-  status = select_free(writer, writer->batch.available, PFS_PLAN_VOLUME_NEW, NULL);
+  if (!select_contiguous(writer, writer->batch.available, PFS_PLAN_VOLUME_NEW)) {
+    status = select_free(writer, writer->batch.available, PFS_PLAN_VOLUME_NEW, NULL);
+  }
   if (status != PFS_OK || source->reusable_blocks < writer->arena.limits.pool_blocks + PFS_PLAN_VOLUME_NEW) {
     pfs_writer_end(pool, PFS_OK);
     return status != PFS_OK ? status : PFS_NO_SPACE;
