@@ -80,7 +80,7 @@ print_volumes(struct pfs_pool *pool, struct pfs_memory *memory, size_t capacity)
       pfs_volume_id_format(&volume->id, id);
       pfs_object_id_format(&volume->root_object, root_id);
       host_name_print(stdout, volume->name.bytes, volume->name.length);
-      bool supported = pfs_features_read(&volume->features) == PFS_OK &&
+      bool supported = pfs_volume_features_read(&volume->features) == PFS_OK &&
         volume->object_root.version == PFS_FORMAT_VERSION &&
         (volume->grant_root.block == 0 ||
          volume->grant_root.version == PFS_FORMAT_VERSION);
