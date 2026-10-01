@@ -142,7 +142,7 @@ report_state(const char *name)
   const struct pfs_pool_root *root = &state->candidate.root;
   printf("  state %s: generation=%llu objects=%llu directories=%llu maps=%zu claims=%zu "
          "extents=%llu metadata=%llu effective=%llu namespace=%llu deletion=%llu "
-         "orphan-work=%llu charged-memory=%llu peak-core-memory=%llu\n"
+         "orphan-work=%llu charged-memory=%llu peak-charged-memory=%llu\n"
          "  budgets cow=%llu/%llu migration=%llu/%llu recovery=%llu/%llu "
          "live=%llu retired=%llu reusable=%llu\n", name,
     (unsigned long long)pool.writer->last_confirmed_generation,
@@ -352,6 +352,10 @@ compare_view(struct pfs_view *view, FILE *host, uint64_t first, uint64_t length)
     TEST_ASSERT_EQUAL_UINT(count, got);
     TEST_ASSERT_EQUAL_MEMORY(expected, actual, count);
     offset += count;
+    if (length >= 64u * 1024u * 1024u && offset % (64u * 1024u * 1024u) == 0) {
+      printf("  verified output bytes=%llu/%llu\n",
+        (unsigned long long)offset, (unsigned long long)length);
+    }
   }
   device.observer = observer;
 }
@@ -595,7 +599,7 @@ open_writer(void)
   struct pfs_write_open_result result;
   enum pfs_status status = pfs_pool_open_writer(&pool, &device.builder, device.memory, &options, &result);
   printf("  writer-open=%s confirmed-generation=%llu required-recovery=%llu "
-         "arena=%llu peak-core-memory=%llu\n", pfs_status_string(status),
+         "arena=%llu peak-charged-memory=%llu\n", pfs_status_string(status),
     (unsigned long long)result.confirmed_generation,
     (unsigned long long)result.required_recovery_blocks,
     (unsigned long long)result.reserved_arena_bytes,
@@ -899,7 +903,7 @@ verify:
   TEST_ASSERT_TRUE(checked.state[0].complete);
   TEST_ASSERT_TRUE(checked.state[1].complete);
   TEST_ASSERT_TRUE(checked.cross_complete);
-  printf("  both retained states and cross-state checker: complete, success; peak-core-memory=%llu\n",
+  printf("  both retained states and cross-state checker: complete, success; peak-charged-memory=%llu\n",
     (unsigned long long)device.backing.peak_memory_bytes);
   fflush(stdout);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_memory_free(&expected_sources.memory, &source_paths));
@@ -916,6 +920,7 @@ verify:
 void
 run_recovery_workload(uint64_t seed, const char *source_path)
 {
+  Unity.TestFile = __FILE__;
   workload_seed = seed;
   source_directory = source_path;
   RUN_TEST(populated_recovery_history);

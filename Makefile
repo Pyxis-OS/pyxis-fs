@@ -14,11 +14,12 @@ HOST_OBJECTS := $(addprefix $(BUILD)/host/,write.o host.o gpt.o source.o mkpyxis
 TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect $(BUILD)/pyxisfs-write
 
 .DEFAULT_GOAL := all
-.PHONY: all clean check
+.PHONY: all clean check check-extended
 
 all: $(ARCHIVE) $(TOOLS)
 
-TEST_SOURCES := namespace_failure_tests namespace_tests file_workloads file_tests publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests codec_tests edit_tests
+TEST_SOURCES := recovery_workload extended_tests namespace_failure_tests namespace_tests file_workloads file_tests publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests codec_tests edit_tests
+TEST_HOST_OBJECTS := $(addprefix $(BUILD)/host/,source.o host.o gpt.o)
 TEST_OBJECTS := $(addprefix $(BUILD)/tests/,$(addsuffix .o,$(TEST_SOURCES)))
 UNITY_OBJECT := $(BUILD)/tests/unity.o
 TEST_RUNNER := $(BUILD)/pyxis-fs-tests
@@ -26,7 +27,10 @@ TEST_RUNNER := $(BUILD)/pyxis-fs-tests
 check: $(TEST_RUNNER)
 	$(TEST_RUNNER) --suite pr
 
-$(TEST_RUNNER): $(TEST_OBJECTS) $(UNITY_OBJECT) $(ARCHIVE)
+check-extended: $(TEST_RUNNER)
+	$(TEST_RUNNER) --suite extended --seed 1
+
+$(TEST_RUNNER): $(TEST_OBJECTS) $(UNITY_OBJECT) $(TEST_HOST_OBJECTS) $(ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BUILD)/tests/%.o: $(SOURCE)/tests/%.c

@@ -12,7 +12,10 @@
 #include "admit_tests.h"
 #include "file_tests.h"
 #include "file_workloads.h"
+#include "extended_tests.h"
+#include "recovery_workload.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -34,17 +37,78 @@ tearDown(void)
   test_fixtures_cleanup();
 }
 
+static bool
+parse_seed(const char *text, uint64_t *out)
+{
+  uint64_t value = 0;
+  if (!*text) {
+    return false;
+  }
+  for (; *text; text++) {
+    if (*text < '0' || *text > '9' || value > (UINT64_MAX - (*text - '0')) / 10) {
+      return false;
+    }
+    value = value * 10 + (*text - '0');
+  }
+  *out = value;
+  return value != 0;
+}
+
+static int
+usage(void)
+{
+  fputs("usage: pyxis-fs-tests --suite pr|file-workloads\n"
+    "       pyxis-fs-tests --suite extended --seed N\n"
+    "       pyxis-fs-tests --suite workload --profile recovery --seed N --source PATH\n",
+    stderr);
+  return 2;
+}
+
 int
 main(int argc, char **argv)
 {
-  if (argc != 3 || strcmp(argv[1], "--suite") ||
-      (strcmp(argv[2], "pr") && strcmp(argv[2], "file-workloads"))) {
-    fputs("usage: pyxis-fs-tests --suite pr|file-workloads\n", stderr);
-    return 2;
+  const char *suite = NULL, *profile = NULL, *source = NULL;
+  uint64_t seed = 0;
+  bool seed_set = false;
+  for (int i = 1; i < argc; i += 2) {
+    if (i + 1 == argc) {
+      return usage();
+    }
+    if (!strcmp(argv[i], "--suite") && !suite) {
+      suite = argv[i + 1];
+    } else if (!strcmp(argv[i], "--profile") && !profile) {
+      profile = argv[i + 1];
+    } else if (!strcmp(argv[i], "--source") && !source) {
+      source = argv[i + 1];
+    } else if (!strcmp(argv[i], "--seed") && !seed_set && parse_seed(argv[i + 1], &seed)) {
+      seed_set = true;
+    } else {
+      return usage();
+    }
+  }
+  if (!suite) {
+    return usage();
+  }
+  bool quick = !strcmp(suite, "pr"), files = !strcmp(suite, "file-workloads");
+  bool extended = !strcmp(suite, "extended"), workload = !strcmp(suite, "workload");
+  if ((!quick && !files && !extended && !workload) ||
+      ((quick || files) && (seed_set || profile || source)) ||
+      (extended && (!seed_set || profile || source)) ||
+      (workload && (!seed_set || !profile || strcmp(profile, "recovery") || !source || !*source))) {
+    return usage();
+  }
+  if (seed_set) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    printf("suite=%s seed=%" PRIu64 "\n", suite, seed);
   }
   UNITY_BEGIN();
-  if (!strcmp(argv[2], "file-workloads")) {
+  if (files) {
     run_file_workloads();
+  } else if (extended) {
+    run_extended_edit_tests(seed);
+    run_extended_tests(seed);
+  } else if (workload) {
+    run_recovery_workload(seed, source);
   } else {
     run_baseline_tests();
     run_build_tests();
