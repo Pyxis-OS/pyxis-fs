@@ -404,6 +404,95 @@ sparse_repair(unsigned sibling_children)
 }
 
 static void
+extent_cross_leaf_overlap_is_refused(void)
+{
+  start_case(PFS_INDEX_EXTENTS);
+  candidate.birth = 2;
+  uint8_t leaf_data[4][64] = {{0}};
+  struct pfs_encoded_record leaf_records[4];
+  struct pfs_reference leaves[4];
+  /* Independent canonical extents at logical blocks zero, four, ten and fourteen. */
+  const uint64_t logical[] = {0, 4, 10, 14};
+  for (unsigned i = 0; i < 4; ++i) {
+    test_put_u16(leaf_data[i], PFS_RECORD_EXTENT);
+    test_put_u16(leaf_data[i] + 2, 1);
+    test_put_u32(leaf_data[i] + 4, 64);
+    test_put_u64(leaf_data[i] + 16, logical[i]);
+    test_put_u64(leaf_data[i] + 24, 1);
+    test_put_u64(leaf_data[i] + 32, 9000 + i);
+    test_put_u64(leaf_data[i] + 40, 1);
+    test_checksum(leaf_data[i], 64, 8);
+    leaf_records[i] = (struct pfs_encoded_record){leaf_data[i], 64};
+    leaves[i] = write_tree(600 + i, 0, &leaf_records[i], 1);
+  }
+  uint8_t parent_data[4][304];
+  struct pfs_encoded_record parent_records[4];
+  for (unsigned i = 0; i < 4; ++i) {
+    parent_records[i] = internal_record(parent_data[i], leaves[i], extent_key(logical[i]));
+  }
+  struct pfs_reference left = write_tree(700, 1, parent_records, 2);
+  struct pfs_reference right = write_tree(701, 1, parent_records + 2, 2);
+  uint8_t root_data[2][304];
+  struct pfs_encoded_record root_records[2] = {
+    internal_record(root_data[0], left, extent_key(0)),
+    internal_record(root_data[1], right, extent_key(10)),
+  };
+  candidate.root = write_tree(800, 2, root_records, 2);
+  memcpy(saved_slots, slots, sizeof(slots));
+  struct pfs_reference original_root = candidate.root;
+  uint64_t writes = fixture.writes;
+  uint8_t replacement[64];
+  memcpy(replacement, leaf_data[0], sizeof(replacement));
+  test_put_u64(replacement + 16, 2);
+  test_put_u64(replacement + 24, 3);
+  test_checksum(replacement, sizeof(replacement), 8);
+  struct pfs_encoded_record record = {replacement, sizeof(replacement)};
+  struct pfs_key key = extent_key(2);
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+  TEST_ASSERT_EQUAL_MEMORY(saved_slots, slots, sizeof(slots));
+  TEST_ASSERT_EQUAL_MEMORY(&original_root, &candidate.root, sizeof(original_root));
+  TEST_ASSERT_EQUAL(0, candidate.retired_count);
+  /* The last leaf under the left parent inherits the root's upper separator. */
+  test_put_u64(replacement + 16, 6);
+  test_put_u64(replacement + 24, 5);
+  test_checksum(replacement, sizeof(replacement), 8);
+  key = extent_key(6);
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+  TEST_ASSERT_EQUAL_MEMORY(saved_slots, slots, sizeof(slots));
+  TEST_ASSERT_EQUAL_MEMORY(&original_root, &candidate.root, sizeof(original_root));
+  TEST_ASSERT_EQUAL(0, candidate.retired_count);
+  test_put_u64(replacement + 16, 4);
+  test_put_u64(replacement + 24, 7);
+  test_checksum(replacement, sizeof(replacement), 8);
+  key = extent_key(4);
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_UPDATE, &key, &record));
+  TEST_ASSERT_EQUAL_MEMORY(saved_slots, slots, sizeof(slots));
+  TEST_ASSERT_EQUAL_MEMORY(&original_root, &candidate.root, sizeof(original_root));
+  TEST_ASSERT_EQUAL(0, candidate.retired_count);
+  /* Ending at the next leaf's minimum is valid, with no media write. */
+  test_put_u64(replacement + 16, 6);
+  test_put_u64(replacement + 24, 4);
+  test_checksum(replacement, sizeof(replacement), 8);
+  key = extent_key(6);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+  get_node(candidate.root, 0);
+  TEST_ASSERT_EQUAL(2, walk_tree[0].count);
+  struct pfs_record_context context = context_for(candidate.birth);
+  struct pfs_internal_record child;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(walk_data[0] + walk_tree[0].slots[0].offset,
+    walk_tree[0].slots[0].length, PFS_INDEX_EXTENTS, &context, &child));
+  get_node(child.child, 1);
+  TEST_ASSERT_EQUAL(2, walk_tree[1].count);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(walk_data[1] + walk_tree[1].slots[1].offset,
+    walk_tree[1].slots[1].length, PFS_INDEX_EXTENTS, &context, &child));
+  get_node(child.child, 2);
+  TEST_ASSERT_EQUAL(2, walk_tree[2].count);
+  TEST_ASSERT_EQUAL_MEMORY(replacement, walk_data[2] + walk_tree[2].slots[1].offset, sizeof(replacement));
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static void
 sparse_internal_merge_collapses_root(void)
 {
   sparse_repair(2);
@@ -679,6 +768,7 @@ run_edit_tests(void)
   Unity.TestFile = __FILE__;
   RUN_TEST(namespace_edits_preserve_order_profile_and_published_blocks);
   RUN_TEST(repeated_updates_reuse_private_buffers_and_fail_atomically);
+  RUN_TEST(extent_cross_leaf_overlap_is_refused);
   RUN_TEST(sparse_internal_merge_collapses_root);
   RUN_TEST(sparse_internal_redistribution_preserves_depth);
   RUN_TEST(minimum_and_maximum_component_lengths);

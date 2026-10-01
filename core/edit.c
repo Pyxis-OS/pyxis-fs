@@ -3,6 +3,8 @@
 #include "canonical.h"
 #include "internal.h"
 
+#include <pyxis_fs/record.h>
+
 struct edit_result {
   uint16_t count;
   struct pfs_reference children[2];
@@ -323,6 +325,7 @@ pfs_edit_tree(struct pfs_edit_candidate *candidate, struct pfs_edit_workspace *w
   if (status != PFS_OK) {
     return status == PFS_CORRUPT ? PFS_INVALID : status;
   }
+  uint64_t extent_end = 0;
   if (operation != PFS_EDIT_DELETE) {
     struct pfs_record_context context = record_context(candidate, candidate->birth);
     status = pfs_canonical_record_validate(record->data, record->length, kind, 0, &context);
@@ -333,12 +336,22 @@ pfs_edit_tree(struct pfs_edit_candidate *candidate, struct pfs_edit_workspace *w
     if (status != PFS_OK || pfs_key_compare(kind, key, &encoded_key)) {
       return status == PFS_OK || status == PFS_CORRUPT ? PFS_INVALID : status;
     }
+    if (kind == PFS_INDEX_EXTENTS) {
+      struct pfs_extent_record extent;
+      status = pfs_extent_record_decode(record->data, record->length, &context, &extent);
+      if (status != PFS_OK) {
+        return status;
+      }
+      extent_end = extent.mapping.logical_first + extent.mapping.count;
+    }
   }
   workspace->consumed_count = 0;
   workspace->output_count = 0;
   size_t depth = 0;
   struct pfs_reference reference = candidate->root;
   uint16_t parent_level = 0;
+  bool has_extent_upper = false;
+  uint64_t extent_upper = 0;
   if (reference.block) {
     while (true) {
       if (depth == PFS_TREE_DEPTH_MAX) {
@@ -362,6 +375,10 @@ pfs_edit_tree(struct pfs_edit_candidate *candidate, struct pfs_edit_workspace *w
           return status;
         }
         if (i && pfs_key_compare(kind, &child.minimum, key) > 0) {
+          if (kind == PFS_INDEX_EXTENTS) {
+            extent_upper = pfs_get_u64(child.minimum.bytes);
+            has_extent_upper = true;
+          }
           break;
         }
         path->child = i;
@@ -375,6 +392,9 @@ pfs_edit_tree(struct pfs_edit_candidate *candidate, struct pfs_edit_workspace *w
     }
     depth = 1;
     pfs_bytes_zero(&workspace->path[0].tree, sizeof(workspace->path[0].tree));
+  }
+  if (operation != PFS_EDIT_DELETE && has_extent_upper && extent_end > extent_upper) {
+    return PFS_INVALID;
   }
   struct pfs_edit_path *leaf = &workspace->path[depth - 1];
   unsigned sequence_index = 0;
