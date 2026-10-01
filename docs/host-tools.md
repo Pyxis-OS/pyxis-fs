@@ -413,7 +413,10 @@ is deferred. There is no supported recovery command for that case.
 
 Within an instance, pre-slot write/flush failure stops mutation while permitting
 proved confirmed-state reads. Uncertain slot publication stops all ordinary
-access. Cleanup failure cannot erase already confirmed user progress. An unknown
-outcome may include additional committed bytes and is not automatically
-retryable. Handle closure performs no recovery or retry. Simulator results are
+access. Any backing read failure during ordinary operations, publication planning
+or maintenance also stops all ordinary access pool-wide, even if transient. A
+fresh validated reopen must meet the backing-history preconditions above; the
+failed instance cannot retry itself healthy. Cleanup failure cannot erase already
+confirmed user progress. An unknown outcome may include additional committed
+bytes and is not automatically retryable. Handle closure performs no recovery or retry. Simulator results are
 core protocol evidence only, not qualification of Linux post-error recovery.

@@ -72,6 +72,14 @@ with ASan/UBSan under GCC 14.2.0 in the existing builder container. The Pyxis GC
 latency guarantee. The ordinary host command opened a 64 MiB source-populated
 image and exercised authorized checkpoint, grant denial and lock conflict.
 
+The combined-review follow-up adds the conservative planning/maintenance read-error
+cases and allocation-delta sorting coverage described below. All 71 groups pass
+natively and under ASan/UBSan with the same compilers; ordinary host tools and the
+Pyxis freestanding archive also build. The earlier timings above were not rerun
+and are not measurements of the sorting change. Linking the revised test runner
+against the pre-review writer (`e768b6c`) fails exactly the two new planning and
+maintenance read-error groups: it incorrectly reports `READABLE_STOPPED`.
+
 The minimum-resource fixture uses 16,384 blocks, two objects and one data mapping.
 The E=1/M=3 profile computes H=27, recovery=465, Pmax=29 and an arena of
 9,644,032 bytes. Ordinary and migration reserves stay at their 1,024-block
@@ -152,6 +160,19 @@ clone of the simulator's explicitly durable image. The cache-only slot case
 shows cached structural validation plus a successful later flush disagreeing
 with durable storage, while the failed core remains stopped. It does not assert
 that a fresh core can detect adapter history absent from its inputs.
+
+Focused read-error cases discover every backing-read boundary during the small
+fixture's user publication planning and both maintenance publications. A transient
+read failure must stop all ordinary access, preserve confirmed progress and remain
+sticky until close. Fresh validated recovery uses the explicitly durable clone.
+Existing write/flush cases separately require readable pre-slot failure and
+access-stopping publication uncertainty.
+
+Allocation deltas use in-place heapsort within reserved storage. Tests assert
+ordering and preservation of complete delta contents for empty, single, ordered,
+reversed, mixed and equal-key inputs. Replacing insertion sort removes its
+calculated quadratic worst-case sorting cost; no sorting benchmark or measured
+throughput improvement is claimed.
 
 Unexpected resource failure during a funded drain is an invariant failure,
 not successful safe refusal. Resource cases deny further allocation after admission

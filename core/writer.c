@@ -2,6 +2,14 @@
 #include "writer.h"
 #include "canonical.h"
 
+/* Planning performs backing reads only. Keep its I/O failures distinct from
+ * replacement writes/flushes and the slot publication uncertainty window. */
+enum publication_phase {
+  PUBLICATION_PLANNING,
+  PUBLICATION_REPLACEMENTS,
+  PUBLICATION_SLOT,
+};
+
 struct publication {
   struct pfs_edit_workspace editor;
   struct pfs_edit_slot catalog[PFS_PLAN_CATALOG_PATH];
@@ -110,10 +118,11 @@ select_free(struct pfs_writer *writer, uint64_t *blocks, size_t demand,
 }
 
 static void
-stop_writer(struct pfs_writer *writer, enum pfs_status status, bool uncertain,
+stop_writer(struct pfs_writer *writer, enum pfs_status status, enum publication_phase phase,
             bool admitted)
 {
-  writer->status.health = uncertain || status == PFS_CORRUPT ?
+  bool read_failed = status == PFS_IO && phase == PUBLICATION_PLANNING;
+  writer->status.health = read_failed || phase == PUBLICATION_SLOT || status == PFS_CORRUPT ?
     PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED;
   writer->status.failure = status;
   writer->status.invariant_failure = admitted && status != PFS_IO && status != PFS_CORRUPT;
@@ -392,15 +401,7 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
     }
   }
   struct pfs_map_change *changes = (struct pfs_map_change *)writer->arena.deltas;
-  for (size_t i = 1; i < changes_count; i++) {
-    struct pfs_map_change value = changes[i];
-    size_t j = i;
-    while (j && changes[j - 1].before.first > value.before.first) {
-      changes[j] = changes[j - 1];
-      j--;
-    }
-    changes[j] = value;
-  }
+  pfs_plan_sort_changes(changes, changes_count);
   struct pfs_block_context context = {.block_count = writer->backing->reader.geometry.block_count,
     .selected_generation = generation, .referring_birth = generation,
     .pool = source->candidate.superblock.header.pool,
@@ -562,15 +563,16 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
 }
 
 static enum pfs_status
-publish(struct pfs_writer *writer, const struct pfs_batch *batch, bool *uncertain)
+publish(struct pfs_writer *writer, const struct pfs_batch *batch, enum publication_phase *phase)
 {
   struct publication *publication = (struct publication *)(writer->arena.scratch +
     PFS_PLAN_SCRATCH_BYTES / 2);
-  *uncertain = false;
+  *phase = PUBLICATION_PLANNING;
   enum pfs_status status = build_publication(writer, batch, publication);
   if (status != PFS_OK) {
     return status;
   }
+  *phase = PUBLICATION_REPLACEMENTS;
   if (batch) {
     for (size_t i = 0; status == PFS_OK && i < batch->block_count; i++) {
       status = pfs_block_write(writer->backing, batch->blocks[i].block, 1,
@@ -596,7 +598,7 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, bool *uncertai
     return status;
   }
   struct pfs_admit_state *candidate = &writer->states[2];
-  *uncertain = true;
+  *phase = PUBLICATION_SLOT;
   status = pfs_block_write(writer->backing, candidate->candidate.superblock.header.block, 1,
     publication->slot, PFS_BLOCK_SIZE);
   if (status == PFS_OK) {
@@ -605,7 +607,6 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, bool *uncertai
   if (status != PFS_OK) {
     return status;
   }
-  *uncertain = false;
   size_t target = candidate->candidate.superblock.header.block ? 1 : 0;
   struct pfs_allocation_record *previous_maps = writer->states[target].maps;
   struct check_claim *previous_claims = writer->states[target].claims;
@@ -629,11 +630,11 @@ static enum pfs_status
 drain(struct pfs_writer *writer, struct pfs_write_result *result)
 {
   for (unsigned step = 0; writer->status.drain_pending && step < 2; step++) {
-    bool uncertain;
-    enum pfs_status status = publish(writer, NULL, &uncertain);
+    enum publication_phase phase;
+    enum pfs_status status = publish(writer, NULL, &phase);
     if (status != PFS_OK) {
-      stop_writer(writer, status, uncertain, true);
-      result->maintenance_completion = uncertain ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED;
+      stop_writer(writer, status, phase, true);
+      result->maintenance_completion = phase == PUBLICATION_SLOT ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED;
       result->maintenance_status = status;
       result->health = writer->status.health;
       return status;
@@ -641,7 +642,7 @@ drain(struct pfs_writer *writer, struct pfs_write_result *result)
     result->maintenance_completion = PFS_MAINTENANCE_COMPLETE;
   }
   if (writer->status.drain_pending) {
-    stop_writer(writer, PFS_LIMIT, false, true);
+    stop_writer(writer, PFS_LIMIT, PUBLICATION_PLANNING, true);
     result->maintenance_completion = PFS_MAINTENANCE_STOPPED;
     result->maintenance_status = PFS_LIMIT;
     result->health = writer->status.health;
@@ -721,19 +722,19 @@ pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch, struct pfs_wri
       status = PFS_INVALID;
     }
   }
-  bool uncertain = false;
+  enum publication_phase phase = PUBLICATION_PLANNING;
   if (status == PFS_OK) {
-    status = publish(writer, batch, &uncertain);
+    status = publish(writer, batch, &phase);
   }
   if (status == PFS_OK) {
     result->completion = PFS_COMPLETE;
     status = drain(writer, result);
   } else {
     result->operation_status = status;
-    if (status == PFS_IO || status == PFS_CORRUPT || uncertain) {
-      stop_writer(writer, status, uncertain, false);
+    if (status == PFS_IO || status == PFS_CORRUPT || phase == PUBLICATION_SLOT) {
+      stop_writer(writer, status, phase, false);
     }
-    result->completion = uncertain ? PFS_UNKNOWN : PFS_STOPPED;
+    result->completion = phase == PUBLICATION_SLOT ? PFS_UNKNOWN : PFS_STOPPED;
   }
   result->health = writer->status.health;
   writer->publishing = false;
@@ -813,7 +814,7 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
       if (status == PFS_OK) {
         status = drain(writer, &diagnostic->recovery);
       } else {
-        stop_writer(writer, status, false, false);
+        stop_writer(writer, status, PUBLICATION_REPLACEMENTS, false);
         diagnostic->recovery.completion = PFS_STOPPED;
         diagnostic->recovery.operation_status = status;
       }

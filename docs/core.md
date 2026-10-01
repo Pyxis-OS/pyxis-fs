@@ -592,7 +592,12 @@ Closing releases runtime resources without writes or an implicit flush.
 | Slot-write attempt or final flush error | `UNKNOWN`, `ACCESS_STOPPED`; no ordinary access |
 | Cleanup error after confirmed user publication | User remains `COMPLETE`; cleanup reports stopped/unknown independently with the corresponding health |
 | Unexpected resource failure during admitted drain | Admission/editor invariant failure; mutation remains stopped and cannot retry itself healthy |
-| Integrity failure or failed ordinary metadata/data read | `ACCESS_STOPPED` |
+| Integrity failure or any backing read failure during an ordinary operation, publication planning or maintenance | `ACCESS_STOPPED`, pool-wide, even for a transient read error |
+
+The initial writer deliberately uses this conservative read-error policy. Even a
+transient backing read failure requires a fresh validated reopen under the
+adapter recovery preconditions; clearing the error does not restore this instance.
+A read error during maintenance preserves all already confirmed user progress.
 
 `PFS_NO_SPACE`, `PFS_QUOTA` and `PFS_LIMIT` distinguish capacity/profile refusal.
 `PFS_RECOVERY_REQUIRED` refuses operations prohibited by stopped health. Unknown

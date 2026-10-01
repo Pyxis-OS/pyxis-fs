@@ -734,6 +734,99 @@ flush_boundaries_preserve_progress_and_stop_stickily(void)
 }
 
 static void
+read_failures_stop_access(bool maintenance)
+{
+  build_seed();
+  open_device();
+  struct pfs_batch *batch = overwrite('B');
+  uint64_t reads = device.ordinals[TEST_FAILURE_READ];
+  uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  test_failure_trace_reset(&device);
+  struct pfs_write_result result;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_writer_commit(&pool, batch, &result));
+  struct read_cut {
+    uint64_t ordinal;
+    uint64_t flushes;
+    uint64_t writes;
+  } cuts[64];
+  size_t count = 0;
+  uint64_t written = 0;
+  /* Discover actual backing reads rather than pinning catalog/editor read counts
+   * or allocator placement. Two successful flushes confirm each publication. */
+  for (size_t i = 0; i < device.event_count; i++) {
+    const struct test_failure_event *event = &device.events[i];
+    if (event->kind == TEST_FAILURE_WRITE) {
+      written = event->ordinal - writes;
+    } else if (event->kind == TEST_FAILURE_READ &&
+               (event->flush_ordinal > flushes) == maintenance) {
+      TEST_ASSERT_LESS_THAN_UINT(64, count);
+      cuts[count++] = (struct read_cut){event->ordinal - reads,
+        event->flush_ordinal - flushes, written};
+    }
+  }
+  TEST_ASSERT_GREATER_THAN_UINT(0, count);
+  close_device();
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  for (size_t i = 0; i < count; i++) {
+    open_device();
+    batch = overwrite('B');
+    writes = device.ordinals[TEST_FAILURE_WRITE];
+    flushes = device.ordinals[TEST_FAILURE_FLUSH];
+    struct test_failure_fault fault = {.enabled = true, .kind = TEST_FAILURE_READ,
+      .ordinal = device.ordinals[TEST_FAILURE_READ] + cuts[i].ordinal,
+      .mode = TEST_FAILURE_BEFORE};
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
+    TEST_ASSERT_EQUAL(PFS_IO, pfs_writer_commit(&pool, batch, &result));
+    TEST_ASSERT_TRUE(device.triggered);
+    TEST_ASSERT_FALSE(device.infrastructure_failure);
+    TEST_ASSERT_EQUAL(PFS_WRITER_ACCESS_STOPPED, result.health);
+    TEST_ASSERT_EQUAL(maintenance ? PFS_COMPLETE : PFS_STOPPED, result.completion);
+    TEST_ASSERT_EQUAL(maintenance ? PFS_OK : PFS_IO, result.operation_status);
+    TEST_ASSERT_EQUAL(maintenance ? PFS_MAINTENANCE_STOPPED : PFS_MAINTENANCE_NONE,
+      result.maintenance_completion);
+    TEST_ASSERT_EQUAL(maintenance ? PFS_IO : PFS_OK, result.maintenance_status);
+    TEST_ASSERT_EQUAL_UINT64(1 + cuts[i].flushes / 2, pool.writer->last_confirmed_generation);
+    struct pfs_writer_status health;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &health));
+    TEST_ASSERT_EQUAL(PFS_IO, health.failure);
+    TEST_ASSERT_EQUAL(maintenance, health.drain_pending);
+    TEST_ASSERT_FALSE(health.invariant_failure);
+    TEST_ASSERT_EQUAL_UINT64(writes + cuts[i].writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes + cuts[i].flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+
+    /* The injected error is transient and already consumed, but this pool must
+     * refuse even cached reads and checkpoint without further backing I/O. */
+    reads = device.ordinals[TEST_FAILURE_READ];
+    uint8_t byte = 0xa5;
+    size_t length = 99;
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_read(view, 0, &byte, 1, &length));
+    TEST_ASSERT_EQUAL_UINT8(0xa5, byte);
+    TEST_ASSERT_EQUAL_UINT(99, length);
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_writer_prepare(&pool, &batch));
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_checkpoint(view, &result));
+    TEST_ASSERT_EQUAL_UINT64(reads, device.ordinals[TEST_FAILURE_READ]);
+    close_device();
+    TEST_ASSERT_EQUAL_UINT64(writes + cuts[i].writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes + cuts[i].flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    cold_reopen_and_compare(maintenance ? 'B' : 'A');
+    TEST_ASSERT_TRUE(test_failure_close(&device));
+  }
+}
+
+static void
+planning_read_failures_stop_all_access(void)
+{
+  read_failures_stop_access(false);
+}
+
+static void
+maintenance_read_failures_preserve_confirmed_progress_and_stop_access(void)
+{
+  read_failures_stop_access(true);
+}
+
+static void
 cache_only_slot_is_not_recovered_by_later_flush(void)
 {
   build_seed();
@@ -926,6 +1019,8 @@ run_publication_tests(void)
   Unity.TestFile = __FILE__;
   RUN_TEST(real_publication_drains_and_preserves_retained_payloads);
   RUN_TEST(flush_boundaries_preserve_progress_and_stop_stickily);
+  RUN_TEST(planning_read_failures_stop_all_access);
+  RUN_TEST(maintenance_read_failures_preserve_confirmed_progress_and_stop_access);
   RUN_TEST(cache_only_slot_is_not_recovered_by_later_flush);
   RUN_TEST(replacement_and_slot_writes_fail_without_retry);
   RUN_TEST(near_minimum_profile_quota_pool_and_memory_fund_drain);
