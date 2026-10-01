@@ -23,7 +23,8 @@ struct pfs_pool_diagnostic {
 
 /* Zero initialize handles. Reader, memory and their contexts are borrowed and
  * remain unchanged and alive until close. Handles are serial and never copied.
- * The adapter must keep the underlying image unchanged while the pool is open. */
+ * Read-only opening requires an unchanged image. Explicit writer opening owns
+ * exclusive mutation through its builder for the complete lifetime. */
 struct pfs_writer;
 
 struct pfs_pool {

@@ -98,8 +98,10 @@ struct pfs_map_plan {
 
 /* Base already includes volume deltas, old pool/map/catalog retirement and
  * eligible frees; it has no live pool allocation born in this candidate.
- * Reusable ranges must independently have been proven free in both retained
- * states with runtime pins ended BEFORE this publication. A same-publication
+ * Reusable ranges must independently have been proven durably free in the
+ * selected state and without live claims in either retained state, with runtime
+ * pins ended BEFORE this publication. Historical retired entries alone are not
+ * live protection. A same-publication
  * free is not eligible. This function verifies sorted ranges and base-free
  * containment, but cannot establish their cross-state/lifetime provenance.
  *

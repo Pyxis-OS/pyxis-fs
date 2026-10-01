@@ -27,8 +27,7 @@ struct pfs_block_reader {
 };
 
 /* Construction and explicit writable open receive this interface. A read-only
- * reader contains no
- * write or flush callback. Flush is explicit; releasing state never flushes. */
+ * reader contains no write or flush callback. Flush is explicit; releasing state never flushes. */
 struct pfs_block_builder {
   struct pfs_block_reader reader;
   pfs_write_blocks_fn write;

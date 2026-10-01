@@ -10,8 +10,8 @@ CORE_FLAGS := -std=gnu23 -ffreestanding -fno-builtin -fno-stack-protector
 SOURCES := writer writer_access admit plan edit canonical base block record tree platform build pool access check check_walk check_reconcile
 OBJECTS := $(addprefix $(BUILD)/core/,$(addsuffix .o,$(SOURCES)))
 ARCHIVE := $(BUILD)/libpyxis-fs.a
-HOST_OBJECTS := $(addprefix $(BUILD)/host/,host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o)
-TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect
+HOST_OBJECTS := $(addprefix $(BUILD)/host/,write.o host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o)
+TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect $(BUILD)/pyxisfs-write
 
 .DEFAULT_GOAL := all
 .PHONY: all clean check
@@ -38,6 +38,9 @@ $(UNITY_OBJECT): $(SOURCE)/third_party/unity/unity.c
 	@mkdir -p $(@D)
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/third_party/unity $(CFLAGS) -std=gnu23 -MMD -MP -c $< -o $@
 
+
+$(BUILD)/pyxisfs-write: $(addprefix $(BUILD)/host/,write.o host.o gpt.o) $(ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BUILD)/mkpyxisfs: $(addprefix $(BUILD)/host/,mkpyxisfs.o source.o host.o gpt.o) $(ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@

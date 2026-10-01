@@ -68,13 +68,11 @@ claimed(const struct pfs_admit_state *state, uint64_t block)
 }
 
 static bool
-can_free(const struct pfs_admit_state *older, const struct pfs_allocation_record *record,
-         uint64_t block)
+can_free(const struct pfs_admit_state *older, uint64_t block)
 {
   const struct pfs_allocation_record *other = allocation_at(older, block);
   return other && !claimed(older, block) && (other->state == PFS_ALLOCATION_FREE ||
-    (other->state == PFS_ALLOCATION_RETIRED && other->birth == record->birth &&
-     same_id(other->owner.bytes, record->owner.bytes)));
+    other->state == PFS_ALLOCATION_RETIRED);
 }
 
 /* Select only the bounded demand. The intersection proof uses both retained
@@ -83,14 +81,16 @@ static enum pfs_status
 select_free(struct pfs_writer *writer, uint64_t *blocks, size_t demand,
             const struct pfs_batch *exclude)
 {
-  const struct pfs_admit_state *a = &writer->states[0], *b = &writer->states[1];
+  const struct pfs_admit_state *a = &writer->states[writer->selected];
+  const struct pfs_admit_state *b = &writer->states[1 - writer->selected];
   size_t ai = 0, bi = 0, count = 0;
   while (ai < a->map_count && bi < b->map_count && count < demand) {
     const struct pfs_allocation_record *left = &a->maps[ai], *right = &b->maps[bi];
     uint64_t end_a = left->first + left->count, end_b = right->first + right->count;
     uint64_t first = left->first > right->first ? left->first : right->first;
     uint64_t end = end_a < end_b ? end_a : end_b;
-    if (left->state == PFS_ALLOCATION_FREE && right->state == PFS_ALLOCATION_FREE) {
+    if (left->state == PFS_ALLOCATION_FREE &&
+        (right->state == PFS_ALLOCATION_FREE || right->state == PFS_ALLOCATION_RETIRED)) {
       for (uint64_t block = first; block < end && count < demand; block++) {
         bool used = false;
         if (exclude) {
@@ -333,7 +333,7 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
     }
     bool volume = !pfs_bytes_are_zero(record->owner.bytes, PFS_ID_SIZE);
     for (uint64_t block = record->first; block < record->first + record->count; block++) {
-      if (!can_free(older, record, block)) {
+      if (!can_free(older, block)) {
         continue;
       }
       status = change_add(writer, &changes_count, block, 1, PFS_ALLOCATION_FREE, NULL, 0, 0);
@@ -529,35 +529,34 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
     return status;
   }
   context.reference = reference(root->header.block, generation, PFS_BLOCK_POOL);
-  status = pfs_pool_root_encode(publication->root, PFS_BLOCK_SIZE, &context, root);
-  if (status != PFS_OK) {
-    return status;
-  }
   size_t target = source->candidate.superblock.header.birth == older->candidate.superblock.header.birth ?
     0 : 1 - writer->selected;
   candidate->candidate.superblock = source->candidate.superblock;
   candidate->candidate.superblock.header.birth = generation;
   candidate->candidate.superblock.header.block = target ? context.block_count - 1 : 0;
   candidate->candidate.superblock.root = context.reference;
-  status = pfs_superblock_encode(publication->slot, PFS_BLOCK_SIZE, &candidate->candidate.superblock);
-  if (status == PFS_OK) {
-    /* Admission uses the lower half of scratch; the sealed publication is kept
-     * in its upper half so validation cannot overwrite encoded output. */
-    candidate->file_extents = candidate->metadata_blocks = 0;
-    candidate->live_pool = candidate->map_nodes = 0;
-    for (size_t i = 0; i < candidate->claim_count; i++) {
-      const struct check_claim *claim = &candidate->claims[i];
-      if (pfs_bytes_are_zero(claim->volume.bytes, PFS_ID_SIZE)) {
-        candidate->live_pool += claim->count;
-        candidate->map_nodes += claim->kind == PFS_INDEX_ALLOCATION;
-      } else if (claim->type) {
-        candidate->metadata_blocks += claim->count;
-      } else {
-        candidate->file_extents++;
-      }
+  /* Admission uses the lower half of scratch; the sealed publication is kept
+   * in its upper half so validation cannot overwrite encoded output. */
+  candidate->file_extents = candidate->metadata_blocks = 0;
+  candidate->live_pool = candidate->map_nodes = 0;
+  for (size_t i = 0; i < candidate->claim_count; i++) {
+    const struct check_claim *claim = &candidate->claims[i];
+    if (pfs_bytes_are_zero(claim->volume.bytes, PFS_ID_SIZE)) {
+      candidate->live_pool += claim->count;
+      candidate->map_nodes += claim->kind == PFS_INDEX_ALLOCATION;
+    } else if (claim->type) {
+      candidate->metadata_blocks += claim->count;
+    } else {
+      candidate->file_extents++;
     }
-    check_sort_claims(candidate->claims, candidate->claim_count);
-    status = pfs_admit_candidate(&writer->arena, candidate, source, batch != NULL);
+  }
+  check_sort_claims(candidate->claims, candidate->claim_count);
+  status = pfs_admit_candidate(&writer->arena, candidate, source, batch != NULL);
+  if (status == PFS_OK) {
+    status = pfs_pool_root_encode(publication->root, PFS_BLOCK_SIZE, &context, root);
+  }
+  if (status == PFS_OK) {
+    status = pfs_superblock_encode(publication->slot, PFS_BLOCK_SIZE, &candidate->candidate.superblock);
   }
   return status;
 }
@@ -697,8 +696,10 @@ pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch, struct pfs_wri
   struct pfs_writer *writer = pool->writer;
   *result = (struct pfs_write_result){.completion = PFS_STOPPED, .health = writer->status.health};
   enum pfs_status status = PFS_OK;
-  if (!batch->block_count || batch->block_count > PFS_PLAN_VOLUME_NEW || !batch->blocks ||
-      !batch->add || !batch->add_count || (batch->remove_count && !batch->remove) ||
+  if (batch->available_count != PFS_PLAN_VOLUME_NEW ||
+      !batch->block_count || batch->block_count > PFS_PLAN_VOLUME_NEW || !batch->blocks ||
+      !batch->add || !batch->add_count || batch->add_count > PFS_PLAN_VOLUME_NEW ||
+      batch->remove_count > PFS_PLAN_VOLUME_RETIRED || (batch->remove_count && !batch->remove) ||
       batch->generation != writer->last_confirmed_generation + 1) {
     status = PFS_INVALID;
   }
@@ -744,9 +745,15 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
   if (pool && pool->writer_busy) {
     return PFS_BUSY;
   }
-  if (!pool || pool->state.data || pool->writer || pool->reader || pool->memory || !backing ||
-      !backing->write || !backing->flush || !backing->reader.read || !memory || !options ||
-      !options->metadata_limit || !diagnostic) {
+  if (!pool || pool->state.owner || pool->state.data || pool->state.size ||
+      pool->state.alignment || pool->writer || pool->reader || pool->memory || !backing ||
+      !backing->write || !backing->flush || !backing->reader.read ||
+      backing->reader.geometry.block_count < PFS_POOL_BLOCKS_MIN ||
+      backing->reader.geometry.block_count > PFS_POOL_BLOCKS_MAX ||
+      !backing->reader.geometry.max_transfer_blocks || !memory || !memory->allocate ||
+      !memory->free || !memory->limit || memory->limit > PFS_MEMORY_MAX || memory->used > memory->limit ||
+      !options || options->extent_limit > PFS_RECORD_COUNT_MAX || !options->metadata_limit ||
+      options->metadata_limit > backing->reader.geometry.block_count - 2 || !diagnostic) {
     return PFS_INVALID;
   }
   *diagnostic = (struct pfs_write_open_result){0};
