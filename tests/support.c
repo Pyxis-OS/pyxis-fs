@@ -35,6 +35,10 @@ allocate(void *context, size_t size, size_t alignment)
   }
   item->next = fixture->allocations;
   fixture->allocations = item;
+  uint64_t charged = fixture->memory.used + size;
+  if (charged > fixture->peak_memory_bytes) {
+    fixture->peak_memory_bytes = charged;
+  }
   return item->bytes;
 }
 
@@ -87,6 +91,40 @@ flush_blocks(void *context)
   return fsync(fileno(fixture->file)) == 0 ? PFS_OK : PFS_IO;
 }
 
+FILE *
+test_temporary_file(void)
+{
+  const char *directory = getenv("TMPDIR");
+  if (!directory || !*directory) {
+    return tmpfile();
+  }
+  const char suffix[] = "/pyxis-fs-test-XXXXXX";
+  size_t length = strlen(directory);
+  if (length > SIZE_MAX - sizeof(suffix)) {
+    return NULL;
+  }
+  char *path = malloc(length + sizeof(suffix));
+  if (!path) {
+    return NULL;
+  }
+  memcpy(path, directory, length);
+  memcpy(path + length, suffix, sizeof(suffix));
+  int fd = mkstemp(path);
+  if (fd >= 0 && unlink(path) != 0) {
+    close(fd);
+    fd = -1;
+  }
+  free(path);
+  if (fd < 0) {
+    return NULL;
+  }
+  FILE *file = fdopen(fd, "w+b");
+  if (!file) {
+    close(fd);
+  }
+  return file;
+}
+
 enum pfs_status
 test_fixture_open(struct test_fixture *fixture, uint64_t blocks, uint64_t memory_limit)
 {
@@ -95,7 +133,7 @@ test_fixture_open(struct test_fixture *fixture, uint64_t blocks, uint64_t memory
     return PFS_INVALID;
   }
   *fixture = (struct test_fixture){.fail_after = SIZE_MAX};
-  fixture->file = tmpfile();
+  fixture->file = test_temporary_file();
   if (!fixture->file) {
     return PFS_IO;
   }

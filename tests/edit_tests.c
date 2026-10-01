@@ -850,3 +850,401 @@ run_edit_tests(void)
   RUN_TEST(namespace_minimum_growth_can_split_root_on_delete);
   RUN_TEST(orphan_index_uses_namespace_occupancy_and_private_disposal);
 }
+
+#define EXTENDED_NAME_GROUPS 64u
+#define EXTENDED_NAMES_PER_GROUP 17u
+#define EXTENDED_NAME_ITEMS (EXTENDED_NAME_GROUPS * EXTENDED_NAMES_PER_GROUP)
+#define EXTENDED_DEEP_ITEMS 559872u
+#define EXTENDED_GEOMETRY (UINT64_C(1) << 20)
+
+static uint64_t extended_seed;
+static uint64_t extended_random;
+static size_t extended_operation;
+static bool extended_present[EXTENDED_NAME_ITEMS];
+static uint32_t extended_version[EXTENDED_NAME_ITEMS];
+static unsigned extended_order[EXTENDED_NAME_ITEMS];
+static bool extended_deep;
+static bool extended_low_present;
+static bool extended_high_present;
+static uint32_t extended_low_version;
+static uint32_t extended_high_version;
+static size_t extended_expected;
+static size_t extended_max_new;
+static size_t extended_max_retired;
+static size_t extended_max_depth;
+static char extended_diagnostic[192];
+static uint64_t extended_next_block;
+static unsigned extended_build_position;
+static uint8_t extended_build_data[PFS_TREE_DEPTH_MAX][6][304];
+static struct pfs_encoded_record extended_build_records[PFS_TREE_DEPTH_MAX][6];
+
+static uint64_t
+extended_next_random(void)
+{
+  extended_random ^= extended_random << 13;
+  extended_random ^= extended_random >> 7;
+  extended_random ^= extended_random << 17;
+  return extended_random;
+}
+
+static struct pfs_record_context
+extended_context(uint64_t birth)
+{
+  struct pfs_record_context context = context_for(birth);
+  context.block_count = candidate.context.block.block_count;
+  return context;
+}
+
+static struct pfs_key
+extended_key(unsigned item)
+{
+  struct pfs_key key = {.length = PFS_NAME_MAX};
+  if (extended_deep) {
+    char prefix[9];
+    snprintf(prefix, sizeof(prefix), "%08u", item);
+    memcpy(key.bytes, prefix, 8);
+    memset(key.bytes + 8, 'x', PFS_NAME_MAX - 8);
+  } else {
+    unsigned group = item / EXTENDED_NAMES_PER_GROUP;
+    unsigned within = item % EXTENDED_NAMES_PER_GROUP;
+    key.bytes[0] = (uint8_t)('0' + group);
+    if (!within) {
+      key.length = 1;
+    } else {
+      char prefix[5];
+      snprintf(prefix, sizeof(prefix), "%04u", within);
+      memcpy(key.bytes + 1, prefix, 4);
+      memset(key.bytes + 5, 'a' + (int)((extended_seed + item) % 26), PFS_NAME_MAX - 5);
+    }
+  }
+  return key;
+}
+
+static uint32_t
+extended_incarnation(unsigned item)
+{
+  if (!extended_deep) {
+    return extended_version[item];
+  }
+  return item == 0 ? extended_low_version :
+    item == EXTENDED_DEEP_ITEMS - 1 ? extended_high_version : 1;
+}
+
+static struct pfs_object_id
+extended_object(unsigned item)
+{
+  struct pfs_object_id id = {0};
+  test_put_u32(id.bytes, item + 1);
+  test_put_u32(id.bytes + 4, extended_incarnation(item));
+  return id;
+}
+
+static struct pfs_encoded_record
+extended_record(unsigned item, uint64_t birth, uint8_t *data)
+{
+  struct pfs_key key = extended_key(item);
+  struct pfs_dirent_record value = {.name = {.length = key.length},
+    .child_kind = PFS_OBJECT_FILE, .object = extended_object(item)};
+  memcpy(value.name.bytes, key.bytes, key.length);
+  struct pfs_record_context context = extended_context(birth);
+  struct pfs_encoded_record record = {.data = data};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_dirent_record_encode(data, 304, &context, &value, &record.length));
+  return record;
+}
+
+static bool
+extended_item_present(size_t item)
+{
+  if (!extended_deep) {
+    return extended_present[item];
+  }
+  return item == 0 ? extended_low_present :
+    item == EXTENDED_DEEP_ITEMS - 1 ? extended_high_present : true;
+}
+
+static void
+extended_walk(struct pfs_reference reference, size_t depth)
+{
+  get_node(reference, depth);
+  struct pfs_tree *tree = &walk_tree[depth];
+  if (depth) {
+    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(6, tree->count, extended_diagnostic);
+  } else if (tree->level) {
+    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(2, tree->count, extended_diagnostic);
+  }
+  if (depth + 1 > extended_max_depth) {
+    extended_max_depth = depth + 1;
+  }
+  struct pfs_record_context context = extended_context(tree->header.birth);
+  for (uint16_t i = 0; i < tree->count; i++) {
+    const uint8_t *data = walk_data[depth] + tree->slots[i].offset;
+    if (tree->level) {
+      struct pfs_internal_record child;
+      TEST_ASSERT_EQUAL_MESSAGE(PFS_OK, pfs_internal_record_decode(data,
+        tree->slots[i].length, PFS_INDEX_DIRECTORY, &context, &child), extended_diagnostic);
+      extended_walk(child.child, depth + 1);
+      TEST_ASSERT_EQUAL_MESSAGE(0, pfs_key_compare(PFS_INDEX_DIRECTORY,
+        &child.minimum, &walk_tree[depth + 1].minimum), extended_diagnostic);
+    } else {
+      size_t total = extended_deep ? EXTENDED_DEEP_ITEMS : EXTENDED_NAME_ITEMS;
+      while (extended_expected < total && !extended_item_present(extended_expected)) {
+        extended_expected++;
+      }
+      TEST_ASSERT_LESS_THAN_MESSAGE(total, extended_expected, extended_diagnostic);
+      struct pfs_dirent_record value;
+      TEST_ASSERT_EQUAL_MESSAGE(PFS_OK, pfs_dirent_record_decode(data,
+        tree->slots[i].length, &context, &value), extended_diagnostic);
+      struct pfs_key expected = extended_key((unsigned)extended_expected);
+      struct pfs_object_id object = extended_object((unsigned)extended_expected);
+      TEST_ASSERT_EQUAL_MESSAGE(expected.length, value.name.length, extended_diagnostic);
+      TEST_ASSERT_EQUAL_MEMORY_MESSAGE(expected.bytes, value.name.bytes,
+        expected.length, extended_diagnostic);
+      TEST_ASSERT_EQUAL_MEMORY_MESSAGE(object.bytes, value.object.bytes,
+        PFS_ID_SIZE, extended_diagnostic);
+      TEST_ASSERT_EQUAL_MESSAGE(PFS_OBJECT_FILE, value.child_kind, extended_diagnostic);
+      extended_expected++;
+    }
+  }
+}
+
+static void
+extended_check(void)
+{
+  extended_expected = 0;
+  reachable_private = 0;
+  if (candidate.root.block) {
+    extended_walk(candidate.root, 0);
+  }
+  size_t total = extended_deep ? EXTENDED_DEEP_ITEMS : EXTENDED_NAME_ITEMS;
+  while (extended_expected < total && !extended_item_present(extended_expected)) {
+    extended_expected++;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(total, extended_expected, extended_diagnostic);
+  size_t active = 0;
+  for (size_t i = 0; i < candidate.slot_capacity; i++) {
+    active += slots[i].active;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(active, reachable_private, extended_diagnostic);
+}
+
+static void
+extended_start(bool deep)
+{
+  start_case(PFS_INDEX_DIRECTORY);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+  TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, EXTENDED_GEOMETRY, 0));
+  candidate.context.block.block_count = EXTENDED_GEOMETRY;
+  candidate.slot_capacity = 15;
+  candidate.retired_capacity = 15;
+  extended_random = extended_seed ? extended_seed : UINT64_C(0x92d68ca2f31e7485);
+  extended_operation = 0;
+  extended_deep = deep;
+  extended_max_new = extended_max_retired = extended_max_depth = 0;
+  memset(extended_present, 0, sizeof(extended_present));
+  memset(extended_version, 0, sizeof(extended_version));
+  snprintf(extended_diagnostic, sizeof(extended_diagnostic),
+    "seed=%llu case=%s initial tree", (unsigned long long)extended_seed, deep ? "depth8" : "mixed");
+}
+
+static void
+extended_publish(void)
+{
+  for (size_t i = 0; i < candidate.slot_capacity; i++) {
+    if (slots[i].active) {
+      TEST_ASSERT_EQUAL_MESSAGE(PFS_OK, pfs_block_write(&fixture.builder,
+        slots[i].block, 1, slots[i].data, PFS_BLOCK_SIZE), extended_diagnostic);
+    }
+    slots[i].active = false;
+    slots[i].block = extended_next_block++;
+  }
+  candidate.birth++;
+  candidate.retired_count = 0;
+}
+
+static void
+extended_edit(unsigned item, enum pfs_edit_operation operation)
+{
+  snprintf(extended_diagnostic, sizeof(extended_diagnostic),
+    "seed=%llu case=%s operation=%zu %s item=%u generation=%llu",
+    (unsigned long long)extended_seed, extended_deep ? "depth8" : "mixed",
+    extended_operation, operation == PFS_EDIT_INSERT ? "insert" : "delete", item,
+    (unsigned long long)candidate.birth);
+  uint64_t writes = fixture.writes;
+  uint8_t data[304];
+  struct pfs_key key = extended_key(item);
+  struct pfs_encoded_record record = {0};
+  if (operation == PFS_EDIT_INSERT) {
+    record = extended_record(item, candidate.birth, data);
+  }
+  enum pfs_status status = pfs_edit_tree(&candidate, &workspace, operation,
+    &key, operation == PFS_EDIT_INSERT ? &record : NULL);
+  TEST_ASSERT_EQUAL_MESSAGE(PFS_OK, status, extended_diagnostic);
+  TEST_ASSERT_EQUAL_UINT64_MESSAGE(writes, fixture.writes, extended_diagnostic);
+  TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(15, workspace.output_count, extended_diagnostic);
+  TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(operation == PFS_EDIT_INSERT ? 8 : 15,
+    workspace.consumed_count, extended_diagnostic);
+  size_t actual_new = 0;
+  for (size_t i = 0; i < candidate.slot_capacity; i++) {
+    actual_new += slots[i].active;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(workspace.output_count, actual_new, extended_diagnostic);
+  TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(15, actual_new, extended_diagnostic);
+  TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(operation == PFS_EDIT_INSERT ? 8 : 15,
+    candidate.retired_count, extended_diagnostic);
+  if (actual_new > extended_max_new) {
+    extended_max_new = actual_new;
+  }
+  if (candidate.retired_count > extended_max_retired) {
+    extended_max_retired = candidate.retired_count;
+  }
+  if (extended_deep) {
+    if (!item) {
+      extended_low_present = operation == PFS_EDIT_INSERT;
+    } else {
+      extended_high_present = operation == PFS_EDIT_INSERT;
+    }
+  } else {
+    extended_present[item] = operation == PFS_EDIT_INSERT;
+  }
+  extended_operation++;
+}
+
+static void
+extended_shuffle(void)
+{
+  for (unsigned i = 0; i < EXTENDED_NAME_ITEMS; i++) {
+    extended_order[i] = i;
+  }
+  for (size_t i = EXTENDED_NAME_ITEMS - 1; i; i--) {
+    size_t chosen = (size_t)(extended_next_random() % (i + 1));
+    unsigned saved = extended_order[i];
+    extended_order[i] = extended_order[chosen];
+    extended_order[chosen] = saved;
+  }
+}
+
+static void
+seeded_namespace_minima_growth_and_name_reuse(void)
+{
+  extended_start(false);
+  extended_next_block = 1000;
+  extended_shuffle();
+  for (unsigned i = 0; i < EXTENDED_NAME_ITEMS; i++) {
+    unsigned item = extended_order[i];
+    extended_version[item]++;
+    extended_edit(item, PFS_EDIT_INSERT);
+    if (!(i % 32)) {
+      extended_check();
+    }
+    extended_publish();
+  }
+  extended_check();
+  for (unsigned cycle = 0; cycle < 3; cycle++) {
+    /* Removing each one-byte group minimum exposes a 255-byte separator.
+     * Seeded churn between those removals and reuse changes repair siblings. */
+    for (unsigned group = 0; group < EXTENDED_NAME_GROUPS; group++) {
+      extended_edit(group * EXTENDED_NAMES_PER_GROUP, PFS_EDIT_DELETE);
+      extended_check();
+      extended_publish();
+    }
+    for (unsigned i = 0; i < 512; i++) {
+      unsigned group = (unsigned)(extended_next_random() % EXTENDED_NAME_GROUPS);
+      unsigned within = 1 + (unsigned)(extended_next_random() % (EXTENDED_NAMES_PER_GROUP - 1));
+      unsigned item = group * EXTENDED_NAMES_PER_GROUP + within;
+      enum pfs_edit_operation operation = extended_present[item] ? PFS_EDIT_DELETE : PFS_EDIT_INSERT;
+      extended_version[item] += operation == PFS_EDIT_INSERT;
+      extended_edit(item, operation);
+      if (!(i % 16)) {
+        extended_check();
+      }
+      extended_publish();
+    }
+    for (unsigned group = EXTENDED_NAME_GROUPS; group; group--) {
+      unsigned item = (group - 1) * EXTENDED_NAMES_PER_GROUP;
+      extended_version[item]++;
+      extended_edit(item, PFS_EDIT_INSERT);
+      extended_check();
+      extended_publish();
+    }
+  }
+  extended_shuffle();
+  for (unsigned i = 0; i < EXTENDED_NAME_ITEMS; i++) {
+    unsigned item = extended_order[i];
+    if (extended_present[item]) {
+      extended_edit(item, PFS_EDIT_DELETE);
+      if (!(i % 16)) {
+        extended_check();
+      }
+      extended_publish();
+    }
+  }
+  extended_check();
+  TEST_ASSERT_EQUAL_UINT64(0, candidate.root.block);
+  printf("editor mixed seed=%llu operations=%zu max_new=%zu max_retired=%zu depth=%zu\n",
+    (unsigned long long)extended_seed, extended_operation,
+    extended_max_new, extended_max_retired, extended_max_depth);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static struct pfs_reference
+extended_build_namespace(uint16_t level, bool root)
+{
+  uint16_t count = root ? 2 : 6;
+  for (uint16_t i = 0; i < count; i++) {
+    uint8_t *data = extended_build_data[level][i];
+    if (!level) {
+      extended_build_records[level][i] = extended_record(extended_build_position++, 1, data);
+    } else {
+      struct pfs_key minimum = extended_key(extended_build_position);
+      struct pfs_reference child = extended_build_namespace(level - 1, false);
+      struct pfs_internal_record record = {.child = child, .minimum = minimum};
+      struct pfs_record_context context = extended_context(1);
+      extended_build_records[level][i] = (struct pfs_encoded_record){.data = data};
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_encode(data, 304, PFS_INDEX_DIRECTORY,
+        &context, &record, &extended_build_records[level][i].length));
+    }
+  }
+  return write_tree(extended_next_block++, level, extended_build_records[level], count);
+}
+
+static void
+admissible_depth_eight_namespace_cascade_fits_fifteen_nodes(void)
+{
+  extended_start(true);
+  candidate.birth = 2;
+  extended_next_block = 1000;
+  extended_build_position = 0;
+  extended_low_present = extended_high_present = true;
+  extended_low_version = extended_high_version = 1;
+  candidate.root = extended_build_namespace(PFS_TREE_DEPTH_MAX - 1, true);
+  TEST_ASSERT_EQUAL(EXTENDED_DEEP_ITEMS, extended_build_position);
+  /* 2*6^7 entries: every non-root is at the admitted six-item minimum.
+   * Unlike a sparse synthetic path, the entire depth-eight tree is present. */
+  extended_check();
+  TEST_ASSERT_EQUAL(PFS_TREE_DEPTH_MAX, extended_max_depth);
+  unsigned first = extended_next_random() & 1 ? 0 : EXTENDED_DEEP_ITEMS - 1;
+  unsigned second = first ? 0 : EXTENDED_DEEP_ITEMS - 1;
+  extended_edit(first, PFS_EDIT_DELETE);
+  extended_publish();
+  extended_edit(second, PFS_EDIT_DELETE);
+  extended_check();
+  extended_publish();
+  extended_low_version = extended_high_version = 2;
+  extended_edit(second, PFS_EDIT_INSERT);
+  extended_publish();
+  extended_edit(first, PFS_EDIT_INSERT);
+  extended_check();
+  printf("editor depth8 seed=%llu entries=%u operations=%zu max_new=%zu max_retired=%zu depth=%zu\n",
+    (unsigned long long)extended_seed, EXTENDED_DEEP_ITEMS, extended_operation,
+    extended_max_new, extended_max_retired, extended_max_depth);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+void
+run_extended_edit_tests(uint64_t seed)
+{
+  extended_seed = seed;
+  Unity.TestFile = __FILE__;
+  RUN_TEST(seeded_namespace_minima_growth_and_name_reuse);
+  RUN_TEST(admissible_depth_eight_namespace_cascade_fits_fifteen_nodes);
+}

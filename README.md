@@ -31,7 +31,8 @@ supply both `--gpt-partition N --sector-size 512|4096` explicitly.
 See [host-tool usage and limits](docs/host-tools.md),
 [core build and API boundaries](docs/core.md) and the
 [format contract](docs/format.md). Run the maintained host contract suite with
-`make -j16 check`; scope and requirements are in [testing](docs/testing.md).
+`make -j16 check`. Longer campaigns use `make check-extended`; populated workload
+commands and resource requirements are in [testing](docs/testing.md).
 
 ## License
 

@@ -359,3 +359,168 @@ cover explicit replacement, long names, refusal/no-op behavior and extraction.
 Real-host post-error or interrupted-session recovery is still unqualified. The
 larger combined pressure and failure campaigns remain task 7; no native guest
 writer or kernel-stack suitability is established here.
+
+## Extended campaigns and recovery workload
+
+The longer scenarios are explicitly invoked in the same Unity runner. `make check`
+continues to run the quick contract suite and remains the per-PR CI gate:
+
+```sh
+make -j16 all check
+TMPDIR=/path/to/test-storage make check-extended
+# A different reproducible operation history:
+TMPDIR=/path/to/test-storage build/pyxis-fs-tests --suite extended --seed 2
+TMPDIR=/path/to/test-storage build/pyxis-fs-tests \
+  --suite workload --profile recovery --seed 1 --source /path/to/census
+```
+
+`check-extended` selects seed 1. Seeds must be positive unsigned 64-bit integers.
+Unknown/duplicate arguments, missing inputs and unsupported profiles fail before
+running tests. Only the recovery workload profile is implemented in this delivery;
+the development/physical profiles and milestone closure remain separate work.
+The smaller `--suite file-workloads` command remains available with its existing
+scope. Extended/workload failures return a failing process status, including
+infrastructure exhaustion and a profile that cannot finish its declared history.
+No resource refusal during an admitted drain counts as success.
+
+`TMPDIR` selects an existing directory for unlinked fixture files and the bounded
+failure log; when unset, the runner uses the host's ordinary temporary-file
+location. Provision storage explicitly for long campaigns. The depth-eight editor
+fixture alone writes about 437.4 MiB of metadata; the recovery workload needs space
+for its image, independently expected output files and source snapshots. A sparse
+4 GiB geometry is not physical preallocation. Test allocator high-water reporting
+counts bytes charged through the capped memory owner, not process RSS, allocator
+bookkeeping, the host page cache or all harness storage.
+
+### Reproducing the agreed source census
+
+The workload takes an explicit existing directory. It neither fetches repositories
+nor reads an implicit checkout's changing contents. The accepted census uses four
+historical revisions; from a Pyxis checkout with those objects available locally,
+create a new snapshot directory on storage with enough room:
+
+```sh
+pfs_census=$(mktemp -d /path/to/storage/pyxis-census-XXXXXX)
+set -o pipefail
+git archive --prefix=pyxis/ e4a83ba8b318bebeb4f15550f240eb1ac484521e | tar -xf - -C "$pfs_census"
+git -C fs archive --prefix=fs/ 82cc242b3d9773d21c0f7e7a71ec9ca9ccb937ed | tar -xf - -C "$pfs_census"
+git -C userspace archive --prefix=userspace/ f24e9d9f8523b1c1571f8b3034ef1513c3705bb3 | tar -xf - -C "$pfs_census"
+git -C ports archive --prefix=ports/ fc728f7643f1e99712c8b2523bd7148fa943b782 | tar -xf - -C "$pfs_census"
+# Gitlinks can leave empty directories; the census counts regular file blobs.
+find "$pfs_census" -depth -type d -empty -delete
+```
+
+This produces 790 nonempty files, 132 directories including the common root,
+922 objects and 12,460,032 source bytes. The archive instructions were independently
+compared byte-for-byte with a `git ls-tree`/`git cat-file` blob snapshot. These
+counts describe this input, not hard-coded content/layout expectations for all
+source trees. The workload snapshots supplied contents, normalizes path order and
+fixture identities, and uses independently expected files for streaming comparisons.
+
+### Bounded extended coverage
+
+The six extended groups reuse the quick suite's fixture callbacks and failure
+adapter. A seeded variable-name editor history mixes one-byte and 255-byte names,
+separator growth, removal and reinsertion. A separate valid depth-eight namespace
+contains 559,872 entries in 111,975 tree nodes and exercises extremal deletion and
+reinsertion. Independent key/incarnation expectations, occupancy, exact minima,
+ordering and reachability are checked across the whole tree. The editor asserts
+upper bounds of 15 new/retired nodes, rather than a particular repair layout.
+This private-editor fixture is not full-volume admission at that population.
+
+A retained namespace history covers 32 incarnations, 23 replacements and eight
+unlink/name-reuse cycles, ending with independently expected names, identities and
+payloads after cold reopen. Three campaigns first discover a healthy publication
+trace, then apply 432 selected cuts: 39 for cross-directory replacement, 195 for
+multi-batch final release and 198 for startup cleanup. The cleanup victim has 131
+data blocks and seven explicit grants; healthy cleanup uses 15 publications.
+Each publication tests its first replacement write and slot write, and every
+flush: failures before/pending/durable writes, no/first/all pending promotion,
+32/64-byte slot tears and cache-only non-pending slots. These are not all possible
+replacement writes, tear lengths, subsets, read failures or combinations.
+
+Before each publication's first replacement write, the observer freezes the
+durable slots' generation and victim presence/length. Before the slot write it
+requires those exact retained states and independently expected payload bytes,
+including the remaining victim prefix during cleanup. Early replacement-write
+or first-flush failures also compare both frozen states before recovery. Thus
+overwritten metadata cannot shorten the expected payload after the fact. This
+checks preservation without allocator placements or a fixed cleanup partition.
+Sticky health, consumed final-close references, withheld startup handles,
+degraded-slot refusal and qualified cold recovery are separate assertions. A
+cache-visible image is never substituted for the explicitly durable recovery
+input. This does not qualify real-host post-error recovery.
+
+### Recovery workload contract
+
+The recovery run declares one 4 GiB volume, E=8192, M=4096 and a 128 MiB charged
+memory cap. It uses ordinary/migration formatter floors of 1024 blocks and the
+larger of the computed recovery requirement and its 256-block formatter floor.
+For this geometry/profile, H=723, S=32,256, Pmax=725, the reserved arena is
+30,198,688 bytes and recovery requires 2553 blocks. The bounded simulator log
+holds H+V+1 = 852 replacement/slot block records. Initial source formatting writes
+directly to the durable fixture; subsequent operations use the failure adapter.
+
+The requested history is 4096 separately completed 256 KiB sequential calls
+(1 GiB), 2000 separately completed 4 KiB appends, 32 partial overwrite/rename
+pairs and eight retained unlink/name-reuse rounds. No durability batching spans
+completed calls. File-backed expected bytes are updated only for confirmed
+progress. Cold reopen compares all source/output contents, object identities and
+directory counts, then runs both-state and cross-state checking. The retained
+payload campaign above provides the separate older-state content oracle.
+
+If this history exceeds the profile, the runner records the first refusal and
+confirmed prefix, independently verifies that prefix after qualified durable
+reopen when the writer remains healthy, and returns failure. It does not increase
+limits, shrink/retry the request or count safe refusal as workload success.
+Phase reports separate user, orphan and maintenance metadata/data writes, flushes,
+publications, write/flush callback time and useful-byte throughput. Read-callback
+time is reported separately: planning reads can precede batch initialization or
+follow a completed orphan batch, so its cleanup flag cannot classify those reads.
+These are simulator costs,
+not physical NVMe write amplification or flush latency. Whole-map rebuilding
+remains the first correctness implementation, not the desired allocation strategy.
+
+### Task 7 step 1 observations
+
+The 107 quick groups pass natively (GCC 16.2.1) and with ASan/UBSan in the
+existing GCC 14.2.0 builder container. All six extended groups pass in both
+builds with seed 1; separate native editor seeds 1/2 and failure-history seeds
+1/17 also pass. Seed 1's mixed namespace history used 3600 operations, reaching
+five new/seven retired nodes; depth-eight repair reached seven new/fifteen retired
+nodes. The integrated native extended run took 117.68 seconds and 6820 KiB peak
+RSS while other validation ran. These are correctness-run observations, not an
+isolated performance comparison. Ordinary host tools and the Pyxis GCC 16.2.0
+freestanding archive build; the parent read-only kernel also builds.
+
+The populated recovery run exposes a capacity shortfall. With seed 1 and the exact
+census above, sequential call 1258 returns `PFS_LIMIT`, zero confirmed bytes for
+that call and a healthy writer. The preceding 1257 calls confirmed 329,515,008
+bytes (314.25 MiB). The selected state has 8187 extents against E=8192, 300 volume
+metadata blocks, 7572 allocation records, 8675 claims and generation 3778. The
+new sequential file accounts for 7397 extents, versus 1257 in the contiguous
+model. `PFS_LIMIT` does not identify the refused candidate bound; the observed
+state strongly suggests extent pressure but does not prove E was the sole cause.
+The 2000-appends and churn phases are not reached. No profile increase,
+smaller-prefix retry or allocator change was made. Durable cold reopening
+independently matched the entire confirmed output and all 12,460,032 imported
+source bytes, identities and directory counts; both retained states and the
+cross-state checker completed successfully. The command then exited 1 as required,
+after 431.30 seconds total with 11,908 KiB peak RSS. Preservation of confirmed
+progress does not turn the refused workload into a pass.
+
+Through that sequential prefix, user publications wrote 512,024,576 metadata
+bytes and maintenance wrote 971,857,920: respectively 1.553873 and 2.949359 bytes
+per useful byte (4.503232 combined). There were 1257 user and 2514 maintenance
+publications, each with two flushes. The run's 290.658 seconds of mutation calls
+reported 1.081 MiB/s, 231.048 ms mean and 426.363 ms maximum call latency. Builds,
+other tests and sanitizer work overlapped this run; these single-sample timings
+are not a stable baseline or a hardware throughput claim. Byte/record counts
+establish the observed history cost independently of those scheduling effects.
+
+The charged owner peaked at 31,551,024 bytes before reopen and 34,684,976 during
+reopen, below the 128 MiB cap. Physical fixture storage at refusal was 348,237,824
+bytes, with 341,975,040 bytes for independent expectations; this does not reserve
+space for any future operation. The calculated arena bound did not promise that
+this history would fit E. Full workload success remains an open task-7 obligation;
+review allocation fragmentation and profile sizing before changing either.

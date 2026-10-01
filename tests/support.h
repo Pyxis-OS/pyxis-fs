@@ -15,11 +15,15 @@ struct test_fixture {
   struct test_allocation *allocations;
   struct test_fixture *next;
   size_t allocation_calls;
+  uint64_t peak_memory_bytes;
   size_t fail_after;
   uint64_t reads;
   uint64_t writes;
   uint64_t flushes;
 };
+
+/* Unlinked temporary storage; honors explicit TMPDIR, otherwise uses tmpfile. */
+FILE *test_temporary_file(void);
 
 enum pfs_status test_fixture_open(struct test_fixture *fixture, uint64_t blocks,
                                   uint64_t memory_limit);
