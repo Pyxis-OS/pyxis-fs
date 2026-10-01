@@ -18,6 +18,9 @@ enum write_command {
   WRITE_OPEN,
   WRITE_CHECKPOINT,
   WRITE_CREATE_FILE,
+  WRITE_CREATE_DIRECTORY,
+  WRITE_REMOVE,
+  WRITE_RENAME,
   WRITE_FILE,
   WRITE_RESIZE,
 };
@@ -31,7 +34,11 @@ struct write_options {
   struct pfs_object_id object;
   struct pfs_principal_id principal;
   struct pfs_rights rights;
+  struct pfs_object_id destination_object;
+  struct pfs_rights destination_rights;
   const char *name;
+  const char *destination_name;
+  bool replace;
   const char *input;
   uint64_t offset;
   uint64_t length;
@@ -46,6 +53,14 @@ usage(FILE *stream)
         "    --principal ID --rights file.checkpoint|dir.checkpoint\n"
         "  create-file --volume-id ID --object PARENT_ID --principal ID\n"
         "    --rights dir.create --name COMPONENT\n"
+        "  create-directory --volume-id ID --object PARENT_ID --principal ID\n"
+        "    --rights dir.create --name COMPONENT\n"
+        "  remove --volume-id ID --object PARENT_ID --principal ID\n"
+        "    --rights dir.remove --name COMPONENT\n"
+        "  rename --volume-id ID --object SOURCE_PARENT_ID --principal ID\n"
+        "    --rights dir.remove --name SOURCE_COMPONENT\n"
+        "    --destination-object PARENT_ID --destination-name COMPONENT\n"
+        "    --destination-rights dir.create[,dir.replace] [--replace]\n"
         "  write --volume-id ID --object FILE_ID --principal ID\n"
         "    --rights file.write[,file.resize] --input PATH --offset BYTES\n"
         "  resize --volume-id ID --object FILE_ID --principal ID\n"
@@ -89,6 +104,10 @@ enum write_option_bit {
   OPT_INPUT = 1u << 9,
   OPT_OFFSET = 1u << 10,
   OPT_LENGTH = 1u << 11,
+  OPT_DESTINATION_OBJECT = 1u << 12,
+  OPT_DESTINATION_NAME = 1u << 13,
+  OPT_DESTINATION_RIGHTS = 1u << 14,
+  OPT_REPLACE = 1u << 15,
 };
 
 static enum pfs_status
@@ -103,6 +122,8 @@ rights_parse(const char *text, struct pfs_rights *rights)
     {"file.resize", false, PFS_FILE_RESIZE},
     {"file.checkpoint", false, PFS_FILE_CHECKPOINT},
     {"dir.create", true, PFS_DIR_CREATE},
+    {"dir.remove", true, PFS_DIR_REMOVE},
+    {"dir.replace", true, PFS_DIR_REPLACE},
     {"dir.checkpoint", true, PFS_DIR_CHECKPOINT},
   };
   while (*text) {
@@ -130,6 +151,15 @@ rights_parse(const char *text, struct pfs_rights *rights)
 }
 
 static enum pfs_status
+component_validate(const char *text)
+{
+  if (!strcmp(text, ".") || !strcmp(text, "..")) {
+    return PFS_INVALID;
+  }
+  return pfs_name_validate((const uint8_t *)text, strlen(text));
+}
+
+static enum pfs_status
 options_parse(int argc, char **argv, struct write_options *options)
 {
   *options = (struct write_options){0};
@@ -143,6 +173,12 @@ options_parse(int argc, char **argv, struct write_options *options)
       command = WRITE_CHECKPOINT;
     } else if (!strcmp(argument, "create-file")) {
       command = WRITE_CREATE_FILE;
+    } else if (!strcmp(argument, "create-directory")) {
+      command = WRITE_CREATE_DIRECTORY;
+    } else if (!strcmp(argument, "remove")) {
+      command = WRITE_REMOVE;
+    } else if (!strcmp(argument, "rename")) {
+      command = WRITE_RENAME;
     } else if (!strcmp(argument, "write")) {
       command = WRITE_FILE;
     } else if (!strcmp(argument, "resize")) {
@@ -180,6 +216,19 @@ options_parse(int argc, char **argv, struct write_options *options)
       bit = OPT_OFFSET;
     } else if (!strcmp(argument, "--length")) {
       bit = OPT_LENGTH;
+    } else if (!strcmp(argument, "--destination-object")) {
+      bit = OPT_DESTINATION_OBJECT;
+    } else if (!strcmp(argument, "--destination-name")) {
+      bit = OPT_DESTINATION_NAME;
+    } else if (!strcmp(argument, "--destination-rights")) {
+      bit = OPT_DESTINATION_RIGHTS;
+    } else if (!strcmp(argument, "--replace")) {
+      if (seen & OPT_REPLACE) {
+        return PFS_INVALID;
+      }
+      seen |= OPT_REPLACE;
+      options->replace = true;
+      continue;
     } else {
       return PFS_INVALID;
     }
@@ -217,6 +266,16 @@ options_parse(int argc, char **argv, struct write_options *options)
     case OPT_OBJECT:
       status = pfs_object_id_parse(value, strlen(value), &options->object);
       break;
+    case OPT_DESTINATION_OBJECT:
+      status = pfs_object_id_parse(value, strlen(value), &options->destination_object);
+      break;
+    case OPT_DESTINATION_RIGHTS:
+      status = rights_parse(value, &options->destination_rights);
+      break;
+    case OPT_DESTINATION_NAME:
+      options->destination_name = value;
+      status = component_validate(value);
+      break;
     case OPT_PRINCIPAL:
       status = pfs_principal_id_parse(value, strlen(value), &options->principal);
       break;
@@ -225,7 +284,7 @@ options_parse(int argc, char **argv, struct write_options *options)
       break;
     case OPT_NAME:
       options->name = value;
-      status = pfs_name_validate((const uint8_t *)value, strlen(value));
+      status = component_validate(value);
       break;
     case OPT_INPUT:
       options->input = value;
@@ -236,6 +295,8 @@ options_parse(int argc, char **argv, struct write_options *options)
         status = PFS_INVALID;
       }
       break;
+    case OPT_REPLACE:
+      return PFS_INVALID;
     case OPT_LENGTH:
       status = decimal_count(value, &options->length);
       if (options->length > PFS_FILE_SIZE_MAX) {
@@ -250,6 +311,7 @@ options_parse(int argc, char **argv, struct write_options *options)
   unsigned common = OPT_IMAGE | OPT_EXTENTS | OPT_METADATA;
   unsigned authority = OPT_VOLUME | OPT_OBJECT | OPT_PRINCIPAL | OPT_RIGHTS;
   unsigned required = common;
+  unsigned optional = OPT_MEMORY;
   uint64_t file = options->rights.file;
   uint64_t directory = options->rights.directory;
   switch (options->command) {
@@ -263,8 +325,25 @@ options_parse(int argc, char **argv, struct write_options *options)
     }
     break;
   case WRITE_CREATE_FILE:
+  case WRITE_CREATE_DIRECTORY:
     required |= authority | OPT_NAME;
     if (file || directory != PFS_DIR_CREATE) {
+      return PFS_INVALID;
+    }
+    break;
+  case WRITE_REMOVE:
+    required |= authority | OPT_NAME;
+    if (file || directory != PFS_DIR_REMOVE) {
+      return PFS_INVALID;
+    }
+    break;
+  case WRITE_RENAME:
+    required |= authority | OPT_NAME | OPT_DESTINATION_OBJECT |
+      OPT_DESTINATION_NAME | OPT_DESTINATION_RIGHTS;
+    optional |= OPT_REPLACE;
+    if (file || directory != PFS_DIR_REMOVE || options->destination_rights.file ||
+        !(options->destination_rights.directory & PFS_DIR_CREATE) ||
+        (options->destination_rights.directory & ~(PFS_DIR_CREATE | PFS_DIR_REPLACE))) {
       return PFS_INVALID;
     }
     break;
@@ -284,7 +363,7 @@ options_parse(int argc, char **argv, struct write_options *options)
   case WRITE_NONE:
     return PFS_INVALID;
   }
-  if ((seen & ~OPT_MEMORY) != required) {
+  if ((seen & ~optional) != required) {
     return PFS_INVALID;
   }
   return PFS_OK;
@@ -441,6 +520,20 @@ report_result(const char *operation, const struct pfs_write_result *result)
          pfs_status_string(result->maintenance_status));
 }
 
+static int
+close_view(const char *operation, struct pfs_view **view, int current)
+{
+  bool held = *view != NULL;
+  struct pfs_view_close_result result = {0};
+  enum pfs_status status = pfs_view_close(view, &result);
+  if (held && (status != PFS_OK || result.maintenance_completion != PFS_MAINTENANCE_NONE)) {
+    printf("%s: released=%s health=%s maintenance=%s maintenance-status=%s\n",
+      operation, result.released ? "true" : "false", health_name(result.health),
+      maintenance_name(result.maintenance_completion), pfs_status_string(result.maintenance_status));
+  }
+  return report_failure(operation, status, NULL, current);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -465,6 +558,7 @@ main(int argc, char **argv)
   struct pfs_pool pool = {0};
   struct pfs_volume volume = {0};
   struct pfs_view *view = NULL;
+  struct pfs_view *destination_view = NULL;
   struct pfs_allocation input = {0};
   struct pfs_write_open_result opened = {.pool = {.selected = PFS_POOL_NO_SELECTION}};
   options.limits.random = writer_random;
@@ -512,6 +606,13 @@ main(int argc, char **argv)
       status = pfs_view_acquire(&volume, &context, &options.object,
                                 PFS_SCOPE_OBJECT, &options.rights, &view);
     }
+    if (status == PFS_OK && options.command == WRITE_RENAME) {
+      operation = "acquire destination authority";
+      context.root = options.destination_object;
+      context.ceiling = options.destination_rights;
+      status = pfs_view_acquire(&volume, &context, &options.destination_object,
+        PFS_SCOPE_OBJECT, &options.destination_rights, &destination_view);
+    }
     if (status == PFS_OK && options.command == WRITE_FILE) {
       operation = "load write input";
       status = input_load(&options, &image, &memory, &input);
@@ -527,6 +628,21 @@ main(int argc, char **argv)
         operation = "create-file";
         status = pfs_view_create_file(view, (const uint8_t *)options.name,
                                      strlen(options.name), NULL, NULL, NULL, &result);
+        break;
+      case WRITE_CREATE_DIRECTORY:
+        operation = "create-directory";
+        status = pfs_view_create_directory(view, (const uint8_t *)options.name,
+          strlen(options.name), NULL, NULL, NULL, &result);
+        break;
+      case WRITE_REMOVE:
+        operation = "remove";
+        status = pfs_view_remove(view, (const uint8_t *)options.name, strlen(options.name), &result);
+        break;
+      case WRITE_RENAME:
+        operation = "rename";
+        status = pfs_view_rename(view, (const uint8_t *)options.name, strlen(options.name),
+          destination_view, (const uint8_t *)options.destination_name,
+          strlen(options.destination_name), options.replace, &result);
         break;
       case WRITE_FILE: {
         operation = "write";
@@ -551,7 +667,8 @@ main(int argc, char **argv)
   }
   int exit_status = report_failure(operation, status, &image, 0);
   exit_status = report_failure("free input", pfs_memory_free(&memory, &input), NULL, exit_status);
-  exit_status = report_failure("close view", pfs_view_close(&view), NULL, exit_status);
+  exit_status = close_view("close destination view", &destination_view, exit_status);
+  exit_status = close_view("close view", &view, exit_status);
   exit_status = report_failure("close volume", pfs_volume_close(&volume), NULL, exit_status);
   exit_status = report_failure("close pool", pfs_pool_close(&pool), NULL, exit_status);
   exit_status = report_failure("close image", host_image_close(&image), &image, exit_status);
