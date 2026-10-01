@@ -534,3 +534,20 @@ refusals left the selected generation unchanged. The final check completed both
 retained generations 22/21 and their cross-state comparison, each with one file
 extent and one data block. These are healthy host command observations; they
 provide no real-host writeback-failure or power-loss recovery qualification.
+
+
+### Namespace command validation
+
+On Linux 6.19.10 with native GCC 16.2.1, a fresh 64 MiB source-populated image
+(E=512/M=256, 4 MiB recovery reserve) passed directory/file creation, removal and
+regular-file rename/replacement. Holding `dir.replace` without `--replace` refused
+an existing destination without changing its generation or expected victim bytes.
+Explicit replacement preserved the source identity and independently supplied
+4391-byte contents. A 255-byte destination name succeeded; same-name rename
+reported `namespace_confirmed=false` without changing generation. Nonempty
+directory removal refused without publication. Removing empty files/directories
+returned a ready writer. Final checking covered both retained generations and
+cross-state consistency with no orphans; full extraction matched the independently
+defined final tree. Catalog diagnostics recognized the retained ORPHANS feature.
+These are ordinary healthy-session observations, not interrupted-session or
+post-writeback-error recovery qualification.

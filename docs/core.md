@@ -407,7 +407,7 @@ object-ID acquisition requires the same intervening lookup rights.
 Acquisition requires the complete requested set and publishes no weaker view.
 Policy denial returns `PFS_DENIED`. Read-only instances refuse mutation rights
 with `PFS_READ_ONLY`. Writer instances also support file write/resize/checkpoint
-and directory create/checkpoint; unimplemented mutation/administration rights
+and directory create/remove/replace/checkpoint; unimplemented administration rights
 still return `PFS_READ_ONLY` without an operational view. Successful opaque views bind volume,
 object, scope and exactly the requested rights. The generation field identifies
 the immutable state in read-only mode and is zero in live writer results. They retain the volume
@@ -546,9 +546,11 @@ and future object IDs, complete supported validation of both retained
 states, canonical metadata, the namespace occupancy profile, unchanged volume
 identities/promises, permanent deletion headroom and the computed workspace
 reserves. It rejects degraded states, live workspace charges, occupied migration
-charges and nonempty orphan indexes. Startup orphan cleanup is task 6; it is not
-silently skipped. Opening reserves the three map/claim vectors and commit/drain
-arena before exposing the writer. Views cannot consume that reservation.
+charges. Opening reserves the three map/claim vectors and commit/drain arena,
+drains selected volume retirement, and cleans abandoned orphans before exposing
+the writer. Views cannot consume that reservation. The first unlink may enable
+the existing volume ORPHANS feature; each retained state is checked using its own
+feature mask, including the older state without that feature.
 
 Opening returns the pool diagnostic, confirmed startup generation, health, cleanup
 outcome and computed arena/recovery/permanent-pool requirements. E counts mappings,
@@ -591,7 +593,9 @@ read-only-mode facilities. Callback reentry into ordinary/lifetime operations is
 right independently of read/lookup rights. Existing grants are unchanged. With
 synchronous funded drains complete it performs no publication. A stopped instance
 cannot use checkpoint, reopening its handles or close to retry maintenance.
-Closing releases runtime resources without writes or an implicit flush.
+Pool/volume close releases runtime resources without writes or an implicit flush.
+Last-view close on a healthy writer completes funded orphan cleanup as described
+below; stopped close only releases runtime references.
 
 | Failure | Confirmed state and subsequent access |
 | --- | --- |
@@ -612,7 +616,7 @@ A read error during maintenance preserves all already confirmed user progress.
 outcomes may include additional committed bytes and are not automatically
 retryable. The result's confirmed bytes/length/namespace fields are independent of
 health; private batches do not acknowledge application bytes. Public mutation
-operations will populate these fields with their behavior in tasks 5/6.
+operations populate these fields according to their confirmed progress.
 
 Recovery is an adapter/operator precondition, not a core history detector. The
 adapter must establish an appropriate durable backing state and quiesce I/O;
@@ -646,9 +650,8 @@ Other refusals return initialized results, without widening authority.
 Creation accepts a validated single component name and returns `EXISTS` for an
 existing entry. The empty file receives a fresh ID, the parent's policy owner and
 no explicit grants. Strong randomness has no fallback; zero/colliding IDs are
-retried at most 16 times against both retained object indexes. This task cannot
-unlink objects, so every retained runtime file is still in the current index.
-Orphan lifetime in task 6 must extend collision protection to its runtime objects.
+retried at most 16 times against both retained object indexes and live runtime
+identities, including retained orphans.
 Entropy failure refuses creation without publishing or stopping otherwise healthy
 backing; an actual backing-read failure retains the pool-wide access-stop policy.
 
@@ -703,9 +706,82 @@ LIST and pool health before binding/freshness. Wrong binding or malformed positi
 returns `INVALID`; a changed serial returns `CHANGED`. Both publish zero count
 without advancing the token or publishing entries.
 
-Confirmed creation increments the parent's never-wrapping serial. Table capacity
-and counter headroom are checked before publication; the table is already reserved
-by admission and entries remain until writer close. Failed creation, file data
-and length changes, and maintenance do not change these serials. Fresh writable
-opening generates a new nonce, invalidating prior-instance tokens. Directory
-creation/removal/rename and orphan release remain task 6.
+Confirmed creation, removal and rename/replacement update each affected directory
+once with a fresh never-wrapping serial. A new or detached directory also receives
+a fresh serial. Table capacity and counter headroom are checked before publication;
+the table is reserved by admission and entries remain until object deletion or
+writer close. Failed mutations, file data/length changes and maintenance do not
+change these serials. Fresh writable opening generates a new nonce, invalidating
+prior-instance tokens.
+
+
+## Namespace changes and orphan lifetime
+
+`pfs_view_create_directory` creates an empty directory under the parent's owner,
+with no explicit grants. Like file creation, it accepts optional requested child
+rights and reserves the returned view before publication. Returned creation views
+have object scope: a file accepts file rights and a directory accepts directory
+rights, plus supported administration rights. Creating a child does not itself
+supply lookup or child authority.
+
+`pfs_view_remove(parent, name, length, result)` needs `dir.remove`, independently
+of child read/write rights. It removes a file or an empty directory; nonempty
+directories return `PFS_NOT_EMPTY`, and the volume root cannot be removed.
+`pfs_view_rename` accepts held source/destination parents and single component
+names. It supports regular files in the same volume, requiring source `dir.remove`
+and destination `dir.create`. Directory moves/replacements and volume crossing
+return `PFS_UNSUPPORTED`. Both namespaces and object parent changes publish in
+one transaction.
+
+Replacement requires an explicit `replace=true` and destination `dir.replace`.
+With `replace=false`, an existing distinct destination returns `PFS_EXISTS` even
+if replacement authority is held. An absent destination needs no replacement
+right. Same-parent/same-name rename validates the source and base rights, then
+returns `COMPLETE` with `namespace_confirmed=false` and no publication. False
+means not confirmed; an `UNKNOWN` result may already have changed the namespace
+and must not be automatically retried.
+
+Unlink and replacement atomically remove the naming entry, clear the displaced
+object's parent and insert its orphan marker. The object remains in the ordinary
+object index, and its data/metadata remain charged. Shared runtime entries keyed
+by volume/object ID count views and active operations. Held files retain their
+identity, current contents and granted read/write/resize authority; fresh path or
+ID acquisition cannot find an orphan. `pfs_view_delegate` narrows a held view's
+rights/scope without acquiring new policy, including for retained orphans. A
+retained empty directory remains readable/listable under its rights but rejects
+insertion with `PFS_DETACHED`. Recreating its former name gives a fresh identity.
+
+Each view and distinct live identity is charged to the capped memory owner before
+acquisition output or creation publication. On the current x86-64 build these
+cost 160 bytes per view plus 88 bytes per distinct live identity; these are
+implementation observations, not interface sizes or a guaranteed handle count.
+Shared-entry lookup is linear in the number of live identities. Runtime references
+retain no old generation, and their storage does not consume the reserved editor
+arena.
+
+`pfs_view_close(view, result)` consumes an accepted view and clears its pointer
+before final cleanup. `released=true` remains true if cleanup fails; `PFS_BUSY`
+leaves the view live with `released=false`. The result reports maintenance
+completion/status and pool health separately. A stopped instance only releases
+runtime state. Pool close requires all volume handles/views/active operations to
+end and never retries stopped cleanup.
+
+After the last view/operation ends, cleanup removes at most six tail mappings or
+six grants and at most 128 data blocks per publication. Grant cleanup and final
+paired object/orphan removal use separate batches. The object and marker remain
+paired until final deletion; every intermediate state is valid and resumable.
+Empty sparse files can proceed directly to grant/final cleanup. Each batch reduces
+remaining orphan work, and its usual retained-root drain finishes before the next
+batch. Last release and startup recovery use the reserved arena for tree reads
+and edits, with no further heap allocation. Unexpected resource failure is an
+admission/editor invariant failure and stops the instance; I/O/integrity failures
+retain their documented phase-specific health and uncertainty.
+
+Protected deletion headroom remains enforced against volume quota, metadata
+profile and total pool promises. Ordinary growth cannot consume it. This enables
+unlink and replacement even when ordinary growth is refused; retained victim
+contents need not be reclaimed immediately. Logical admission does not reserve
+physical host space for sparse images. Last release and startup can take many
+bounded transactions. Real-host recovery after writeback error or an interrupted
+mutating session with unknown backing history remains unqualified; simulated
+durable restart does not establish that host precondition.

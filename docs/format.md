@@ -1,6 +1,6 @@
 # Initial Pyxis filesystem format and tool contract
 
-Status: implemented initial format, read-only tools and bounded host file mutation;
+Status: implemented initial format, read-only tools and bounded host mutation;
 the [shared core](core.md), bounded bulk construction and source import,
 candidate selection, readonly traversal/acquisition, extraction and explicit GPT
 inspection and whole-image consistency checking are implemented.
@@ -8,11 +8,11 @@ The volume ORPHANS representation, directory checkpoint right, canonical private
 COW editors and bounded allocation-map planners are implemented. Explicit
 [writer admission/publication](core.md#admitted-writer-and-publication) adds the
 ordered publisher and synchronous reclamation. Public file creation, writing and
-resizing are implemented; directory creation, removal, rename/orphan cleanup and
-native writable integration remain future tasks.
+resizing, directory creation, removal, regular-file rename/replacement and orphan
+cleanup are implemented. Native writable integration remains a future task.
 [Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat`, `access`,
 `extract` and `check`, plus healthy-session `pyxisfs-write open`, `checkpoint`,
-`create-file`, `write` and `resize`.
+`create-file`, `create-directory`, `remove`, `rename`, `write` and `resize`.
 The [integration contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/devices/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and
@@ -399,9 +399,11 @@ The ORPHANS bit declares the use of offset 424; the volume record remains
 An empty orphan index has a null root, and its entry count cannot exceed the
 volume object count. The feature permits a parentless non-root object only with
 the named-or-orphan validation described below. The formatter emits no orphan
-feature or entries. Future enabling must preserve the older state's own mask,
-require the formerly reserved bytes to be zero, and leave the bit enabled after
-cleanup; opening an image does not enable it or perform any write.
+feature or entries. The first unlink/replacement enables it atomically, preserving
+the older state's own mask and requiring the formerly reserved bytes to be zero.
+The bit remains enabled after cleanup. Read-only opening never enables it or
+writes; admitted writable opening may clean existing orphans under the documented
+adapter recovery precondition.
 
 ### Object record, 128 bytes
 

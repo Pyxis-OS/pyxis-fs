@@ -35,7 +35,7 @@ executed total; several groups contain boundary tables or repeated edit historie
 | Private tree edits | Independently maintained expected entries through insert/update/delete histories; exact minima, ordering, byte fit, namespace occupancy, split/merge/redistribution/root collapse; maximum-depth sparse deletion, separator growth during namespace deletion, unpublished buffer reuse and atomic refusal; overlapping newly split extents rejected while touching ranges remain valid |
 | Private map planning | Independent interval/ownership expectations, canonical coalescing, unchanged inputs and refusal outputs; inconsistent deltas distinguished from corrupt bases; fragmented interior allocations accounting for every replacement map/catalog/root block, exact finite bounds and reachable nonempty nodes |
 | Publication and recovery | Real private COW overwrite through user/advance/free publications; each replacement/slot write and all six flush boundaries; durable recovery, sticky health and cache-visible/non-pending-slot counterexample; both retained payloads compared before every maintenance slot write |
-| Writable admission and views | Both-state canonical validation, quota/deletion/profile/reserve/memory boundaries; ordinary live reads and checkpoint authority without read/lookup; callback reentry refusal; orphan-index opening refusal before writes |
+| Writable admission and views | Both-state canonical validation, quota/deletion/profile/reserve/memory boundaries; ordinary live reads and checkpoint authority without read/lookup; callback reentry refusal; funded startup orphan cleanup and refusal before writes when recovery admission fails |
 | Reserved memory | Accepted profile arithmetic, capped arena reservation, allocation failure, release and no further allocation/I/O during private map planning |
 
 On 2026-10-01 the 30 task-2 groups passed with native GCC 16.2.1 in 2.22 seconds
@@ -177,11 +177,11 @@ throughput improvement is claimed.
 Unexpected resource failure during a funded drain is an invariant failure,
 not successful safe refusal. Resource cases deny further allocation after admission
 and require the drain to finish. Ordinary refusal before admission leaves the
-writer usable. Final orphan release and its resource cases remain with task 6;
-nonempty orphan indexes are currently refused before any write.
+writer usable. Task 6 adds allocation-free final orphan release and funded startup
+cleanup, including their resource and interruption cases below.
 
 Task 5 adds public file mutation and the separate populated write-history command
-below. Namespace/orphan cases follow with task 6. Larger pressure and extended
+below. Task 6 adds namespace/orphan cases. Larger pressure and extended
 failure campaigns remain task 7; the file-workload command is not those campaigns. Task 7 records combined results rather than first adding tests.
 Host tests remain maintained after milestone closure. Ordinary native builds,
 freestanding target compilation and later guest validation remain separate checks.
@@ -296,3 +296,58 @@ small noisy observation does not isolate a regression or establish equal cost.
 Writable-open timings are similar. Public mutation has no prior implementation
 baseline; the workload table measures its first implementation without claiming
 an improvement over absent behavior. No QEMU/build defaults changed.
+
+## Task 6 namespace and orphan validation
+
+At implementation `4d64eeb` on 2026-10-01, all 106 quick groups pass with native
+GCC 16.2.1 and under ASan/UBSan with GCC 14.2.0 in the existing builder container.
+The separate populated `file-workloads` scenario also passes both. Ordinary host
+tools, the Pyxis GCC 16.2.0 freestanding archive and the parent read-only kernel
+build pass. No QEMU/guest writer validation or new performance measurement is
+claimed by these correctness runs.
+
+The maintained quick suite now covers directory creation/removal, same-volume
+regular-file rename/replacement, explicit replacement intent, exact held rights,
+parent ownership, retained file identity/content, narrowed delegation, detached
+directories and recreation of a removed name. Fresh acquisition cannot obtain an
+orphan. Live directory tokens check local invalidation, including both rename
+parents; retained file writes do not invalidate unrelated directories. Maximum
+255-byte names exercise creation and cross-directory rename.
+
+Resource cases use two volumes at the formatter's minimum pool geometry. One
+fixture has four file data blocks and seven explicit grants: quota=9, E=1, M=7,
+ordinary/migration reserves at their 1024-block floors and recovery at the larger
+of the computed requirement and formatter floor. Ordinary growth refuses before
+writes, while unlink and final cleanup must succeed. A separate exact pool-promise
+boundary is checked. Startup recovery uses the same minimum admitted profile;
+allocation counters from its first write through return must remain unchanged.
+Final release runs with every subsequent allocation denied. Refusal during these
+funded paths fails the test; it is not counted as successful safe handling.
+
+The larger quick pressure case creates 120 retained empty victims with maximum
+length names, crossing the orphan index's single-leaf capacity. It fills quota=48
+with actual file writes until ordinary growth refuses, then unlinks every victim
+and requires all final releases to complete with allocation disabled. This also
+exercises final root collapse where deletion retires metadata without producing
+new volume nodes. Generation-boundary coverage funds four data blocks, seven
+grants and final paired deletion at MAX-39; one generation less headroom refuses
+the unlink before publication. These are bounded histories, not all possible
+namespace heights, occupancy patterns or full-profile populations.
+
+The shared failure adapter checks replacement publication at all six flush
+boundaries, including uncertainty after a failed flush has made pending writes
+durable. Expected names, source/victim identities and different payloads are
+supplied independently. Planning and maintenance read failures require
+`ACCESS_STOPPED`, with confirmed namespace progress retained. Focused final-close
+and startup cases interrupt cleanup after a confirmed data-removal batch, check
+remaining paired object/orphan records and grants, then require a qualified cold
+reopen of the explicitly durable image to finish. The consumed close reference
+and failed-open resource release are checked separately from cleanup completion.
+Existing overwrite/reuse tests still compare both retained payloads during each
+maintenance publication; structural agreement alone is not the content oracle.
+
+The [healthy host command observations](host-tools.md#namespace-command-validation)
+cover explicit replacement, long names, refusal/no-op behavior and extraction.
+Real-host post-error or interrupted-session recovery is still unqualified. The
+larger combined pressure and failure campaigns remain task 7; no native guest
+writer or kernel-stack suitability is established here.
