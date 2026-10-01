@@ -20,7 +20,6 @@
 #include <unistd.h>
 
 #define SCRATCH_BYTES_MAX (UINT64_C(2) * 1024 * 1024 * 1024)
-#define JOB_BYTES_MAX (UINT64_C(4) * 1024 * 1024 * 1024)
 #define SCRATCH_INODES_MAX UINT64_C(65536)
 #define MOUNT_LINE_BYTES 16384
 
@@ -240,7 +239,7 @@ check_cgroup(char *root, char *point, uint64_t id, const char *path)
   if (directory >= 0) {
     close(directory);
   }
-  return valid && memory_max <= JOB_BYTES_MAX && swap_max == 0;
+  return valid && memory_max > 0 && memory_max < UINT64_MAX && swap_max == 0;
 }
 
 static bool
@@ -398,7 +397,7 @@ require_ram(bool ci_quick)
       "TMPDIR mount must explicitly use noswap and an inode cap");
   }
   if (!cgroup_valid) {
-    refuse("require actual cgroup memory.max <= 4 GiB, swap.max = 0 and swap.current = 0");
+    refuse("require a finite positive cgroup memory limit, swap.max = 0 and swap.current = 0");
   }
   if (ci_quick && !directory_empty(directory)) {
     refuse("quick CI requires an empty TMPDIR before creating fresh fixtures");

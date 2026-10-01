@@ -14,20 +14,19 @@ disabled swap, bounded resource use and verified controls implement the agreed
 storage-safety policy for these runs. Capacity one is a precondition of the current
 shared-volume mechanism, not a permanent filesystem concurrency restriction.
 
-The current implementation still repeats the profile ceilings in the Python
-launcher, C guard and CI/deployment configuration. Those are upper-bound checks,
-not equality tests, but changing one copy does not propagate to the others. A
-guard refusal for exceeding that profile does not demonstrate a filesystem
-regression. This is an identified configuration-coupling limitation, not a new
-architectural contract justified by the existing checks.
+The job memory budget has one provisioning authority: the scoped local launcher
+selects its local limit; CI uses the owner's trusted runner configuration. The
+workflows do not override it. Both guards verify a real finite positive cgroup
+memory limit, zero swap allowance/current usage and disabled core dumps, without
+copying the selected memory amount into another acceptance ceiling. CI records
+the actual member-cgroup memory limit; an ancestor may impose a tighter bound.
+The guards never raise limits or retry with more memory. Changing the provisioned
+budget is an explicit operator action, not a filesystem behavior change.
 
-A focused follow-up should give the selected profile one authority and have
-provisioning and independent environmental verification consume it. Validate
-deliberately configured limits and propagation; do not derive an enlarged budget
-automatically from whatever limits happen to be present. Record requested and
-observed controls separately. Historical measurements retain their original
-parameters. This documentation records the constraint and current limitation;
-it does not change the launcher, guards, resource limits or assigned workloads.
+The owner selected a 16 GiB shared CI runner with one concurrent job. Local
+benchmark provisioning remains at 4 GiB; historical measurements retain their
+original parameters. The selected scratch byte/inode ceilings remain unchanged
+in this focused correction. RAM-only storage and zero swap remain required.
 
 ## Local execution
 
@@ -133,11 +132,11 @@ storage evidence and the next proposed bounded investigation.
 ## CI
 
 The quick filesystem PR job requires tmpfs capped at 2 GiB and 65,536 inodes,
-a 4 GiB container memory limit and zero container swap (`--memory-swap` equals
-`--memory`), plus hard core limit zero. Actual mount type and limits are verified
+a finite positive container memory limit selected by the owner and zero container
+swap (`--memory-swap` equals `--memory`), plus hard core limit zero. Actual mount type and limits are verified
 before building or running fixtures; a disk-backed volume cannot substitute.
-The owner-provisioned named-volume configuration below passed the effective
-boundary checks and all 111 quick groups in CI.
+The historical 4 GiB named-volume configuration passed the effective boundary
+checks and all 111 quick groups in CI; its evidence is recorded below.
 
 `python3 tests/ram_run.py --inside --suite check --ci-quick` selects the accepted
 quick-only exception to mount-level `noswap`. The runner independently accepts
@@ -168,7 +167,7 @@ accepts `--memory` but omits `--mount`, `--memory-swap` and `--ulimit`. The orig
 the build or tests. Passing the same options directly to rootless Podman works
 locally; this is not evidence that the CI runner applied them.
 
-The filesystem jobs select the dedicated `pyxis-fs-ram` rootless runner. The
+The filesystem jobs select the `pyxis-fs-ram` rootless runner label. The
 initial trusted anonymous-volume mount also failed: after the owner permitted
 its empty source in `valid_volumes`, the mount existed but was not tmpfs, so
 both jobs refused before building. A local Podman 5.8.1 Docker-compatible API
@@ -182,7 +181,8 @@ in `HostConfig.Tmpfs`. No test payloads were written in these failed probes.
 
 **Accepted setup:** provision one named tmpfs volume under the runner's exact
 rootless user and Podman store, then attach it by name. Reserve it exclusively
-for this single validation runner, with capacity one. No other runner, helper
+for this single runner, with capacity one. It may advertise both `pyxis` and
+`pyxis-fs-ram`; its limits and mount then apply to both kinds of job. No other runner, helper
 container or manual mount may use it. Complete job-container removal and volume
 unmount before the next job; after interruption, the operator must remove stale
 attachments before resuming. This adds an administrator-managed volume lifetime,
@@ -204,11 +204,12 @@ volume permissions; do not add a wildcard:
 runner:
   capacity: 1
   labels:
+    - pyxis:docker://docker.io/library/node:24-bookworm
     - pyxis-fs-ram:docker://git.internal/pyxisos/pyxis-builder:pyxis-gcc16.2-binutils2.47
 container:
   privileged: false
   options: >-
-    --memory=4g --memory-swap=4g --ulimit core=0:0
+    --memory=16g --memory-swap=16g --ulimit core=0:0
     --volume pyxis-fs-ram:/run/pyxis-fs-ram:nocopy
   valid_volumes:
     - pyxis-fs-ram
@@ -232,16 +233,29 @@ API run of the actual launcher passed all 111 quick groups, with a
 observed local runtime behavior, not successful CI provisioning or crash cleanup
 on the owner's runner. Probe containers and volumes were removed.
 
-Only filesystem jobs use this dedicated runner; ordinary image builds remain on
-`pyxis`. No production/core change or guard relaxation is needed. The workflows
-declare only the memory limit; the trusted runner configuration supplies the
-mount, swap and core limits. [Pyxis run 577](https://git.internal/PyxisOS/pyxis-os/actions/runs/577)
+Filesystem jobs select `pyxis-fs-ram`; ordinary image builds select `pyxis`.
+Both may use the shared serial runner. Its trusted configuration supplies memory,
+mount, swap and core limits together; the workflows supply no memory override.
+Previously overriding only memory to 4 GiB while the runner supplied a 16 GiB
+memory-plus-swap limit allowed swap, and preflight correctly refused before tests.
+The corrected guards accept the configured finite memory budget and retain the
+zero-swap requirement. No production/core change is included.
+
+Historical [Pyxis run 577](https://git.internal/PyxisOS/pyxis-os/actions/runs/577)
 verified the provisioned runner at parent `6a4525e` / filesystem `2d8ce96` on
 2026-10-01: all 111 groups passed with 2,147,483,648 scratch bytes, 65,536 inodes,
 4,294,967,296 memory-limit bytes, zero swap and zero max/OOM events. Peak memory
 was 314,847,232 bytes on kernel `7.2.6-1-cachyos`. This verifies the effective
 boundary for that run; exclusive ownership and teardown remain operator
 preconditions, and every subsequent job must pass the guard again.
+
+The memory-budget correction passed all 111 quick groups in the scoped local
+4 GiB launcher, with a 305,643,520-byte peak and zero swap/max/OOM events.
+Separate actual-cgroup probes configured 1 GiB and 16 GiB caps: both the Python
+preflight and C guard accepted each with zero swap. Both refused an unlimited
+memory hierarchy and a 16 GiB job with a 1 MiB swap allowance, before fixture
+writes. These are deliberately varied deployment inputs, not accepted filesystem
+capacity limits. No large recovery workload or comparative matrix was rerun.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the

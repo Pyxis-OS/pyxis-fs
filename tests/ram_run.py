@@ -23,7 +23,7 @@ import uuid
 SCRATCH = Path('/run/pyxis-fs-ram')
 BOUND_SOURCE = Path('/run/pyxis-fs-source')
 SCRATCH_BYTES = 2 * 1024**3
-JOB_BYTES = 4 * 1024**3
+LOCAL_JOB_BYTES = 4 * 1024**3
 LOG_BYTES = 1024**2
 TRACE_BYTES = 16 * 1024**2
 SOURCE = Path(__file__).resolve().parent.parent
@@ -86,8 +86,10 @@ def preflight(ci_quick=False):
             0 < fs.f_files <= 65536, 'scratch byte/inode limits exceed the agreed bounds')
     group = job_cgroup()
     memory = (group / 'memory.max').read_text().strip()
-    require(memory.isdigit() and 0 < int(memory) <= JOB_BYTES, 'job memory.max must be <=4 GiB')
-    require((group / 'memory.swap.max').read_text().strip() == '0', 'job swap is not disabled')
+    require(memory.isdigit() and 0 < int(memory) < 2**64 - 1,
+            f'job memory.max must be finite and positive (observed {memory})')
+    swap = (group / 'memory.swap.max').read_text().strip()
+    require(swap == '0', f'job swap is not disabled (memory.max={memory}, memory.swap.max={swap})')
     require((group / 'memory.swap.current').read_text().strip() == '0', 'job already has swapped memory')
     require(resource.getrlimit(resource.RLIMIT_CORE) == (0, 0), 'hard core-dump limit must be zero')
     return {'scratch_bytes': fs.f_blocks * fs.f_frsize, 'scratch_inodes': fs.f_files,
@@ -571,7 +573,7 @@ def main():
     launcher = BOUND_SOURCE / 'tests/ram_run.py'
     cleanup = f'{sys.executable} {launcher} --cleanup-trace --name {name}'
     command = ['systemd-run', '--quiet', '--wait', '--collect', '--unit', name,
-               '--service-type=exec', '-p', f'MemoryMax={JOB_BYTES}', '-p', 'MemorySwapMax=0',
+               '--service-type=exec', '-p', f'MemoryMax={LOCAL_JOB_BYTES}', '-p', 'MemorySwapMax=0',
                '-p', 'OOMPolicy=kill', '-p', 'LimitCORE=0', '-p', 'TasksMax=128',
                '-p', 'RuntimeMaxSec=1200', '-p', 'PrivateMounts=yes', '-p', 'TimeoutStopSec=30',
                '-p', 'ProtectSystem=strict', '-p', 'ProtectHome=read-only',
