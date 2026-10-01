@@ -112,8 +112,8 @@ The quick filesystem PR job requires tmpfs capped at 2 GiB and 65,536 inodes,
 a 4 GiB container memory limit and zero container swap (`--memory-swap` equals
 `--memory`), plus hard core limit zero. Actual mount type and limits are verified
 before building or running fixtures; a disk-backed volume cannot substitute.
-The accepted named-volume configuration is provisioned by the owner as described
-below; CI must verify it before this corrective step can be accepted.
+The owner-provisioned named-volume configuration below passed the effective
+boundary checks and all 111 quick groups in CI.
 
 `python3 tests/ram_run.py --inside --suite check --ci-quick` selects the accepted
 quick-only exception to mount-level `noswap`. The runner independently accepts
@@ -211,9 +211,13 @@ on the owner's runner. Probe containers and volumes were removed.
 Only filesystem jobs use this dedicated runner; ordinary image builds remain on
 `pyxis`. No production/core change or guard relaxation is needed. The workflows
 declare only the memory limit; the trusted runner configuration supplies the
-mount, swap and core limits. Owner provisioning is pending verification. Verify
-the effective boundary and passing checks at both published heads before marking
-this corrective step complete.
+mount, swap and core limits. [Pyxis run 577](https://git.internal/PyxisOS/pyxis-os/actions/runs/577)
+verified the provisioned runner at parent `6a4525e` / filesystem `2d8ce96` on
+2026-10-01: all 111 groups passed with 2,147,483,648 scratch bytes, 65,536 inodes,
+4,294,967,296 memory-limit bytes, zero swap and zero max/OOM events. Peak memory
+was 314,847,232 bytes on kernel `7.2.6-1-cachyos`. This verifies the effective
+boundary for that run; exclusive ownership and teardown remain operator
+preconditions, and every subsequent job must pass the guard again.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the

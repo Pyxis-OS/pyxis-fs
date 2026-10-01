@@ -112,10 +112,13 @@ with `dedicated scratch mount is missing`. The workflows now select the dedicate
 `6d83d39` / parent `a4e783e` refused the mount because it was not tmpfs. The
 [API investigation and accepted named-volume setup](ram-validation.md#named-volume-provisioning)
 record the concrete runtime limitation and a locally validated alternative;
-The owner accepted its exclusive, serial use and teardown requirements;
-provisioning and CI verification remain pending. The local pass does not establish
-a CI pass. This changes the CI execution
-mechanism; the comparative measurements above used the unchanged strict launcher.
+the owner accepted its exclusive, serial use and teardown requirements.
+[Pyxis CI run 577](https://git.internal/PyxisOS/pyxis-os/actions/runs/577) then
+verified the provisioned runner at parent `6a4525e` / filesystem `2d8ce96`:
+all 111 quick groups passed with the exact scratch byte/inode and job limits,
+zero swap/max/OOM events and a 314,847,232-byte memory peak. This changes the
+CI execution mechanism; the comparative measurements above used the unchanged
+strict launcher and were not repeated for this provisioning verification.
 
 ## Proposed next assignment, not implementation approval
 
