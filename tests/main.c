@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "support.h"
+#include "ram_guard.h"
 #include "build_tests.h"
 #include "plan_tests.h"
 #include "codec_tests.h"
@@ -67,6 +68,7 @@ usage(void)
 int
 main(int argc, char **argv)
 {
+  pfs_test_require_ram();
   const char *suite = NULL, *profile = NULL, *source = NULL;
   uint64_t seed = 0;
   bool seed_set = false;
