@@ -206,9 +206,9 @@ checkpoint_authority_does_not_imply_read_lookup_or_metadata(void)
   rights = (struct pfs_rights){.file = PFS_FILE_WRITE};
   authority.root = (struct pfs_object_id){{4}};
   authority.ceiling = rights;
-  TEST_ASSERT_EQUAL(PFS_READ_ONLY, pfs_view_acquire(&volume, &authority, &authority.root,
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &authority, &authority.root,
                           PFS_SCOPE_OBJECT, &rights, &child));
-  TEST_ASSERT_NULL(child);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&child));
   close_bridge_fixture();
 }
 
@@ -232,7 +232,9 @@ live_mode_separates_immutable_diagnostics_and_stopped_reads(void)
   size_t count;
   bool done;
   uint64_t next;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_directory_page(directory_view, 0, entries, 2, &count, &done, &next));
+  TEST_ASSERT_EQUAL(PFS_READ_ONLY, pfs_view_directory_page(directory_view, 0, entries, 2, &count, &done, &next));
+  struct pfs_directory_token start = {0}, token;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_directory_live_page(directory_view, &start, entries, 2, &count, &done, &token));
   TEST_ASSERT_EQUAL(1, count);
   TEST_ASSERT_TRUE(done);
   TEST_ASSERT_EQUAL_MEMORY("file", entries[0].name.bytes, 4);

@@ -404,7 +404,7 @@ writer_refuses_retained_orphans_before_any_write(void)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, 1, 1, bytes, sizeof(bytes)));
   uint64_t writes = fixture.writes, flushes = fixture.flushes;
   struct pfs_pool pool = {0};
-  const struct pfs_write_options options = {16, 16};
+  const struct pfs_write_options options = {.extent_limit = 16, .metadata_limit = 16, .random = test_random};
   struct pfs_write_open_result opening;
   TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_pool_open_writer(&pool, &fixture.builder,
     &fixture.memory, &options, &opening));

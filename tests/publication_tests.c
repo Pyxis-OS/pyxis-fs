@@ -21,7 +21,7 @@ static struct check_claim removed[2], added[4];
 static unsigned payload_checks;
 static bool payload_violation;
 static bool reentry_checked, reentry_violation;
-static struct pfs_write_options options = {16, 16};
+static struct pfs_write_options options = {.extent_limit = 16, .metadata_limit = 16, .random = test_random};
 static uint64_t initial_generation = 1;
 
 static enum pfs_status
@@ -70,7 +70,7 @@ build_seed_with_budgets(uint64_t quota, uint64_t guarantee, uint64_t recovery)
 static void
 build_seed(void)
 {
-  options = (struct pfs_write_options){16, 16};
+  options = (struct pfs_write_options){.extent_limit = 16, .metadata_limit = 16, .random = test_random};
   build_seed_with_budgets(64, 0, 1024);
 }
 
@@ -91,8 +91,8 @@ open_device(void)
   const struct pfs_volume_id id = {{2}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &id, &volume));
   struct pfs_trusted_context context = {.principal = {{5}}, .root = {{3}}, .scope = PFS_SCOPE_SUBTREE,
-    .ceiling = {PFS_FILE_READ | PFS_FILE_CHECKPOINT, PFS_DIR_LOOKUP, 0}};
-  struct pfs_rights rights = {.file = PFS_FILE_READ | PFS_FILE_CHECKPOINT};
+    .ceiling = {PFS_FILE_READ | PFS_FILE_CHECKPOINT | PFS_FILE_RESIZE, PFS_DIR_LOOKUP, 0}};
+  struct pfs_rights rights = {.file = PFS_FILE_READ | PFS_FILE_CHECKPOINT | PFS_FILE_RESIZE};
   const struct pfs_object_id file = {{4}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &context, &file, PFS_SCOPE_OBJECT, &rights, &view));
 }
@@ -370,7 +370,7 @@ minimum_recovery(const struct pfs_plan_limits *limits)
 static void
 near_minimum_profile_quota_pool_and_memory_fund_drain(void)
 {
-  options = (struct pfs_write_options){1, 3};
+  options = (struct pfs_write_options){.extent_limit = 1, .metadata_limit = 3, .random = test_random};
   struct pfs_plan_limits limits;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 1, 3, 1, &limits));
   uint64_t recovery = minimum_recovery(&limits);
@@ -428,7 +428,7 @@ near_minimum_profile_quota_pool_and_memory_fund_drain(void)
 static void
 ordinary_profile_quota_and_memory_refusals_preserve_ready_writer(void)
 {
-  const struct pfs_write_options profiles[] = {{1, 4}, {2, 3}, {2, 4}};
+  const struct pfs_write_options profiles[] = {{1, 4, test_random, NULL}, {2, 3, test_random, NULL}, {2, 4, test_random, NULL}};
   const enum pfs_status expected[] = {PFS_LIMIT, PFS_LIMIT, PFS_QUOTA};
   for (size_t i = 0; i < 3; i++) {
     build_seed_with_budgets(i == 2 ? 4 : 64, 0, 1024);
@@ -471,7 +471,7 @@ ordinary_profile_quota_and_memory_refusals_preserve_ready_writer(void)
 static void
 opening_refuses_unfunded_pool_recovery_and_memory(void)
 {
-  options = (struct pfs_write_options){1, 3};
+  options = (struct pfs_write_options){.extent_limit = 1, .metadata_limit = 3, .random = test_random};
   struct pfs_plan_limits limits;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 1, 3, 1, &limits));
   uint64_t recovery = minimum_recovery(&limits);
@@ -516,7 +516,7 @@ computed_recovery_budget_funds_drain_and_refuses_one_below(void)
 {
   /* Large declared bounds exercise recovery arithmetic on the same small
    * reachable seed, rather than claiming a populated large-workload result. */
-  options = (struct pfs_write_options){4096, 2048};
+  options = (struct pfs_write_options){.extent_limit = 4096, .metadata_limit = 2048, .random = test_random};
   struct pfs_plan_limits limits;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN,
     options.extent_limit, options.metadata_limit, 1, &limits));
@@ -645,6 +645,13 @@ generation_boundary_funds_exact_drain_and_refuses_next_batch(void)
     struct pfs_batch *batch = NULL;
     TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_writer_prepare(&pool, &batch));
     TEST_ASSERT_NULL(batch);
+    struct pfs_write_result resize;
+    TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_view_resize(view, 0, &resize));
+    TEST_ASSERT_EQUAL(PFS_STOPPED, resize.completion);
+    TEST_ASSERT_EQUAL(PFS_LIMIT, resize.operation_status);
+    TEST_ASSERT_TRUE(resize.confirmed_length_valid);
+    TEST_ASSERT_EQUAL_UINT64(PFS_BLOCK_SIZE, resize.confirmed_length);
+    TEST_ASSERT_EQUAL(PFS_WRITER_READY, resize.health);
     expect_ready_without_progress(generation, writes, flushes);
     expect_read(extra ? 'A' : 'B');
     close_device();

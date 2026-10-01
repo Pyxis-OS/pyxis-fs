@@ -31,6 +31,13 @@ struct pfs_batch {
   size_t add_count;
 };
 
+struct pfs_changed_directory {
+  struct pfs_volume_id volume;
+  struct pfs_object_id object;
+  uint64_t serial;
+};
+_Static_assert(sizeof(struct pfs_changed_directory) <= 48, "directory arena slot");
+
 struct pfs_writer {
   struct pfs_allocation allocation;
   struct pfs_pool *pool;
@@ -41,6 +48,11 @@ struct pfs_writer {
   struct pfs_pool_diagnostic diagnostic;
   struct pfs_writer_status status;
   struct pfs_batch batch;
+  pfs_random_fn random;
+  void *random_context;
+  uint8_t nonce[PFS_ID_SIZE];
+  uint64_t directory_serial;
+  size_t changed_directories;
   bool prepared;
   bool publishing;
   size_t selected;
