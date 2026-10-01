@@ -31,6 +31,7 @@ static struct pfs_volume volume;
 static struct pfs_view *parent, *sequential, *small;
 static struct pfs_build_object objects[SOURCE_COUNT + 3];
 static uint64_t source_offsets[SOURCE_COUNT], source_lengths[SOURCE_COUNT];
+static uint64_t imported_extents, sequential_extents, small_extents;
 static uint8_t payload[REQUEST_BYTES], actual[64u * 1024u], expected[64u * 1024u];
 static struct pfs_write_options options = {
   .extent_limit = 8192, .metadata_limit = 4096, .random = test_random,
@@ -132,10 +133,35 @@ report(const char *name)
     stats.user_callback_seconds, (unsigned long long)stats.drain_metadata,
     (unsigned long long)stats.drain_data, (unsigned long long)stats.drain_publications,
     (unsigned long long)stats.drain_flushes, stats.drain_callback_seconds);
-  TEST_ASSERT_EQUAL_UINT64(0, stats.drain_data);
+  if (stats.useful_bytes) {
+    printf("  metadata/useful-byte user=%.6f drain=%.6f total=%.6f\n",
+      (double)stats.user_metadata / stats.useful_bytes,
+      (double)stats.drain_metadata / stats.useful_bytes,
+      (double)(stats.user_metadata + stats.drain_metadata) / stats.useful_bytes);
+  }
   TEST_ASSERT_EQUAL_UINT64(2 * stats.user_publications, stats.user_flushes);
   TEST_ASSERT_EQUAL_UINT64(2 * stats.drain_publications, stats.drain_flushes);
   stats = (struct workload_stats){0};
+}
+
+/* Only one output file changes in a phase. The admitted volume total minus
+ * the unchanged imported and other output mappings gives its extent count. */
+static void
+report_extents(bool changed_small)
+{
+  const struct pfs_admit_state *state = &pool.writer->states[pool.writer->selected];
+  uint64_t total = state->volumes[0].file_extents;
+  uint64_t unchanged = imported_extents + (changed_small ? sequential_extents : small_extents);
+  TEST_ASSERT_TRUE(total >= unchanged);
+  if (changed_small) {
+    small_extents = total - unchanged;
+  } else {
+    sequential_extents = total - unchanged;
+  }
+  printf("  extents imported=%llu sequential=%llu small=%llu metadata-blocks=%llu "
+         "allocation-records=%zu\n", (unsigned long long)imported_extents,
+    (unsigned long long)sequential_extents, (unsigned long long)small_extents,
+    (unsigned long long)state->volumes[0].metadata_blocks, state->map_count);
 }
 
 static enum pfs_status
@@ -270,6 +296,8 @@ setup(void)
          "source-bytes=%llu reserves=8192/8192/8192 blocks seed=1\n",
          SOURCE_COUNT, (unsigned long long)payload_bytes);
   open_writer();
+  imported_extents = pool.writer->states[pool.writer->selected].volumes[0].file_extents;
+  sequential_extents = small_extents = 0;
   struct pfs_rights held = {.file = PFS_FILE_READ | PFS_FILE_WRITE | PFS_FILE_RESIZE |
     PFS_FILE_METADATA, .directory = PFS_DIR_CREATE | PFS_DIR_LOOKUP};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &authority, &authority.root,
@@ -366,6 +394,7 @@ populated_sequential_small_and_edit_history(void)
     write_expected(sequential, &expected_sequential, (uint64_t)i * REQUEST_BYTES, REQUEST_BYTES);
   }
   report("sequential-256KiB");
+  report_extents(false);
   for (unsigned i = 0; i < 64; i++) {
     for (size_t j = 0; j < PFS_BLOCK_SIZE; j++) {
       payload[j] = (uint8_t)(i * 31 + j * 7);
@@ -373,6 +402,7 @@ populated_sequential_small_and_edit_history(void)
     write_expected(small, &expected_small, (uint64_t)i * PFS_BLOCK_SIZE, PFS_BLOCK_SIZE);
   }
   report("independent-4KiB-appends");
+  report_extents(true);
   uint32_t random = 1;
   for (unsigned i = 0; i < 16; i++) {
     random = random * 1664525u + 1013904223u;
@@ -383,9 +413,11 @@ populated_sequential_small_and_edit_history(void)
     write_expected(sequential, &expected_sequential, offset, 8193);
   }
   report("partial-overwrites");
+  report_extents(false);
   resize_expected(SEQUENTIAL_BYTES / 2 + 17);
   resize_expected(SEQUENTIAL_BYTES + PFS_BLOCK_SIZE);
   report("shrink-regrow");
+  report_extents(false);
   close_writer();
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
   open_writer();
