@@ -112,7 +112,9 @@ The filesystem PR job requests 2 GiB tmpfs `noswap`, 4 GiB container memory and
 zero container swap (`--memory-swap` equals `--memory`), plus hard core limit zero.
 It invokes the same launcher inside that boundary and builds/tests in RAM. The
 runtime must support and honor these options; preflight and the C guard refuse
-otherwise. The private native-comparison loop/tracing privileges are not needed
+otherwise. The current runner uses rootless Podman and rejects `noswap` at
+container creation. The owner must provide a rootful validation runner or an
+equivalent fresh, bounded, unswappable scratch mount per job before CI can pass. The private native-comparison loop/tracing privileges are not needed
 for the quick CI suite. No compiler-container rebuild is requested.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's

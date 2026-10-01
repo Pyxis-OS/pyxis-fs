@@ -98,7 +98,10 @@ fixed capture without raising any limits. A deliberate SIGKILL after mounting an
 owned RAM-backed ext4 loop and creating a private trace instance left neither
 an attached loop nor a trace instance: autoclear, namespace teardown and
 ExecStopPost cleanup ran. No claim of forced-OOM testing or physical power-loss
-qualification is made. CI results are recorded in the PR.
+qualification is made. CI at `02a5c1a` refused before checkout/tests: the runner
+uses a rootless runtime, which rejects `tmpfs,noswap`. A rootful validation runner
+or a separately provisioned equivalent RAM boundary is required; the guard is
+not weakened to accommodate unsupported infrastructure.
 
 ## Proposed next assignment, not implementation approval
 
