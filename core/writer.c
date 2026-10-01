@@ -715,9 +715,13 @@ pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch, struct pfs_wri
   writer->publishing = true;
   *result = (struct pfs_write_result){.completion = PFS_STOPPED, .health = writer->status.health};
   enum pfs_status status = PFS_OK;
+  /* Deleting a final leaf may collapse to an unchanged child or an empty
+   * index, retiring metadata without emitting replacement volume nodes. */
   if (batch->available_count != PFS_PLAN_VOLUME_NEW ||
-      !batch->block_count || batch->block_count > PFS_PLAN_VOLUME_NEW || !batch->blocks ||
-      !batch->add || !batch->add_count || batch->add_count > PFS_PLAN_VOLUME_NEW ||
+      batch->block_count > PFS_PLAN_VOLUME_NEW || (batch->block_count && !batch->blocks) ||
+      batch->add_count > PFS_PLAN_VOLUME_NEW || (batch->add_count && !batch->add) ||
+      ((!batch->block_count) != (!batch->add_count)) ||
+      (!batch->block_count && !batch->remove_count) ||
       batch->remove_count > PFS_PLAN_VOLUME_RETIRED || (batch->remove_count && !batch->remove) ||
       batch->generation != writer->last_confirmed_generation + 1) {
     status = PFS_INVALID;
