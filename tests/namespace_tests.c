@@ -1263,6 +1263,188 @@ directory_child_handle_file_rights_are_invalid_before_publication(void)
   close_fixture();
 }
 
+struct cleanup_charge_observation {
+  enum pfs_budget_charge expected;
+  enum pfs_status status;
+  size_t retired_states;
+  bool wrong_volume_charge;
+  bool wrong_occupied_count;
+};
+
+static struct cleanup_charge_observation charge_observation;
+
+static enum pfs_status
+scan_durable_charges(struct test_failure *adapter,
+  const struct pfs_tree_context *context, uint64_t occupied[4], uint64_t *volume_retired)
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  enum pfs_status status = test_failure_durable_read(adapter,
+    context->block.reference.block, 1, bytes);
+  struct pfs_tree tree;
+  if (status == PFS_OK) {
+    status = pfs_tree_decode(bytes, sizeof(bytes), context, &tree);
+  }
+  if (status != PFS_OK) {
+    return status;
+  }
+  struct pfs_record_context records = {
+    .block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = context->block.selected_generation,
+    .containing_birth = tree.header.birth, .features = context->block.features,
+  };
+  for (size_t i = 0; i < tree.count; i++) {
+    const uint8_t *record = bytes + tree.slots[i].offset;
+    if (tree.level) {
+      struct pfs_internal_record internal;
+      status = pfs_internal_record_decode(record, tree.slots[i].length,
+        PFS_INDEX_ALLOCATION, &records, &internal);
+      if (status == PFS_OK) {
+        struct pfs_tree_context child = *context;
+        child.block.reference = internal.child;
+        child.block.referring_birth = tree.header.birth;
+        child.parent_level = tree.level;
+        status = scan_durable_charges(adapter, &child, occupied, volume_retired);
+      }
+    } else {
+      struct pfs_allocation_record allocation;
+      status = pfs_allocation_record_decode(record, tree.slots[i].length,
+        &records, &allocation);
+      if (status == PFS_OK) {
+        occupied[allocation.charge] += allocation.count;
+        const struct pfs_volume_id pool_owner = {{0}};
+        if (allocation.state == PFS_ALLOCATION_RETIRED &&
+            memcmp(&allocation.owner, &pool_owner, sizeof(pool_owner))) {
+          *volume_retired += allocation.count;
+          charge_observation.wrong_volume_charge |=
+            allocation.charge != charge_observation.expected;
+        }
+      }
+    }
+    if (status != PFS_OK) {
+      return status;
+    }
+  }
+  return PFS_OK;
+}
+
+static void
+observe_durable_cleanup_charges(struct test_failure *adapter,
+  const struct test_failure_event *event, bool before, void *context)
+{
+  (void)context;
+  if (before || event->kind != TEST_FAILURE_FLUSH || event->status != PFS_OK ||
+      charge_observation.status != PFS_OK) {
+    return;
+  }
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  struct pfs_superblock selected = {0};
+  enum pfs_status status = PFS_OK;
+  for (unsigned slot = 0; slot < 2 && status == PFS_OK; slot++) {
+    uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock super;
+    status = test_failure_durable_read(adapter, block, 1, bytes);
+    if (status == PFS_OK) {
+      status = pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN,
+        block, &super);
+    }
+    if (status == PFS_OK && super.header.birth > selected.header.birth) {
+      selected = super;
+    }
+  }
+  struct pfs_block_context root_context = {
+    .block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = selected.header.birth,
+    .referring_birth = selected.header.birth, .pool = selected.header.pool,
+    .reference = selected.root, .features = selected.features,
+  };
+  struct pfs_pool_root root;
+  if (status == PFS_OK) {
+    status = test_failure_durable_read(adapter, selected.root.block, 1, bytes);
+  }
+  if (status == PFS_OK) {
+    status = pfs_pool_root_decode(bytes, sizeof(bytes), &root_context, &root);
+  }
+  uint64_t occupied[4] = {0}, volume_retired = 0;
+  if (status == PFS_OK) {
+    struct pfs_tree_context allocation_context = {
+      .block = root_context, .kind = PFS_INDEX_ALLOCATION,
+    };
+    allocation_context.block.reference = root.allocation;
+    allocation_context.block.referring_birth = root.header.birth;
+    status = scan_durable_charges(adapter, &allocation_context, occupied, &volume_retired);
+  }
+  if (status == PFS_OK) {
+    charge_observation.retired_states += volume_retired != 0;
+    charge_observation.wrong_occupied_count |=
+      root.cow.occupied != occupied[PFS_CHARGE_ORDINARY] ||
+      root.migration.occupied != occupied[PFS_CHARGE_MIGRATION] ||
+      root.recovery.occupied != occupied[PFS_CHARGE_RECOVERY];
+  }
+  charge_observation.status = status;
+}
+
+static void
+start_charge_observation(struct test_failure *adapter, enum pfs_budget_charge expected)
+{
+  charge_observation = (struct cleanup_charge_observation){.expected = expected};
+  adapter->observer = observe_durable_cleanup_charges;
+}
+
+static void
+expect_charge_observation(struct test_failure *adapter)
+{
+  adapter->observer = NULL;
+  TEST_ASSERT_EQUAL(PFS_OK, charge_observation.status);
+  TEST_ASSERT_GREATER_THAN_UINT(0, charge_observation.retired_states);
+  TEST_ASSERT_FALSE_MESSAGE(charge_observation.wrong_volume_charge,
+    "durable retired volume record uses the wrong workspace charge");
+  TEST_ASSERT_FALSE_MESSAGE(charge_observation.wrong_occupied_count,
+    "durable workspace occupancy differs from allocation record charges");
+}
+
+static void
+cleanup_uses_recovery_while_named_and_retained_orphan_mutations_use_ordinary(void)
+{
+  open_fixture();
+  uint8_t expected[NS_BYTES];
+  memcpy(expected, original, sizeof(expected));
+  static const uint8_t named[] = "named overwrite";
+  static const uint8_t retained[] = "retained overwrite";
+  struct pfs_write_result result;
+  start_charge_observation(&device, PFS_CHARGE_ORDINARY);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(views[1], 7, named, sizeof(named), &result));
+  expect_charge_observation(&device);
+  expect_complete(&result, false);
+  memcpy(expected + 7, named, sizeof(named));
+
+  start_charge_observation(&device, PFS_CHARGE_ORDINARY);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
+  expect_charge_observation(&device);
+  expect_complete(&result, true);
+  start_charge_observation(&device, PFS_CHARGE_ORDINARY);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(views[1], 31,
+    retained, sizeof(retained), &result));
+  expect_charge_observation(&device);
+  expect_complete(&result, false);
+  memcpy(expected + 31, retained, sizeof(retained));
+  expect_bytes(views[1], expected, sizeof(expected));
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_clone_durable(&snapshot, &device, 0));
+
+  start_charge_observation(&device, PFS_CHARGE_RECOVERY);
+  close_view(1);
+  expect_charge_observation(&device);
+  close_handles();
+  start_charge_observation(&snapshot, PFS_CHARGE_RECOVERY);
+  struct pfs_write_open_result opening;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &snapshot.builder,
+    snapshot.memory, &options, &opening));
+  expect_charge_observation(&snapshot);
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, opening.writer.health);
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, opening.recovery.maintenance_completion);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+  expect_cleaned_orphans(&snapshot);
+  close_snapshot_fixture();
+}
+
 void
 run_namespace_tests(void)
 {
@@ -1285,4 +1467,5 @@ run_namespace_tests(void)
   RUN_TEST(directory_child_handle_file_rights_are_invalid_before_publication);
   RUN_TEST(final_close_maintenance_failures_consume_view_and_resume_paired_orphan);
   RUN_TEST(interrupted_startup_preserves_confirmed_generation_and_withholds_instance);
+  RUN_TEST(cleanup_uses_recovery_while_named_and_retained_orphan_mutations_use_ordinary);
 }
