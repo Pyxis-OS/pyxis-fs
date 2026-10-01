@@ -400,6 +400,51 @@ create_checks_held_authority_before_publication_and_preserves_policy(void)
 }
 
 static void
+creation_allocation_failures_precede_publication(void)
+{
+  const struct pfs_rights rights = {.file = file_rights.file,
+    .directory = PFS_DIR_CREATE | PFS_DIR_LOOKUP};
+  build_seed(37, 1024, 64);
+  open_device();
+  acquire_parent(PFS_SCOPE_SUBTREE, &rights);
+  size_t before = device.backing.allocation_calls;
+  struct pfs_write_result result;
+  struct pfs_view_identity identity;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(parent_view, (const uint8_t *)"new", 3,
+    &file_rights, &other_view, &identity, &result));
+  size_t allocations = device.backing.allocation_calls - before;
+  TEST_ASSERT_GREATER_THAN_UINT(0, allocations);
+  close_fixture();
+  /* Discover every allocation in this request, including its returned handle;
+   * neither their number nor private allocation sizes are contract assertions. */
+  for (size_t cut = 0; cut < allocations; cut++) {
+    build_seed(37, 1024, 64);
+    open_device();
+    acquire_parent(PFS_SCOPE_SUBTREE, &rights);
+    uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+    uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+    memset(&identity, 0xa5, sizeof(identity));
+    struct pfs_view_identity previous = identity;
+    test_failure_memory_fail_after(&device, cut);
+    TEST_ASSERT_EQUAL(PFS_NO_MEMORY, pfs_view_create_file(parent_view,
+      (const uint8_t *)"new", 3, &file_rights, &other_view, &identity, &result));
+    TEST_ASSERT_NULL(other_view);
+    TEST_ASSERT_EQUAL_MEMORY(&previous, &identity, sizeof(identity));
+    TEST_ASSERT_FALSE(result.namespace_confirmed);
+    TEST_ASSERT_EQUAL(PFS_STOPPED, result.completion);
+    TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+    TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    device.backing.fail_after = SIZE_MAX;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(parent_view,
+      (const uint8_t *)"new", 3, &file_rights, &other_view, &identity, &result));
+    TEST_ASSERT_TRUE(result.namespace_confirmed);
+    TEST_ASSERT_NOT_NULL(other_view);
+    close_fixture();
+  }
+}
+
+static void
 quota_and_extent_refusal_leave_a_healthy_usable_writer(void)
 {
   build_seed(PFS_BLOCK_SIZE, 8, 64);
@@ -953,6 +998,7 @@ run_file_tests(void)
   RUN_TEST(held_handles_observe_committed_bytes_without_widening_rights);
   RUN_TEST(authority_noops_and_invalid_arguments_leave_media_unchanged);
   RUN_TEST(create_checks_held_authority_before_publication_and_preserves_policy);
+  RUN_TEST(creation_allocation_failures_precede_publication);
   RUN_TEST(quota_and_extent_refusal_leave_a_healthy_usable_writer);
   RUN_TEST(large_write_and_shrink_report_confirmed_progress);
   RUN_TEST(public_write_flush_failures_preserve_progress_and_stop_without_retry);
