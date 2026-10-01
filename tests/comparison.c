@@ -75,7 +75,8 @@ static const struct pfs_trusted_context authority = {
   .ceiling = {PFS_FILE_RIGHTS_ALL, PFS_DIR_RIGHTS_ALL, PFS_ADMIN_RIGHTS_ALL},
 };
 static const struct pfs_rights file_rights = {
-  .file = PFS_FILE_READ | PFS_FILE_WRITE | PFS_FILE_RESIZE | PFS_FILE_METADATA,
+  .file = PFS_FILE_READ | PFS_FILE_WRITE | PFS_FILE_RESIZE | PFS_FILE_METADATA |
+    PFS_FILE_CHECKPOINT,
 };
 static const struct pfs_rights read_rights = {
   .file = PFS_FILE_READ | PFS_FILE_METADATA,
@@ -376,7 +377,9 @@ open_backend(void)
   const struct pfs_volume_id id = {{2}};
   require_status(pfs_pool_volume_open(&pool, &id, &volume), "open volume");
   const struct pfs_rights rights = {
-    .file = PFS_FILE_RIGHTS_ALL, .directory = PFS_DIR_RIGHTS_ALL,
+    .file = file_rights.file,
+    .directory = PFS_DIR_METADATA | PFS_DIR_LIST | PFS_DIR_LOOKUP |
+      PFS_DIR_CREATE | PFS_DIR_REMOVE | PFS_DIR_REPLACE,
   };
   reset_trace();
   require_status(pfs_view_acquire(&volume, &authority, &authority.root,
@@ -390,10 +393,14 @@ final_boundary(void)
   if (native) {
     sync_native();
   } else {
+    /* The formatter's existing grant includes file checkpoint, not directory
+     * checkpoint. Exercise that held authority without widening the grant. */
+    struct comparison_file handle = open_file(&files[0]);
     reset_trace();
     struct pfs_write_result result;
-    require_status(pfs_view_checkpoint(parent, &result), "checkpoint");
+    require_status(pfs_view_checkpoint(handle.view, &result), "checkpoint");
     require_result(&result);
+    close_file(&handle);
     phase->barriers++;
   }
 }
