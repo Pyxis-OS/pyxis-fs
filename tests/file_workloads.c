@@ -106,11 +106,11 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
     if (stats.callback_drain) {
       stats.drain_data += data * PFS_BLOCK_SIZE;
       stats.drain_metadata += !data * PFS_BLOCK_SIZE;
-      stats.drain_publications += block < 2;
+      stats.drain_publications += (block == 0 || block == WORKLOAD_BLOCKS - 1);
     } else {
       stats.user_data += data * PFS_BLOCK_SIZE;
       stats.user_metadata += !data * PFS_BLOCK_SIZE;
-      stats.user_publications += block < 2;
+      stats.user_publications += (block == 0 || block == WORKLOAD_BLOCKS - 1);
     }
   }
 }

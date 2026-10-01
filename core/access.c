@@ -3,15 +3,8 @@
 #include "internal.h"
 #include "read_internal.h"
 #include "writer_access.h"
+#include "access_internal.h"
 
-struct pfs_view {
-  struct pfs_allocation allocation;
-  struct pfs_volume *volume;
-  struct pfs_object_id object;
-  enum pfs_grant_scope scope;
-  struct pfs_rights rights;
-  struct pfs_view_identity identity;
-};
 
 struct pfs_view_directory {
   struct pfs_allocation allocation;
@@ -47,8 +40,8 @@ rights_unavailable(const struct pfs_volume *volume, const struct pfs_rights *rig
   uint64_t file = PFS_FILE_METADATA | PFS_FILE_READ;
   uint64_t directory = PFS_DIR_METADATA | PFS_DIR_LIST | PFS_DIR_LOOKUP;
   if (volume->pool->writer) {
-    file |= PFS_FILE_CHECKPOINT;
-    directory |= PFS_DIR_CHECKPOINT;
+    file |= PFS_FILE_CHECKPOINT | PFS_FILE_WRITE | PFS_FILE_RESIZE;
+    directory |= PFS_DIR_CHECKPOINT | PFS_DIR_CREATE;
   }
   return (rights->file & ~file) != 0 ||
     (rights->directory & ~directory) != 0 ||
@@ -291,7 +284,7 @@ view_create(struct pfs_volume *volume, const struct pfs_object_record *object,
                  sizeof(view->identity.pool));
   pfs_bytes_copy(&view->identity.volume, &metadata.id, sizeof(metadata.id));
   pfs_bytes_copy(&view->identity.object, &object->id, sizeof(object->id));
-  view->identity.generation = pfs_volume_generation(volume);
+  view->identity.generation = volume->pool->writer ? 0 : pfs_volume_generation(volume);
   view->identity.kind = object->kind;
   *out = view;
   return PFS_OK;
@@ -449,7 +442,8 @@ view_metadata_active(struct pfs_view *view, struct pfs_view_metadata *out)
   struct pfs_view_metadata metadata;
   pfs_bytes_zero(&metadata, sizeof(metadata));
   pfs_bytes_copy(&metadata.identity, &view->identity, sizeof(view->identity));
-  metadata.identity.generation = pfs_volume_generation(view->volume);
+  metadata.identity.generation = view->volume->pool->writer ? 0 :
+    pfs_volume_generation(view->volume);
   metadata.size = object.kind == PFS_OBJECT_FILE ?
     object.file_length : object.directory_count;
   pfs_bytes_copy(out, &metadata, sizeof(metadata));
@@ -587,6 +581,9 @@ view_directory_page_active(struct pfs_view *view, uint64_t after,
   }
   if (!(view->rights.directory & PFS_DIR_LIST)) {
     return PFS_DENIED;
+  }
+  if (view->volume->pool->writer) {
+    return PFS_READ_ONLY;
   }
   if (capacity > PFS_RECORD_COUNT_MAX || capacity > SIZE_MAX / sizeof(struct pfs_dirent_record)) {
     return PFS_LIMIT;

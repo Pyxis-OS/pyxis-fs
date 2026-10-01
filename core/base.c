@@ -23,6 +23,9 @@ pfs_status_string(enum pfs_status status)
   case PFS_NO_SPACE: return "no space";
   case PFS_QUOTA: return "quota exceeded";
   case PFS_RECOVERY_REQUIRED: return "recovery required";
+  case PFS_EXISTS: return "already exists";
+  case PFS_DETACHED: return "detached directory";
+  case PFS_CHANGED: return "directory changed";
   }
   return "unknown status";
 }

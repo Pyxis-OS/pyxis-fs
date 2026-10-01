@@ -25,6 +25,8 @@ enum pfs_status test_fixture_open(struct test_fixture *fixture, uint64_t blocks,
                                   uint64_t memory_limit);
 bool test_fixture_close(struct test_fixture *fixture);
 void test_fixtures_cleanup(void);
+/* Deterministic fixture IDs, not production entropy. */
+enum pfs_status test_random(void *context, void *buffer, size_t length);
 /* Independent test encoding/checksum helpers; never use production codecs to
  * repair a malformed fixture's enclosing checksum or define a known answer. */
 void test_put_u16(uint8_t *bytes, uint16_t value);

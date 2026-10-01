@@ -112,12 +112,15 @@ host_exit_status(enum pfs_status status)
   switch (status) {
     case PFS_OK: return 0;
     case PFS_DENIED: return 1;
+    case PFS_EXISTS:
+    case PFS_DETACHED:
     case PFS_NOT_FOUND:
     case PFS_INVALID: return 2;
     case PFS_ABSENT:
     case PFS_CORRUPT: return 3;
     case PFS_UNSUPPORTED:
     case PFS_LIMIT:
+    case PFS_CHANGED:
     case PFS_BUSY:
     case PFS_READ_ONLY:
     case PFS_NO_SPACE:

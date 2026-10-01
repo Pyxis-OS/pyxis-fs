@@ -4,9 +4,15 @@
 
 #include <pyxis_fs/access.h>
 
+/* Trusted strong randomness. No fallback; callbacks borrow the buffer only
+ * until return and must not reenter the core. */
+typedef enum pfs_status (*pfs_random_fn)(void *context, void *buffer, size_t length);
+
 struct pfs_write_options {
   uint64_t extent_limit;
   uint64_t metadata_limit;
+  pfs_random_fn random;
+  void *random_context;
 };
 
 enum pfs_writer_health {
@@ -78,5 +84,40 @@ enum pfs_status pfs_pool_volume_open(struct pfs_pool *pool,
 /* Uses the held file.checkpoint or dir.checkpoint right, not lookup/read rights.
  * No-op after prior funded drains; stopped instances cannot retry to health. */
 enum pfs_status pfs_view_checkpoint(struct pfs_view *view, struct pfs_write_result *result);
+
+/* Invalid arguments and rejected callback reentry leave result unchanged.
+ * Accepted calls report confirmed user
+ * progress independently of maintenance and health, even on non-OK return.
+ * Buffers, results and handles are disjoint; bytes are borrowed through return.
+ * A write that extends requires both write and resize before any progress. */
+enum pfs_status pfs_view_write(struct pfs_view *view, uint64_t offset,
+  const void *buffer, size_t length, struct pfs_write_result *result);
+enum pfs_status pfs_view_resize(struct pfs_view *view, uint64_t length,
+  struct pfs_write_result *result);
+
+/* Create an empty regular file under the parent's policy owner, with no new
+ * grants. Supply all of requested/out/identity, or all NULL for no child handle.
+ * A returned view has exactly requested rights and object scope; parent subtree
+ * lookup authority must contain them. Reserve it before publication. Confirmed
+ * creation may return a view despite cleanup error; UNKNOWN returns none. */
+enum pfs_status pfs_view_create_file(struct pfs_view *parent,
+  const uint8_t *name, size_t length, const struct pfs_rights *requested,
+  struct pfs_view **out, struct pfs_view_identity *identity,
+  struct pfs_write_result *result);
+
+/* Copied live continuation, no authority or retained resources. Zero starts.
+ * Wrong binding/position is INVALID, changed serial is CHANGED; both publish
+ * zero count without advancing next. Check LIST and health before token data.
+ * File writes/resizes and maintenance do not invalidate these tokens. */
+struct pfs_directory_token {
+  uint8_t instance[PFS_ID_SIZE];
+  struct pfs_volume_id volume;
+  struct pfs_object_id directory;
+  uint64_t serial;
+  uint64_t position;
+};
+enum pfs_status pfs_view_directory_live_page(struct pfs_view *view,
+  const struct pfs_directory_token *after, struct pfs_view_entry *out,
+  size_t capacity, size_t *count, bool *done, struct pfs_directory_token *next);
 
 #endif

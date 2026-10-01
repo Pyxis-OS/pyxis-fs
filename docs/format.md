@@ -1,16 +1,18 @@
 # Initial Pyxis filesystem format and tool contract
 
-Status: implemented initial format, read-only tools and bounded host writer opening;
+Status: implemented initial format, read-only tools and bounded host file mutation;
 the [shared core](core.md), bounded bulk construction and source import,
 candidate selection, readonly traversal/acquisition, extraction and explicit GPT
 inspection and whole-image consistency checking are implemented.
 The volume ORPHANS representation, directory checkpoint right, canonical private
 COW editors and bounded allocation-map planners are implemented. Explicit
 [writer admission/publication](core.md#admitted-writer-and-publication) adds the
-ordered publisher and synchronous reclamation; public file/namespace mutation
-and native writable integration remain future tasks.
+ordered publisher and synchronous reclamation. Public file creation, writing and
+resizing are implemented; directory creation, removal, rename/orphan cleanup and
+native writable integration remain future tasks.
 [Host commands](host-tools.md) cover `info`, `volumes`, `list`, `stat`, `access`,
-`extract` and `check`, plus healthy-session `pyxisfs-write open` and `checkpoint`.
+`extract` and `check`, plus healthy-session `pyxisfs-write open`, `checkpoint`,
+`create-file`, `write` and `resize`.
 The [integration contract](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/devices/filesystem-readonly.md)
 and [persistent-storage decisions](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/wip/persistent-storage.md)
 remain authoritative. The owner has agreed the standalone-image creation and

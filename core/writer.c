@@ -22,8 +22,8 @@ struct publication {
   uint8_t record[PFS_BLOCK_SIZE];
 };
 
-_Static_assert(sizeof(struct publication) < PFS_PLAN_SCRATCH_BYTES / 2,
-  "publication and admission scratch must not overlap");
+_Static_assert(sizeof(struct publication) <= PFS_PLAN_SCRATCH_BYTES / 4,
+  "publication must not overlap the final quarter used by mutation staging");
 _Static_assert(2 * PFS_VOLUME_MAX * sizeof(struct check_volume) <= PFS_PLAN_SCRATCH_BYTES / 2,
   "admission owns only the lower half of scratch");
 
@@ -758,7 +758,7 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
       backing->reader.geometry.block_count > PFS_POOL_BLOCKS_MAX ||
       !backing->reader.geometry.max_transfer_blocks || !memory || !memory->allocate ||
       !memory->free || !memory->limit || memory->limit > PFS_MEMORY_MAX || memory->used > memory->limit ||
-      !options || options->extent_limit > PFS_RECORD_COUNT_MAX || !options->metadata_limit ||
+      !options || !options->random || options->extent_limit > PFS_RECORD_COUNT_MAX || !options->metadata_limit ||
       options->metadata_limit > backing->reader.geometry.block_count - 2 || !diagnostic) {
     return PFS_INVALID;
   }
@@ -778,6 +778,8 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
     pfs_memory_move(memory, &allocation, &pool->writer->allocation);
     pool->writer->pool = pool;
     pool->writer->backing = backing;
+    pool->writer->random = options->random;
+    pool->writer->random_context = options->random_context;
     status = pfs_admit_open(&backing->reader, memory, options->extent_limit, options->metadata_limit,
       &pool->writer->arena, pool->writer->states, &pool->writer->opening);
   }
@@ -796,6 +798,12 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
         diagnostic->permanent_pool_blocks = limits.permanent_pool;
         diagnostic->reserved_arena_bytes = limits.arena_bytes;
       }
+    }
+  }
+  if (status == PFS_OK) {
+    status = writer->random(writer->random_context, writer->nonce, sizeof(writer->nonce));
+    if (status != PFS_OK || pfs_bytes_are_zero(writer->nonce, sizeof(writer->nonce))) {
+      status = PFS_IO;
     }
   }
   if (status == PFS_OK) {

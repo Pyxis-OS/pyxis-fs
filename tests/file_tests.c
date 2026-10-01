@@ -257,11 +257,13 @@ held_handles_observe_committed_bytes_without_widening_rights(void)
   acquire_file(&rights, &other_view);
   struct pfs_view_metadata before, after;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_metadata(other_view, &before));
+  TEST_ASSERT_EQUAL_UINT64(0, before.identity.generation);
   static const uint8_t bytes[] = "coherent held view";
   write_expected(7, bytes, sizeof(bytes));
   resize_expected(2 * PFS_BLOCK_SIZE);
   expect_bytes(other_view, expected, expected_length);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_metadata(other_view, &after));
+  TEST_ASSERT_EQUAL_UINT64(0, after.identity.generation);
   TEST_ASSERT_EQUAL_MEMORY(&before.identity.object, &after.identity.object,
     sizeof(before.identity.object));
   struct pfs_write_result result;

@@ -209,3 +209,17 @@ test_checksum(uint8_t *bytes, size_t length, size_t offset)
   memset(bytes + offset, 0, 4);
   test_put_u32(bytes + offset, test_crc32c(bytes, length));
 }
+
+/* Deterministic test adapter; each call gives a different nonzero identity. */
+enum pfs_status
+test_random(void *context, void *buffer, size_t length)
+{
+  (void)context;
+  static uint64_t counter;
+  uint8_t *bytes = buffer;
+  uint64_t value = ++counter;
+  for (size_t i = 0; i < length; i++) {
+    bytes[i] = (uint8_t)(value >> ((i % 8) * 8));
+  }
+  return PFS_OK;
+}

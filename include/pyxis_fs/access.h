@@ -60,6 +60,7 @@ struct pfs_view_identity {
   struct pfs_pool_id pool;
   struct pfs_volume_id volume;
   struct pfs_object_id object;
+  /* Immutable read-only generation; zero for live writer views. */
   uint64_t generation;
   uint16_t kind;
 };
