@@ -187,6 +187,18 @@ completion_name(enum pfs_completion completion)
   return "invalid";
 }
 
+static const char *
+maintenance_name(enum pfs_maintenance_completion completion)
+{
+  switch (completion) {
+  case PFS_MAINTENANCE_NONE: return "none";
+  case PFS_MAINTENANCE_COMPLETE: return "complete";
+  case PFS_MAINTENANCE_STOPPED: return "stopped";
+  case PFS_MAINTENANCE_UNKNOWN: return "unknown";
+  }
+  return "invalid";
+}
+
 static int
 report_failure(const char *operation, enum pfs_status status,
                const struct host_image *image, int current)
@@ -235,15 +247,18 @@ main(int argc, char **argv)
   if (attempted_open) {
     printf("Writer open: %s", pfs_status_string(status));
     if (opened.confirmed_generation) {
-      printf("; health=%s; confirmed-generation=%llu\n"
+      printf("; health=%s; failure=%s; confirmed-generation=%llu\n"
              "  required-recovery-blocks=%llu permanent-pool-blocks=%llu reserved-arena-bytes=%llu\n"
-             "  startup-completion=%s startup-operation=%s",
-             health_name(opened.writer.health), (unsigned long long)opened.confirmed_generation,
+             "  startup-completion=%s startup-operation=%s maintenance=%s maintenance-status=%s",
+             health_name(opened.writer.health), pfs_status_string(opened.writer.failure),
+             (unsigned long long)opened.confirmed_generation,
              (unsigned long long)opened.required_recovery_blocks,
              (unsigned long long)opened.permanent_pool_blocks,
              (unsigned long long)opened.reserved_arena_bytes,
              completion_name(opened.recovery.completion),
-             pfs_status_string(opened.recovery.operation_status));
+             pfs_status_string(opened.recovery.operation_status),
+             maintenance_name(opened.recovery.maintenance_completion),
+             pfs_status_string(opened.recovery.maintenance_status));
     }
     fputc('\n', stdout);
   }
@@ -266,9 +281,10 @@ main(int argc, char **argv)
       struct pfs_write_result result;
       status = pfs_view_checkpoint(view, &result);
       if (status != PFS_BUSY && status != PFS_INVALID) {
-        printf("Checkpoint: completion=%s operation=%s health=%s\n",
+        printf("Checkpoint: completion=%s operation=%s health=%s maintenance=%s maintenance-status=%s\n",
                completion_name(result.completion), pfs_status_string(result.operation_status),
-               health_name(result.health));
+               health_name(result.health), maintenance_name(result.maintenance_completion),
+               pfs_status_string(result.maintenance_status));
       }
     }
   }
