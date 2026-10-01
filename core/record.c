@@ -89,6 +89,9 @@ pfs_volume_record_validate(const struct pfs_volume_record *record,
     return PFS_INVALID;
   }
   enum pfs_status status = pfs_context_validate(context);
+  if (status == PFS_OK) {
+    status = pfs_features_read(&context->features);
+  }
   if (status != PFS_OK) {
     return status;
   }
@@ -235,6 +238,9 @@ pfs_volume_name_record_validate(const struct pfs_volume_name_record *record,
     return PFS_INVALID;
   }
   enum pfs_status status = pfs_context_validate(context);
+  if (status == PFS_OK) {
+    status = pfs_features_read(&context->features);
+  }
   if (status != PFS_OK) {
     return status;
   }
@@ -315,6 +321,9 @@ pfs_allocation_record_validate(const struct pfs_allocation_record *record,
     return PFS_INVALID;
   }
   enum pfs_status status = pfs_context_validate(context);
+  if (status == PFS_OK) {
+    status = pfs_features_read(&context->features);
+  }
   if (status != PFS_OK) {
     return status;
   }

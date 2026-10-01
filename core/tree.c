@@ -59,6 +59,9 @@ key_context_validate(uint16_t kind, const struct pfs_key *key,
                      const struct pfs_record_context *context)
 {
   enum pfs_status status = pfs_key_validate(kind, key);
+  if (status == PFS_OK && kind <= PFS_INDEX_ALLOCATION) {
+    status = pfs_features_read(&context->features);
+  }
   if (status != PFS_OK) {
     return status;
   }

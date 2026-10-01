@@ -78,6 +78,7 @@ volume_root_known_vector(void)
   struct pfs_volume_record volume;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_record_decode(bytes, sizeof(bytes), &pool_records, &volume));
   TEST_ASSERT_EQUAL_UINT64(7, volume.orphan_root.block);
+  TEST_ASSERT_EQUAL(PFS_UNSUPPORTED, pfs_volume_record_decode(bytes, sizeof(bytes), &volume_records, &volume));
   uint8_t encoded[448];
   size_t written;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_record_encode(encoded, sizeof(encoded), &pool_records, &volume, &written));
