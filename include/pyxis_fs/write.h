@@ -105,6 +105,33 @@ enum pfs_status pfs_view_create_file(struct pfs_view *parent,
   struct pfs_view **out, struct pfs_view_identity *identity,
   struct pfs_write_result *result);
 
+/* Empty directory creation has the same owner, reservation and result contract
+ * as file creation. Its optional returned view has object scope. */
+enum pfs_status pfs_view_create_directory(struct pfs_view *parent,
+  const uint8_t *name, size_t length, const struct pfs_rights *requested,
+  struct pfs_view **out, struct pfs_view_identity *identity,
+  struct pfs_write_result *result);
+
+/* REMOVE on the held parent authorizes unlink of a file or empty directory.
+ * Every victim becomes a persistent orphan in the namespace transaction;
+ * retained views keep identity, contents and rights. An unheld victim is cleaned
+ * after confirmed publication and its funded drain. Namespace confirmation stays
+ * true even if that cleanup fails, reported in the maintenance fields. */
+enum pfs_status pfs_view_remove(struct pfs_view *parent,
+  const uint8_t *name, size_t length, struct pfs_write_result *result);
+
+/* Same-volume regular-file rename preserves source identity and contents.
+ * Requires source REMOVE and destination CREATE before either name is examined.
+ * A distinct existing regular-file destination requires explicit replace=true
+ * and destination REPLACE; replace=false returns EXISTS. Directory moves or
+ * replacement and cross-volume moves are UNSUPPORTED. A validated same-name
+ * rename is a no-op, with COMPLETE and namespace_confirmed=false. Displaced
+ * objects follow the same retained-orphan and cleanup contract as remove. */
+enum pfs_status pfs_view_rename(struct pfs_view *source_parent,
+  const uint8_t *source_name, size_t source_length,
+  struct pfs_view *destination_parent, const uint8_t *destination_name,
+  size_t destination_length, bool replace, struct pfs_write_result *result);
+
 /* Copied live continuation, no authority or retained resources. Zero starts.
  * Wrong binding/position is INVALID, changed serial is CHANGED; both publish
  * zero count without advancing next. Check LIST and health before token data.
