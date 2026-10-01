@@ -7,26 +7,27 @@ publication semantics change is included.
 
 ## Contracts and execution profiles
 
-The 2 GiB scratch, 4 GiB job and 65,536-inode values below are the selected
-execution profile for the recorded runs. They are not filesystem invariants,
-machine specifications or product-capacity requirements. The RAM-only backing,
-disabled swap, bounded resource use and verified controls implement the agreed
-storage-safety policy for these runs. Capacity one is a precondition of the current
+The local launcher's 2 GiB scratch, 4 GiB job and 65,536-inode defaults are the
+selected execution profile for the recorded local runs. They are not filesystem
+invariants, machine specifications or product-capacity requirements. The RAM-only
+backing, disabled swap, bounded resource use and verified controls implement the
+agreed storage-safety policy for these runs. Capacity one is a precondition of the current
 shared-volume mechanism, not a permanent filesystem concurrency restriction.
 
-The job memory budget has one provisioning authority: the scoped local launcher
-selects its local limit; CI uses the owner's trusted runner configuration. The
-workflows do not override it. Both guards verify a real finite positive cgroup
-memory limit, zero swap allowance/current usage and disabled core dumps, without
-copying the selected memory amount into another acceptance ceiling. CI records
+Scratch byte/inode capacity and the job memory budget each have one provisioning
+authority: the scoped local launcher selects its local limits; CI uses the owner's
+trusted volume and runner configuration. The workflows do not override them.
+Both guards verify finite positive scratch byte/inode capacity and a real finite
+positive cgroup memory limit, zero swap allowance/current usage and disabled core
+dumps, without copying the selected memory amount into another acceptance ceiling. CI records
 the actual member-cgroup memory limit; an ancestor may impose a tighter bound.
 The guards never raise limits or retry with more memory. Changing the provisioned
 budget is an explicit operator action, not a filesystem behavior change.
 
-The owner selected a 16 GiB shared CI runner with one concurrent job. Local
-benchmark provisioning remains at 4 GiB; historical measurements retain their
-original parameters. The selected scratch byte/inode ceilings remain unchanged
-in this focused correction. RAM-only storage and zero swap remain required.
+The guards do not impose the local scratch defaults as independent acceptance
+ceilings. The provisioner chooses capacity and each run records the effective
+limits; historical measurements retain their original parameters. RAM-only
+storage, zero swap and the shared runner's exclusive serial use remain required.
 
 ## Local execution
 
@@ -37,18 +38,31 @@ compiler, run the reviewed scoped launcher:
 sudo python3 tests/ram_run.py --suite preflight
 sudo python3 tests/ram_run.py --suite check
 sudo python3 tests/ram_run.py --suite extended
+sudo python3 tests/ram_run.py --suite safety
 sudo python3 tests/ram_run.py --suite baseline
 ```
 
-The baseline also requires loop devices, tracefs `block_bio_queue`, and ext4/Btrfs
-kernel support and formatter tools. Unsupported evidence or permissions cause
-refusal, without a buffered/disk-backed fallback. The launcher does not disable
+The safety suite and baseline also require loop devices, tracefs `block_bio_queue`,
+and ext4/Btrfs kernel support and formatter tools. Unsupported evidence or
+permissions cause refusal, without a buffered/disk-backed fallback. The launcher does not disable
 system-wide swapping. It creates a fresh job before allocating workload storage:
 2 GiB `tmpfs,noswap`, 65,536 inodes, 4 GiB `memory.max`, zero `memory.swap.max`,
 and hard core limit zero. All fixture files use the verified pinned scratch
 mount. The guard verifies actual cgroup membership and effective limits; an
 environment variable alone is not evidence. The administrator must not change
 these controls during a run.
+
+Root sets up the local mount and cgroup boundary, then gives the RAM temporary
+and build directories to the sudo caller's nonzero UID/GID. A root invocation
+without a sudo caller, including a root CI container, selects `nobody` instead.
+Before quick, extended or preflight work and the result-socket connection, the
+worker clears supplementary groups, permanently drops its real/effective/saved
+UIDs and GIDs, and sets `no_new_privs`. Compilation and test children therefore
+run without root authority; the C fixture guard independently rejects UID 0.
+The result socket authenticates the selected worker UID. For the safety suite
+and baseline, the root supervisor connects to a socket expecting UID 0 and
+retains the loop, mount and trace duties; compilation and comparison children
+always use the unprivileged worker identity with `no_new_privs`.
 
 Source and ordinary build artifacts may live on persistent storage. The scoped
 local run builds in RAM and gives its source a read-only bind mount. Workload
@@ -67,7 +81,7 @@ is not part of this command and remains unassigned under this storage budget.
 | Failure adapter durable image and volatile/pending log | Same directory; 4,120-byte log records and bounded record count; no alternate production callback path |
 | Seed copies and cold-recovery clones | Same directory; independent files, fixed 64 KiB copy buffer |
 | Small workload expected payloads and source copies | Same directory; image, logs and all independent expectations share the aggregate scratch/job limits |
-| Baseline native images | Fresh 1 GiB logical images in scratch, attached only to exclusively owned loop devices with verified backing identity |
+| Safety/baseline native images | Fresh 1 GiB logical images in scratch, attached only to exclusively owned loop devices with verified backing identity |
 | Extracted payloads | The inspector takes an explicit output path; it is not redirected by TMPDIR. No extraction command is used by this baseline. Any future extraction must explicitly target verified scratch |
 | Build temporaries and output | RAM build directory and TMPDIR during scoped runs; CI checkout/source is the only persistent input workspace |
 | stdout/stderr, traces and core dumps | Bounded memory capture/streaming counters; core dumps disabled; no raw workload log saved to disk |
@@ -102,6 +116,21 @@ operations between barriers have a weaker recovery contract and are reported
 separately. Both native modes finish with parent fsync, filesystem sync and clean
 unmount. No cross-call batching is added to Pyxis.
 
+The native comparison requires held read-only descriptors for its workload root,
+loop device and regular backing file, supplied by the launcher. Before workload
+writes, it independently ties the actual root mount source to that autoclear
+loop, verifies its backing identity, and requires the backing file to be on the
+same verified bounded `tmpfs,noswap` mount as scratch. Only fresh single-device
+ext4 and Btrfs mounts are supported. These checks establish this launcher's
+storage boundary; they are not a general sandbox for arbitrary programs.
+
+`--suite safety` checks this native launch boundary without running the full
+comparison matrix. It runs one 32-file compiler case in operation mode for each
+of ext4 and Btrfs, with bounded tracing and teardown. Five refusal cases cover
+missing descriptors, a mismatched root, the wrong RAM backing file, a writable
+loop descriptor and a read-only persistent backing file. It does not replace the
+baseline matrix or establish new performance results.
+
 For native filesystems, trace submitted write sectors at the owned loop-device
 boundary, multiply by 512, and include final synchronization and clean unmount.
 Preparation/format traffic and measured traffic are reported separately. Stop
@@ -131,10 +160,11 @@ storage evidence and the next proposed bounded investigation.
 
 ## CI
 
-The quick filesystem PR job requires tmpfs capped at 2 GiB and 65,536 inodes,
-a finite positive container memory limit selected by the owner and zero container
-swap (`--memory-swap` equals `--memory`), plus hard core limit zero. Actual mount type and limits are verified
-before building or running fixtures; a disk-backed volume cannot substitute.
+The quick filesystem PR job requires tmpfs with finite positive byte and inode
+limits selected by the provisioner, a finite positive container memory limit
+selected by the owner and zero container swap (`--memory-swap` equals `--memory`),
+plus hard core limit zero. Actual mount type and limits are verified before
+building or running fixtures; a disk-backed volume cannot substitute.
 The historical 4 GiB named-volume configuration passed the effective boundary
 checks and all 111 quick groups in CI; its evidence is recorded below.
 
@@ -188,7 +218,11 @@ unmount before the next job; after interruption, the operator must remove stale
 attachments before resuming. This adds an administrator-managed volume lifetime,
 not a larger resource budget or a general runner framework.
 
-Provision once, as that rootless user, without `--ignore`:
+Provision once, as that rootless user, without `--ignore`. The following volume
+and runner fragments are an illustrative profile: their 2 GiB scratch,
+65,536-inode and 8 GiB job amounts are provisioning choices, not guard
+requirements. Select and maintain the intended capacity in these authoritative
+settings:
 
 ```sh
 podman volume create --driver local \
@@ -209,7 +243,7 @@ runner:
 container:
   privileged: false
   options: >-
-    --memory=16g --memory-swap=16g --ulimit core=0:0
+    --memory=8g --memory-swap=8g --ulimit core=0:0
     --volume pyxis-fs-ram:/run/pyxis-fs-ram:nocopy
   valid_volumes:
     - pyxis-fs-ram

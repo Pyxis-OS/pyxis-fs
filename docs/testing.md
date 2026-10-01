@@ -8,10 +8,28 @@ sudo python3 tests/ram_run.py --suite check
 
 Historical commands and observations below do not waive that storage boundary.
 Bare `make check` now refuses unless its actual scratch/cgroup/core limits pass
-the same guard. The larger recovery workload is not currently authorized. The
-[initial small RAM baseline](ram-baseline.md) records current scoped validation
+the same guard and the process has a nonzero UID. Scratch and job capacity are
+provisioned inputs; the guard requires finite positive limits rather than the
+local launcher's particular defaults. The larger recovery workload is not
+currently authorized. The [initial small RAM baseline](ram-baseline.md) records
+the initial scoped validation
 and the Pyxis/ext4/Btrfs comparison; historical disk-backed timings below remain
 historical evidence.
+
+The launcher gives RAM temporary/build directories to its selected non-root
+worker, clears supplementary groups, permanently drops UIDs/GIDs and sets
+`no_new_privs` before quick, extended or preflight work and result reporting.
+Compilation and comparison children also run unprivileged in the native safety
+suite and baseline; their supervisor retains the loop, mount and trace duties. The
+[launcher contract](ram-validation.md#local-execution) describes identity selection
+and result-socket authentication, and the
+[comparison contract](ram-validation.md#small-comparison-contract) describes the
+held descriptors that independently verify native RAM backing.
+
+Run `sudo python3 tests/ram_run.py --suite safety` for the bounded native launch
+check: one 32-file compiler operation case each on ext4 and Btrfs, plus five
+descriptor/backing refusal cases. This checks the launch boundary without a full
+comparative matrix; it adds no timing evidence to the initial baseline report.
 
 `make check` builds `build/pyxis-fs-tests` and runs `--suite pr`. It links the same
 freestanding `libpyxis-fs.a` as the ordinary tools, with no alternate core or

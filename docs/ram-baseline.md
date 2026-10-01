@@ -63,10 +63,12 @@ per useful byte). These small histories already miss the ext4 engineering target
 ## RAM elapsed observations
 
 The following ranges are milliseconds for measured calls including the final
-synchronization/core close. Native unmount is separately timed and counted in
-the summary; timing excludes preparation and independent verification. These
-numbers include different adapter paths (especially Pyxis simulation/callback
-work), are only two observations, and are not NVMe latency or throughput.
+synchronization/core close; timing excludes preparation and independent
+verification. The summary's native `after_end_seconds` runs from the end marker
+through post-marker verification, process handoff, unmount and trace accounting;
+it is not an isolated unmount duration. These numbers include different adapter
+paths (especially Pyxis simulation/callback work), are only two observations,
+and are not NVMe latency or throughput.
 
 | Population | Case | Pyxis operation ms | ext4 operation ms | Btrfs operation ms |
 | ---: | --- | ---: | ---: | ---: |
