@@ -64,7 +64,7 @@ struct pfs_map_change {
  * A malformed base returns PFS_CORRUPT; a delta that does not match the validated
  * base returns PFS_INVALID.
  * Protection/admission evidence for retire/free/claim transitions belongs to the
- * future publisher; this is a bounded private interval editor, not that proof. */
+ * publisher; this is a bounded private interval editor, not that proof. */
 enum pfs_status pfs_plan_map_apply(const struct pfs_record_context *context,
   const struct pfs_allocation_record *base, size_t base_count,
   const struct pfs_map_change *changes, size_t change_count,

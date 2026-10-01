@@ -42,6 +42,7 @@ struct pfs_writer {
   struct pfs_writer_status status;
   struct pfs_batch batch;
   bool prepared;
+  bool publishing;
   size_t selected;
   uint64_t last_confirmed_generation;
 };

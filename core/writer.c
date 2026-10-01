@@ -681,7 +681,7 @@ pfs_writer_prepare(struct pfs_pool *pool, struct pfs_batch **batch)
 void
 pfs_writer_abort(struct pfs_pool *pool)
 {
-  if (pool && pool->writer && pool->writer->prepared) {
+  if (pool && pool->writer && pool->writer->prepared && !pool->writer->publishing) {
     pool->writer->prepared = false;
     pfs_writer_end(pool, PFS_OK);
   }
@@ -690,10 +690,14 @@ pfs_writer_abort(struct pfs_pool *pool)
 enum pfs_status
 pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch, struct pfs_write_result *result)
 {
+  if (pool && pool->writer && pool->writer->publishing) {
+    return PFS_BUSY;
+  }
   if (!pool || !pool->writer || !pool->writer->prepared || batch != &pool->writer->batch || !result) {
     return PFS_INVALID;
   }
   struct pfs_writer *writer = pool->writer;
+  writer->publishing = true;
   *result = (struct pfs_write_result){.completion = PFS_STOPPED, .health = writer->status.health};
   enum pfs_status status = PFS_OK;
   if (batch->available_count != PFS_PLAN_VOLUME_NEW ||
@@ -732,6 +736,7 @@ pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch, struct pfs_wri
     result->completion = uncertain ? PFS_UNKNOWN : PFS_STOPPED;
   }
   result->health = writer->status.health;
+  writer->publishing = false;
   writer->prepared = false;
   pfs_writer_end(pool, PFS_OK);
   return status;
@@ -756,7 +761,10 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
       options->metadata_limit > backing->reader.geometry.block_count - 2 || !diagnostic) {
     return PFS_INVALID;
   }
-  *diagnostic = (struct pfs_write_open_result){0};
+  *diagnostic = (struct pfs_write_open_result){
+    .pool = {.selected = PFS_POOL_NO_SELECTION},
+    .recovery = {.completion = PFS_STOPPED},
+  };
   pool->writer_busy = true;
   pool->memory = memory;
   pool->reader = &backing->reader;
@@ -775,6 +783,19 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
   struct pfs_writer *writer = pool->writer;
   if (writer) {
     diagnostic->pool = writer->opening.pool;
+    /* Keep computed requirements reviewable even when admission rejects a
+     * fully checked image or cannot reserve its arena. */
+    if (writer->opening.cross_complete && writer->opening.state[0].complete &&
+        writer->opening.state[1].complete) {
+      struct pfs_plan_limits limits;
+      if (pfs_plan_limits(backing->reader.geometry.block_count, options->extent_limit,
+          options->metadata_limit, (uint16_t)writer->opening.pool.candidate[0].root.volume_count,
+          &limits) == PFS_OK) {
+        diagnostic->required_recovery_blocks = limits.recovery_blocks;
+        diagnostic->permanent_pool_blocks = limits.permanent_pool;
+        diagnostic->reserved_arena_bytes = limits.arena_bytes;
+      }
+    }
   }
   if (status == PFS_OK) {
     struct pfs_pool temporary = {0};
@@ -807,6 +828,17 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
     }
   }
   if (status != PFS_OK) {
+    if (!diagnostic->confirmed_generation) {
+      diagnostic->writer = (struct pfs_writer_status){
+        .health = PFS_WRITER_ACCESS_STOPPED, .failure = status};
+      diagnostic->recovery.completion = PFS_STOPPED;
+      diagnostic->recovery.operation_status = status;
+      diagnostic->recovery.health = PFS_WRITER_ACCESS_STOPPED;
+      if (!writer) {
+        diagnostic->pool.candidate[0].status = status;
+        diagnostic->pool.candidate[1].status = status;
+      }
+    }
     if (pool->state.data) {
       pfs_memory_free(memory, &pool->state);
     }

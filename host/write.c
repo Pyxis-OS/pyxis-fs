@@ -245,20 +245,24 @@ main(int argc, char **argv)
     status = pfs_pool_open_writer(&pool, &backing, &memory, &options.limits, &opened);
   }
   if (attempted_open) {
-    printf("Writer open: %s", pfs_status_string(status));
+    printf("Writer open: %s; extents=%llu metadata=%llu", pfs_status_string(status),
+      (unsigned long long)options.limits.extent_limit,
+      (unsigned long long)options.limits.metadata_limit);
     if (opened.confirmed_generation) {
       printf("; health=%s; failure=%s; confirmed-generation=%llu\n"
-             "  required-recovery-blocks=%llu permanent-pool-blocks=%llu reserved-arena-bytes=%llu\n"
              "  startup-completion=%s startup-operation=%s maintenance=%s maintenance-status=%s",
              health_name(opened.writer.health), pfs_status_string(opened.writer.failure),
              (unsigned long long)opened.confirmed_generation,
-             (unsigned long long)opened.required_recovery_blocks,
-             (unsigned long long)opened.permanent_pool_blocks,
-             (unsigned long long)opened.reserved_arena_bytes,
              completion_name(opened.recovery.completion),
              pfs_status_string(opened.recovery.operation_status),
              maintenance_name(opened.recovery.maintenance_completion),
              pfs_status_string(opened.recovery.maintenance_status));
+    }
+    if (opened.reserved_arena_bytes) {
+      printf("\n  required-recovery-blocks=%llu permanent-pool-blocks=%llu reserved-arena-bytes=%llu",
+        (unsigned long long)opened.required_recovery_blocks,
+        (unsigned long long)opened.permanent_pool_blocks,
+        (unsigned long long)opened.reserved_arena_bytes);
     }
     fputc('\n', stdout);
   }

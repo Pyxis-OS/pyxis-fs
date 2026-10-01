@@ -366,7 +366,7 @@ check_accounting(struct check_state *state)
 }
 
 void
-check_reconcile_state(struct check_state *state)
+check_reconcile_storage(struct check_state *state)
 {
   sort_claims(state);
   check_claim_overlap(state);
@@ -378,6 +378,12 @@ check_reconcile_state(struct check_state *state)
       check_live_coverage(state);
     }
   }
+}
+
+void
+check_reconcile_state(struct check_state *state)
+{
+  check_reconcile_storage(state);
   if (state->map_complete) {
     check_accounting(state);
   }
