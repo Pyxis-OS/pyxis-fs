@@ -90,4 +90,12 @@ enum pfs_status check_compare_states(struct check_state *first,
                                       struct check_state *second,
                                       bool *complete);
 
+/* Called only after complete successful two-state validation, with borrowed
+ * sorted tables. Tables remain owned by the checker and expire on return. */
+typedef enum pfs_status (*check_capture_fn)(void *context,
+                                          const struct check_state states[2]);
+enum pfs_status check_capture(const struct pfs_block_reader *reader,
+  struct pfs_memory *memory, pfs_check_report_fn report, void *context,
+  check_capture_fn capture, void *capture_context, struct pfs_check_result *result);
+
 #endif
