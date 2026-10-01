@@ -171,8 +171,9 @@ The command does not authenticate the supplied principal; diagnostic path
 selection can reveal a missing target before policy evaluation. The ordinary
 core acquisition APIs enforce lookup before resolving each path component.
 See [core interfaces](core.md#policy-acquisition-and-ordinary-views).
-Checkpoint is a recognized authority token; no checkpoint operation is provided,
-and formatter-created grants omit it. Orphans have no named path or ordinary
+The inspector evaluates checkpoint authority but provides no checkpoint operation;
+the [writer](#healthy-writer-sessions) uses acquired checkpoint views. Formatter-created
+grants omit `dir.checkpoint`. Orphans have no named path or ordinary
 acquisition ancestry. Core diagnostic object/read/grant APIs can inspect a
 validated orphan by ID; these host commands retain their namespace path selectors.
 
@@ -230,7 +231,7 @@ GPT or pool bytes. Formatting still creates standalone images only.
 All commands accept `--memory-limit SIZE`, default 128 MiB and maximum 1 GiB.
 The cap charges input/planning state, construction buffers, candidate buffers,
 catalog staging, traversal frames, node caches, proof/checker bookkeeping, live
-views, directory pages and GPT scratch. Fixed codec
+views, directory pages, writer input buffers and GPT scratch. Fixed codec
 stack frames, caller handles, argv and host allocator/libc overhead are outside
 that payload counter. Source manifests grow within the same cap; their old and
 new arrays are both charged during growth. The bulk planner copies the manifest
@@ -254,11 +255,10 @@ candidate prevent selection. If multiple
 failures exist, command aggregation prioritizes I/O/allocation, proved corruption,
 then unsupported/limit, retaining both candidate diagnostics.
 
-These tools do not mount, mutate or repair existing images, or establish that
-recorded reserves suffice for writes.
-Formatter imports exercise contiguous inline extents. The maintained
-[host contract suite](testing.md) adds synthetic format/editor/planner fixtures;
-it does not provide a writable command or validate admission and publication.
+These tools do not mount or repair images. The [healthy writer](#healthy-writer-sessions)
+validates writable admission before exposing mutation. Formatter imports exercise
+contiguous inline extents; the maintained [host contract suite](testing.md) records
+core operation, admission and publication coverage separately from manual host runs.
 
 ## Validation
 
@@ -368,8 +368,9 @@ No QEMU validation or production-data safety claim follows from these host check
 
 ## Healthy writer sessions
 
-`pyxisfs-write` exposes ordinary writable admission/reopening and checkpointing.
-It does not yet expose create, write, resize, unlink or rename. Supply explicit
+`pyxisfs-write` exposes ordinary writable admission/reopening, checkpointing and
+regular-file creation, writes and resize. Unlink, rename and directory mutation
+commands are not provided. Supply explicit
 extent and metadata limits; profile selection is separate from disk capacity and
 per-transaction bounds. For example, on a healthy image formatted with sufficient
 unpromised capacity and reserves:
@@ -379,17 +380,60 @@ build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 open
 build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
   --volume-id VOLUME_ID --object OBJECT_ID --principal PRINCIPAL_ID \
   --rights file.checkpoint checkpoint
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object PARENT_ID --principal PRINCIPAL_ID \
+  --rights dir.create create-file --name notes.txt
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object FILE_ID --principal PRINCIPAL_ID \
+  --rights file.write,file.resize write --input /tmp/contents --offset 0
+build/pyxisfs-write --image /tmp/pool.raw --extents 512 --metadata 256 \
+  --volume-id VOLUME_ID --object FILE_ID --principal PRINCIPAL_ID \
+  --rights file.resize resize --length 8193
 ```
 
-IDs are exactly 32 hexadecimal digits. Checkpoint uses a real acquired view with
-exactly the requested `file.checkpoint` or `dir.checkpoint` right; it does not
-implicitly request read, metadata or lookup. The CLI's supplied principal/object
+IDs are exactly 32 hexadecimal digits. Each command acquires an object-scoped
+view with exactly the requested rights. Checkpoint accepts `file.checkpoint` or
+`dir.checkpoint`; create accepts `dir.create`; resize accepts `file.resize`;
+write accepts `file.write` with optional `file.resize`. Duplicate rights and rights
+unrelated to the selected operation are rejected. The CLI's supplied principal/object
 are trusted embedding inputs, not authentication. The object ID must be obtained
 under appropriate authority before the exclusive session. Existing formatter
 grants have not gained `dir.checkpoint`; they retain the existing file right.
 The command reports admission requirements, confirmed generation and writer
 health/cleanup outcome. A healthy checkpoint after synchronous draining needs no
 extra publication.
+
+`create-file` takes one UTF-8 component of 1–255 bytes, excluding `/`, `.` and `..`.
+It creates an empty regular file owned under the parent's creation policy, with
+no new grants. The command requests no returned child handle or child authority;
+obtain its new ID through a subsequent authorized lookup or diagnostic listing.
+Creation authority alone does not grant access to the new file.
+
+`--offset` and `--length` are unsigned decimal byte counts. Resize growth exposes
+zeros, and shrinking then regrowing does not expose discarded bytes. Write input
+must be a quiescent regular host file, with no final symlink, at most 16 MiB; image
+aliases and hard links to the image are refused. The command takes a shared
+advisory input lock, reads the entire input into a buffer charged to the memory
+cap, checks its size/mtime/ctime before mutation, and closes it. Cooperating input
+writers must honor that lock; these checks do not establish an atomic source
+snapshot against a noncooperating writer.
+
+The 16 MiB cap is a host command input bound, separate from the core's file-size
+and transaction limits. The command submits one core write request for the whole
+buffer. This preserves bounded multi-block planning and the core's upfront range
+authority check: an extending request without `file.resize` is denied before
+changing even its in-range prefix. Large requests can still span committed
+transactions; whole-write and whole-shrink atomicity are not promised. Splitting
+a larger host input into separate command invocations creates separate requests
+and authority checks, rather than one aggregate atomic operation.
+
+Operation output includes completion, original operation status, confirmed byte
+prefix, last confirmed length when available, namespace confirmation, writer
+health and separate maintenance outcome/status. Consume that output even on a
+nonzero exit: an error may follow confirmed progress, and an unknown outcome may
+have committed beyond the confirmed prefix or length. A close error fails the
+command without erasing earlier confirmed progress. No automatic retry follows
+an error or unknown outcome.
 
 This adapter supports buffered I/O to a Linux local regular file, with exclusive
 advisory locking for the session, exact transfers and explicit `fsync`. It does
