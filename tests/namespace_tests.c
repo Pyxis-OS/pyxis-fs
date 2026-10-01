@@ -10,7 +10,10 @@
 void run_namespace_tests(void);
 
 #define NS_BYTES (3u * PFS_BLOCK_SIZE + 19u)
-#define NS_VIEWS 12u
+#define NS_ORPHAN_LEAF_RECORDS ((PFS_BLOCK_SIZE - PFS_TREE_HEADER_SIZE) / \
+  (PFS_ORPHAN_RECORD_SIZE + PFS_TREE_SLOT_SIZE))
+#define NS_RETAINED_VICTIMS (NS_ORPHAN_LEAF_RECORDS + 12u)
+#define NS_VIEWS (NS_RETAINED_VICTIMS + 12u)
 
 static struct test_fixture seed;
 static struct test_failure device, snapshot;
@@ -30,7 +33,11 @@ static const struct pfs_rights file_rights = {
 static const struct pfs_rights parent_rights = {
   .file = PFS_FILE_RIGHTS_ALL,
   .directory = PFS_DIR_RIGHTS_ALL,
-  .admin = PFS_ADMIN_RIGHTS_ALL,
+  .admin = PFS_ADMIN_INSPECT,
+};
+static const struct pfs_rights directory_rights = {
+  .directory = PFS_DIR_RIGHTS_ALL,
+  .admin = PFS_ADMIN_INSPECT,
 };
 
 static enum pfs_status
@@ -106,7 +113,7 @@ add_file_grants(const struct pfs_volume_record *volume)
 }
 
 static void
-build_seed(void)
+build_seed(uint64_t quota, uint64_t cow, uint64_t recovery)
 {
   random_sequence = 0;
   for (size_t i = 0; i < sizeof(original); i++) {
@@ -125,7 +132,7 @@ build_seed(void)
   };
   struct pfs_build_volume specifications[] = {
     {.id = {{2}}, .root_object = {{3}}, .name = {4, "home"}, .owner = {{5}},
-      .quota_set = true, .quota = 1024, .guarantee_set = true,
+      .quota_set = true, .quota = quota, .guarantee_set = true,
       .object_count = 4, .objects = objects},
     {.id = {{12}}, .root_object = {{13}}, .name = {5, "other"}, .owner = {{5}},
       .quota_set = true, .quota = 1024, .guarantee_set = true,
@@ -135,7 +142,7 @@ build_seed(void)
     .block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}}, .volume_count = 2,
     .volumes = specifications,
     .reserve_set = PFS_RESERVE_COW | PFS_RESERVE_MIGRATION | PFS_RESERVE_RECOVERY,
-    .cow_reserve = 1024, .migration_reserve = 1024, .recovery_reserve = 1024,
+    .cow_reserve = cow, .migration_reserve = 1024, .recovery_reserve = recovery,
   };
   struct pfs_build_plan plan = {0};
   struct pfs_build_source source = {.read = source_read, .validate = source_validate};
@@ -165,19 +172,32 @@ open_writer(void)
 }
 
 static void
-open_fixture(void)
+open_seed(uint64_t extents, uint64_t metadata)
 {
-  build_seed();
   memset(&pool, 0, sizeof(pool));
   memset(volumes, 0, sizeof(volumes));
   memset(views, 0, sizeof(views));
-  options = (struct pfs_write_options){.extent_limit = 64, .metadata_limit = 64,
+  options = (struct pfs_write_options){.extent_limit = extents, .metadata_limit = metadata,
     .random = random_bytes, .random_context = &random_sequence};
   struct pfs_plan_limits limits;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 64, 64, 2, &limits));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, extents, metadata, 2, &limits));
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_open(&device, PFS_POOL_BLOCKS_MIN,
     (size_t)limits.pool_blocks + PFS_PLAN_VOLUME_NEW + 1, 0, &seed.builder.reader));
   open_writer();
+}
+
+static void
+open_fixture_config(uint64_t quota, uint64_t extents, uint64_t metadata,
+                    uint64_t cow, uint64_t recovery)
+{
+  build_seed(quota, cow, recovery);
+  open_seed(extents, metadata);
+}
+
+static void
+open_fixture(void)
+{
+  open_fixture_config(1024, 64, 64, 1024, 1024);
 }
 
 static void
@@ -338,6 +358,35 @@ check_durable(uint64_t orphans, uint64_t grants)
   TEST_ASSERT_TRUE(test_failure_close(&snapshot));
 }
 
+static bool publication_observed;
+static size_t publication_allocations;
+
+static void
+observe_first_publication(struct test_failure *adapter,
+  const struct test_failure_event *event, bool before, void *context)
+{
+  (void)context;
+  if (before && event->kind == TEST_FAILURE_WRITE && !publication_observed) {
+    publication_observed = true;
+    publication_allocations = adapter->backing.allocation_calls;
+  }
+}
+
+static void
+observe_funded_operation(void)
+{
+  publication_observed = false;
+  device.observer = observe_first_publication;
+}
+
+static void
+expect_funded_operation(void)
+{
+  device.observer = NULL;
+  TEST_ASSERT_TRUE(publication_observed);
+  TEST_ASSERT_EQUAL_UINT(publication_allocations, device.backing.allocation_calls);
+}
+
 static void
 directories_inherit_creation_policy_and_require_empty_removal(void)
 {
@@ -345,7 +394,7 @@ directories_inherit_creation_policy_and_require_empty_removal(void)
   struct pfs_write_result result;
   struct pfs_view_identity identity;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_directory(views[0],
-    (const uint8_t *)"notes", 5, &parent_rights, &views[2], &identity, &result));
+    (const uint8_t *)"notes", 5, &directory_rights, &views[2], &identity, &result));
   expect_complete(&result, true);
   TEST_ASSERT_EQUAL(PFS_OBJECT_DIRECTORY, identity.kind);
   expect_empty(2);
@@ -440,7 +489,7 @@ detached_directories_keep_empty_identity_and_deny_insertion(void)
   expect_empty(2);
   struct pfs_view_identity replacement;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_directory(views[0],
-    (const uint8_t *)"src", 3, &parent_rights, &views[3], &replacement, &result));
+    (const uint8_t *)"src", 3, &directory_rights, &views[3], &replacement, &result));
   TEST_ASSERT_NOT_EQUAL(0, memcmp(&old.object, &replacement.object, sizeof(old.object)));
   uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
   TEST_ASSERT_EQUAL(PFS_DETACHED, pfs_view_create_file(views[2],
@@ -551,8 +600,11 @@ rename_refuses_volume_crossing_and_directory_replacement(void)
   open_fixture();
   struct pfs_trusted_context second = authority;
   second.root = (struct pfs_object_id){{13}};
+  const struct pfs_rights rights = {
+    .directory = PFS_DIR_CREATE | PFS_DIR_METADATA | PFS_DIR_LIST,
+  };
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volumes[1], &second, &second.root,
-    PFS_SCOPE_OBJECT, &parent_rights, &views[2]));
+    PFS_SCOPE_OBJECT, &rights, &views[2]));
   struct pfs_write_result result;
   uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
   TEST_ASSERT_EQUAL(PFS_UNSUPPORTED, pfs_view_rename(views[0], (const uint8_t *)"file", 4,
@@ -728,9 +780,271 @@ durable_restart_loses_runtime_retention_and_cleans_validated_orphans(void)
   TEST_ASSERT_TRUE(test_fixture_close(&seed));
 }
 
+static void
+minimum_quota_profile_and_computed_recovery_fund_final_release(void)
+{
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 1, 7, 2, &limits));
+  uint64_t recovery = limits.recovery_blocks > 256 ? limits.recovery_blocks : 256;
+  /* The first volume has four data blocks and five promised metadata blocks;
+   * the empty second volume needs two metadata blocks. */
+  open_fixture_config(9, 1, 7, 1024, recovery);
+  struct pfs_write_result result;
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  TEST_ASSERT_EQUAL(PFS_QUOTA, pfs_view_create_file(views[0],
+    (const uint8_t *)"growth", 6, NULL, NULL, NULL, &result));
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+  observe_funded_operation();
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
+  expect_funded_operation();
+  expect_complete(&result, true);
+  expect_bytes(views[1], original, sizeof(original));
+  test_failure_memory_fail_after(&device, 0);
+  close_view(1);
+  device.backing.fail_after = SIZE_MAX;
+  check_durable(0, 2);
+  close_fixture();
+}
+
+static void
+pool_promise_boundary_protects_unlink_and_final_cleanup(void)
+{
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 64, 64, 2, &limits));
+  uint64_t cow = PFS_POOL_BLOCKS_MIN - 2 - 1024 - 1024 -
+    limits.permanent_pool - 11;
+  open_fixture_config(1024, 64, 64, cow, 1024);
+  struct pfs_write_result result;
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  TEST_ASSERT_EQUAL(PFS_NO_SPACE, pfs_view_create_file(views[0],
+    (const uint8_t *)"growth", 6, NULL, NULL, NULL, &result));
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+  observe_funded_operation();
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
+  expect_funded_operation();
+  expect_complete(&result, true);
+  test_failure_memory_fail_after(&device, 0);
+  close_view(1);
+  device.backing.fail_after = SIZE_MAX;
+  check_durable(0, 2);
+  close_fixture();
+}
+
+static uint8_t pressure_names[NS_RETAINED_VICTIMS][PFS_NAME_MAX];
+static uint8_t pressure_bytes[64u * PFS_BLOCK_SIZE];
+
+static void
+quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release(void)
+{
+  open_fixture_config(48, 64, 64, 1024, 1024);
+  for (size_t i = 0; i < NS_RETAINED_VICTIMS; i++) {
+    memset(pressure_names[i], 'n', sizeof(pressure_names[i]));
+    pressure_names[i][0] = (uint8_t)('0' + i / 100);
+    pressure_names[i][1] = (uint8_t)('0' + i / 10 % 10);
+    pressure_names[i][2] = (uint8_t)('0' + i % 10);
+    struct pfs_write_result result;
+    struct pfs_view_identity identity;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(views[0], pressure_names[i],
+      sizeof(pressure_names[i]), &file_rights, &views[12 + i], &identity, &result));
+    expect_complete(&result, true);
+    TEST_ASSERT_FALSE(device.infrastructure_failure);
+    test_failure_trace_reset(&device);
+  }
+  memcpy(pressure_bytes, original, sizeof(original));
+  memset(pressure_bytes + sizeof(original), 'Q', sizeof(pressure_bytes) - sizeof(original));
+  size_t length = sizeof(original);
+  bool refused = false;
+  while (length + PFS_BLOCK_SIZE <= sizeof(pressure_bytes)) {
+    struct pfs_write_result result;
+    uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+    enum pfs_status status = pfs_view_write(views[1], length,
+      pressure_bytes + length, PFS_BLOCK_SIZE, &result);
+    if (status == PFS_QUOTA) {
+      TEST_ASSERT_EQUAL_UINT64(0, result.confirmed_bytes);
+      TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+      TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+      refused = true;
+      break;
+    }
+    TEST_ASSERT_EQUAL(PFS_OK, status);
+    expect_complete(&result, false);
+    length += PFS_BLOCK_SIZE;
+    test_failure_trace_reset(&device);
+  }
+  TEST_ASSERT_TRUE(refused);
+  expect_bytes(views[1], pressure_bytes, length);
+  for (size_t i = 0; i < NS_RETAINED_VICTIMS; i++) {
+    struct pfs_write_result result;
+    observe_funded_operation();
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], pressure_names[i],
+      sizeof(pressure_names[i]), &result));
+    expect_funded_operation();
+    expect_complete(&result, true);
+    expect_bytes(views[12 + i], original, 0);
+    TEST_ASSERT_FALSE(device.infrastructure_failure);
+    test_failure_trace_reset(&device);
+  }
+  device.backing.fail_after = SIZE_MAX;
+  check_durable(NS_RETAINED_VICTIMS, 9);
+  test_failure_memory_fail_after(&device, 0);
+  for (size_t i = 0; i < NS_RETAINED_VICTIMS; i++) {
+    close_view(12 + i);
+    TEST_ASSERT_FALSE(device.infrastructure_failure);
+    test_failure_trace_reset(&device);
+  }
+  device.backing.fail_after = SIZE_MAX;
+  check_durable(0, 9);
+  expect_bytes(views[1], pressure_bytes, length);
+  close_fixture();
+}
+
+static void
+set_seed_generation(uint64_t generation)
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  struct pfs_superblock seed_super;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(&seed.builder.reader, 0, 1, bytes, sizeof(bytes)));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN,
+    0, &seed_super));
+  struct pfs_block_context context = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = 1, .referring_birth = 1, .pool = {{1}},
+    .reference = seed_super.root, .features = seed_super.features};
+  struct pfs_pool_root root;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(&seed.builder.reader, seed_super.root.block, 1,
+    bytes, sizeof(bytes)));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_root_decode(bytes, sizeof(bytes), &context, &root));
+  struct pfs_reference *refs[] = {&root.volumes, &root.volume_names, &root.allocation};
+  /* A slot and its pool root share a birth. Move the complete pool metadata
+   * incarnation and map charges together; volume metadata and data stay old. */
+  for (size_t i = 0; i < 3; i++) {
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(&seed.builder.reader, refs[i]->block, 1,
+      bytes, sizeof(bytes)));
+    if (i == 2) {
+      struct pfs_tree_context tree_context = {.block = context, .kind = PFS_INDEX_ALLOCATION};
+      tree_context.block.reference = *refs[i];
+      struct pfs_tree tree;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_tree_decode(bytes, sizeof(bytes), &tree_context, &tree));
+      struct pfs_record_context record_context = {.block_count = PFS_POOL_BLOCKS_MIN,
+        .selected_generation = 1, .containing_birth = 1, .features = seed_super.features};
+      for (size_t j = 0; j < tree.count; j++) {
+        struct pfs_allocation_record record;
+        TEST_ASSERT_EQUAL(PFS_OK, pfs_allocation_record_decode(bytes + tree.slots[j].offset,
+          tree.slots[j].length, &record_context, &record));
+        if (record.state == PFS_ALLOCATION_POOL) {
+          test_put_u64(bytes + tree.slots[j].offset + 56, generation);
+          test_checksum(bytes + tree.slots[j].offset, tree.slots[j].length, 8);
+        }
+      }
+    }
+    test_put_u64(bytes + 48, generation);
+    test_checksum(bytes, sizeof(bytes), 20);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&seed.builder, refs[i]->block, 1,
+      bytes, sizeof(bytes)));
+    refs[i]->birth = generation;
+  }
+  context.selected_generation = context.referring_birth = generation;
+  context.reference.birth = generation;
+  root.header.birth = generation;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_root_encode(bytes, sizeof(bytes), &context, &root));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&seed.builder, root.header.block, 1,
+    bytes, sizeof(bytes)));
+  for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock super;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(&seed.builder.reader, block, 1, bytes, sizeof(bytes)));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN,
+      block, &super));
+    super.header.birth = generation;
+    super.root.birth = generation;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_encode(bytes, sizeof(bytes), &super));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&seed.builder, block, 1, bytes, sizeof(bytes)));
+  }
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_flush(&seed.builder));
+}
+
+static void
+generation_promise_funds_retained_file_cleanup_at_its_boundary(void)
+{
+  /* Twelve orphan work units: four data blocks, seven grants and final
+   * object/marker deletion. Each reserves three generations, in addition to
+   * the unlink transaction and its two maintenance publications. */
+  for (unsigned extra = 0; extra < 2; extra++) {
+    build_seed(1024, 1024, 1024);
+    set_seed_generation(UINT64_MAX - 39 + extra);
+    open_seed(64, 64);
+    struct pfs_write_result result;
+    uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+    enum pfs_status status = pfs_view_remove(views[0],
+      (const uint8_t *)"file", 4, &result);
+    if (extra) {
+      TEST_ASSERT_EQUAL(PFS_LIMIT, status);
+      TEST_ASSERT_FALSE(result.namespace_confirmed);
+      TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+      TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+      expect_bytes(views[1], original, sizeof(original));
+    } else {
+      TEST_ASSERT_EQUAL(PFS_OK, status);
+      expect_complete(&result, true);
+      test_failure_memory_fail_after(&device, 0);
+      close_view(1);
+      device.backing.fail_after = SIZE_MAX;
+      check_durable(0, 2);
+    }
+    close_fixture();
+  }
+}
+
+static void
+maximum_length_rename_names_preserve_source_identity_and_bytes(void)
+{
+  open_fixture();
+  lookup(0, "src", 2, PFS_SCOPE_SUBTREE, &parent_rights);
+  lookup(0, "dst", 3, PFS_SCOPE_SUBTREE, &parent_rights);
+  char source[PFS_NAME_MAX + 1], destination[PFS_NAME_MAX + 1];
+  memset(source, 's', PFS_NAME_MAX);
+  memset(destination, 'd', PFS_NAME_MAX);
+  source[PFS_NAME_MAX] = destination[PFS_NAME_MAX] = 0;
+  struct pfs_write_result result;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_rename(views[0], (const uint8_t *)"file", 4,
+    views[2], (const uint8_t *)source, PFS_NAME_MAX, false, &result));
+  expect_complete(&result, true);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_rename(views[2], (const uint8_t *)source,
+    PFS_NAME_MAX, views[3], (const uint8_t *)destination, PFS_NAME_MAX, false, &result));
+  expect_complete(&result, true);
+  expect_missing(2, source);
+  struct pfs_view_identity found = lookup(3, destination, 4, PFS_SCOPE_OBJECT, &file_rights);
+  TEST_ASSERT_EQUAL_MEMORY(&file_id, &found.object, sizeof(file_id));
+  expect_bytes(views[4], original, sizeof(original));
+  close_fixture();
+}
+
+static void
+directory_child_handle_file_rights_are_invalid_before_publication(void)
+{
+  open_fixture();
+  struct pfs_write_result result;
+  struct pfs_view_identity identity;
+  memset(&result, 0xa5, sizeof(result));
+  memset(&identity, 0xa5, sizeof(identity));
+  struct pfs_write_result previous_result = result;
+  struct pfs_view_identity previous_identity = identity;
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_view_create_directory(views[0],
+    (const uint8_t *)"invalid", 7, &parent_rights, &views[2], &identity, &result));
+  TEST_ASSERT_NULL(views[2]);
+  TEST_ASSERT_EQUAL_MEMORY(&previous_result, &result, sizeof(result));
+  TEST_ASSERT_EQUAL_MEMORY(&previous_identity, &identity, sizeof(identity));
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  expect_missing(0, "invalid");
+  close_fixture();
+}
+
 void
 run_namespace_tests(void)
 {
+  Unity.TestFile = __FILE__;
   RUN_TEST(directories_inherit_creation_policy_and_require_empty_removal);
   RUN_TEST(unlinked_files_keep_identity_bytes_and_independent_held_rights);
   RUN_TEST(detached_directories_keep_empty_identity_and_deny_insertion);
@@ -741,4 +1055,10 @@ run_namespace_tests(void)
   RUN_TEST(final_orphan_release_drains_data_and_grants_without_more_memory);
   RUN_TEST(failed_final_release_consumes_handle_and_startup_drains_abandoned_orphan);
   RUN_TEST(durable_restart_loses_runtime_retention_and_cleans_validated_orphans);
+  RUN_TEST(minimum_quota_profile_and_computed_recovery_fund_final_release);
+  RUN_TEST(pool_promise_boundary_protects_unlink_and_final_cleanup);
+  RUN_TEST(quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release);
+  RUN_TEST(generation_promise_funds_retained_file_cleanup_at_its_boundary);
+  RUN_TEST(maximum_length_rename_names_preserve_source_identity_and_bytes);
+  RUN_TEST(directory_child_handle_file_rights_are_invalid_before_publication);
 }
