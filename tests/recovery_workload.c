@@ -40,7 +40,7 @@ struct phase_counters {
 struct workload_stats {
   struct phase_counters phases[3];
   uint64_t calls, useful_bytes;
-  double seconds, maximum_latency, callback_start;
+  double seconds, maximum_latency, callback_start, read_callback_seconds;
   unsigned callback_phase;
   bool violation;
 };
@@ -95,7 +95,8 @@ now(void)
   return (double)time.tv_sec + (double)time.tv_nsec / 1000000000.0;
 }
 
-/* Phase observation copies admitted publisher fields only; no core reentry. */
+/* Reads can precede batch initialization; only writes/flushes have a publisher
+ * phase. Observation never reenters the core. */
 static void
 observe(struct test_failure *adapter, const struct test_failure_event *event,
         bool before, void *context)
@@ -104,13 +105,19 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
   (void)context;
   if (before) {
     stats.callback_start = now();
-    stats.callback_phase = pool.writer->status.drain_pending ? PHASE_DRAIN :
-      pool.writer->batch.orphan_cleanup ? PHASE_ORPHAN : PHASE_USER;
+    if (event->kind != TEST_FAILURE_READ) {
+      stats.callback_phase = pool.writer->status.drain_pending ? PHASE_DRAIN :
+        pool.writer->batch.orphan_cleanup ? PHASE_ORPHAN : PHASE_USER;
+    }
     stats.violation |= stats.callback_start < 0;
     return;
   }
   double ended = now();
   stats.violation |= ended < stats.callback_start || event->status != PFS_OK;
+  if (event->kind == TEST_FAILURE_READ) {
+    stats.read_callback_seconds += ended - stats.callback_start;
+    return;
+  }
   struct phase_counters *phase = &stats.phases[stats.callback_phase];
   phase->callback_seconds += ended - stats.callback_start;
   if (event->kind == TEST_FAILURE_FLUSH) {
@@ -176,13 +183,14 @@ report(const char *name)
     (unsigned long long)stats.calls, (unsigned long long)stats.useful_bytes, stats.seconds,
     stats.seconds ? (double)stats.useful_bytes / (1024 * 1024) / stats.seconds : 0,
     stats.calls ? stats.seconds / stats.calls : 0, stats.maximum_latency);
+  printf("  read-callback=%.6fs\n", stats.read_callback_seconds);
   const char *names[] = {"user", "orphan", "drain"};
   uint64_t metadata = 0;
   for (size_t i = 0; i < 3; i++) {
     const struct phase_counters *p = &stats.phases[i];
     metadata += p->metadata_bytes;
     printf("  %s metadata-bytes=%llu data-bytes=%llu publications=%llu flushes=%llu "
-           "callback=%.6fs metadata/useful=%.6f\n", names[i],
+           "write-flush-callback=%.6fs metadata/useful=%.6f\n", names[i],
       (unsigned long long)p->metadata_bytes, (unsigned long long)p->data_bytes,
       (unsigned long long)p->publications, (unsigned long long)p->flushes,
       p->callback_seconds, stats.useful_bytes ? (double)p->metadata_bytes / stats.useful_bytes : 0);

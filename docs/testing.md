@@ -474,7 +474,10 @@ confirmed prefix, independently verifies that prefix after qualified durable
 reopen when the writer remains healthy, and returns failure. It does not increase
 limits, shrink/retry the request or count safe refusal as workload success.
 Phase reports separate user, orphan and maintenance metadata/data writes, flushes,
-publications, callback time and useful-byte throughput. These are simulator costs,
+publications, write/flush callback time and useful-byte throughput. Read-callback
+time is reported separately: planning reads can precede batch initialization or
+follow a completed orphan batch, so its cleanup flag cannot classify those reads.
+These are simulator costs,
 not physical NVMe write amplification or flush latency. Whole-map rebuilding
 remains the first correctness implementation, not the desired allocation strategy.
 
