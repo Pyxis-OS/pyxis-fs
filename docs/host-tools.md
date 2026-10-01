@@ -464,3 +464,25 @@ failed instance cannot retry itself healthy. Cleanup failure cannot erase alread
 confirmed user progress. An unknown outcome may include additional committed
 bytes and is not automatically retryable. Handle closure performs no recovery or retry. Simulator results are
 core protocol evidence only, not qualification of Linux post-error recovery.
+
+### File command validation
+
+On 2026-10-01, the integrated file commands were exercised on Linux 6.19.10
+x86_64 with GCC 16.2.1, using a freshly formatted 256 MiB sparse regular image,
+E=512, M=256 and a 4 MiB recovery reserve. The default 1 MiB recovery reserve
+was refused at opening because this profile required 594 blocks; that refusal
+left both generation-1 states unchanged.
+
+An object-scoped `dir.create` view created an empty regular file. An extending
+262177-byte write at offset 8193 with only `file.write` returned denied and zero
+confirmed bytes. Requesting `file.resize` as well completed the write; extraction
+matched an independent host file containing the zero-filled gap and input bytes.
+Shrinking to 8209 retained the first sixteen input bytes, and regrowing to 32769
+matched an independent expected file with a zero-filled discarded tail.
+
+A hard link to the image as input returned invalid, a 16 MiB plus one-byte input
+returned limit, and an exclusive advisory lock on input returned busy. Those
+refusals left the selected generation unchanged. The final check completed both
+retained generations 22/21 and their cross-state comparison, each with one file
+extent and one data block. These are healthy host command observations; they
+provide no real-host writeback-failure or power-loss recovery qualification.
