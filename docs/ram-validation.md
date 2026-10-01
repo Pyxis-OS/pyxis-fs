@@ -283,13 +283,21 @@ was 314,847,232 bytes on kernel `7.2.6-1-cachyos`. This verifies the effective
 boundary for that run; exclusive ownership and teardown remain operator
 preconditions, and every subsequent job must pass the guard again.
 
-The memory-budget correction passed all 111 quick groups in the scoped local
+The earlier memory-budget correction passed all 111 quick groups in the scoped local
 4 GiB launcher, with a 305,643,520-byte peak and zero swap/max/OOM events.
 Separate actual-cgroup probes configured 1 GiB and 16 GiB caps: both the Python
 preflight and C guard accepted each with zero swap. Both refused an unlimited
 memory hierarchy and a 16 GiB job with a 1 MiB swap allowance, before fixture
 writes. These are deliberately varied deployment inputs, not accepted filesystem
 capacity limits. No large recovery workload or comparative matrix was rerun.
+
+The privilege/scratch review correction passed 111 quick and six extended groups
+as worker UID/GID 1000, with zero swap/max/OOM events. Peaks were 307,220,480 and
+493,228,032 bytes respectively. Actual scratch probes configured 64 MiB / 2,048
+inodes and 3 GiB / 131,072 inodes; both guards accepted these distinct bounded
+inputs, and refused unlimited bytes or inodes. The C guard refused a root
+workload, and socket probes accepted the selected non-root peer and rejected a
+different UID. These tests did not allocate payloads up to the configured caps.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the

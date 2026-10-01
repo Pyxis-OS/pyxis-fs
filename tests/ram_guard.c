@@ -19,8 +19,6 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
-#define SCRATCH_BYTES_MAX (UINT64_C(2) * 1024 * 1024 * 1024)
-#define SCRATCH_INODES_MAX UINT64_C(65536)
 #define MOUNT_LINE_BYTES 16384
 
 static int scratch_directory = -1;
@@ -321,6 +319,9 @@ require_ram(bool ci_quick)
   if (scratch_directory >= 0) {
     return;
   }
+  if (getuid() == 0 || geteuid() == 0) {
+    refuse("filesystem workloads must run unprivileged");
+  }
   struct rlimit core;
   if (getrlimit(RLIMIT_CORE, &core) != 0 || core.rlim_cur != 0 || core.rlim_max != 0 ||
       prctl(PR_SET_DUMPABLE, 0) != 0 || prctl(PR_GET_DUMPABLE) != 0) {
@@ -337,10 +338,10 @@ require_ram(bool ci_quick)
   if (directory < 0 || fstatfs(directory, &filesystem) != 0 ||
       filesystem.f_type != TMPFS_MAGIC || fstatvfs(directory, &capacity) != 0 ||
       !capacity.f_frsize || !capacity.f_blocks ||
-      capacity.f_blocks > SCRATCH_BYTES_MAX / capacity.f_frsize ||
-      !capacity.f_files || capacity.f_files > SCRATCH_INODES_MAX ||
+      capacity.f_blocks >= UINT64_MAX / capacity.f_frsize ||
+      !capacity.f_files || capacity.f_files == UINT64_MAX ||
       !mount_id(directory, &scratch_id)) {
-    refuse("TMPDIR must be tmpfs capped at 2 GiB and 65536 inodes");
+    refuse("TMPDIR must be tmpfs with finite positive byte and inode limits");
   }
   char cgroup_path[PATH_MAX];
   if (!read_cgroup_path(cgroup_path, sizeof(cgroup_path))) {

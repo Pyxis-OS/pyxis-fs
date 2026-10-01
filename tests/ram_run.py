@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: MPL-2.0
 """Scoped Linux launcher for pyxis-fs contract tests and the small RAM baseline."""
 import argparse
+import ctypes
 import errno
 import fcntl
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import resource
@@ -22,12 +24,14 @@ import uuid
 
 SCRATCH = Path('/run/pyxis-fs-ram')
 BOUND_SOURCE = Path('/run/pyxis-fs-source')
-SCRATCH_BYTES = 2 * 1024**3
+LOCAL_SCRATCH_BYTES = 2 * 1024**3
+LOCAL_SCRATCH_INODES = 65536
 LOCAL_JOB_BYTES = 4 * 1024**3
 LOG_BYTES = 1024**2
 TRACE_BYTES = 16 * 1024**2
 SOURCE = Path(__file__).resolve().parent.parent
 TRACE_ROOT = Path('/sys/kernel/tracing/instances')
+PR_SET_NO_NEW_PRIVS = 38
 LOOP_GET_STATUS64 = 0x4C05
 LOOP_CONFIGURE = 0x4C0A
 LOOP_CTL_GET_FREE = 0x4C82
@@ -82,8 +86,8 @@ def preflight(ci_quick=False):
     require(entry[separator + 1] == 'tmpfs' and (ci_quick or mount_noswap),
             'scratch must be tmpfs; mount-level noswap is required outside quick CI')
     fs = os.statvfs(SCRATCH)
-    require(0 < fs.f_blocks * fs.f_frsize <= SCRATCH_BYTES and
-            0 < fs.f_files <= 65536, 'scratch byte/inode limits exceed the agreed bounds')
+    require(0 < fs.f_frsize and 0 < fs.f_blocks * fs.f_frsize < 2**64 - 1 and
+            0 < fs.f_files < 2**64 - 1, 'scratch must have finite positive byte and inode limits')
     group = job_cgroup()
     memory = (group / 'memory.max').read_text().strip()
     require(memory.isdigit() and 0 < int(memory) < 2**64 - 1,
@@ -105,15 +109,53 @@ def interrupted(signum, _frame):
     raise InterruptedError(f'RAM validation interrupted by signal {signum}')
 
 
+def no_new_privileges():
+    # Linux PR_SET_NO_NEW_PRIVS: children cannot regain privilege through exec.
+    libc = ctypes.CDLL(None, use_errno=True)
+    require(libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0, 'cannot disable privilege gain')
+
+
+def worker_identity():
+    if os.geteuid() != 0:
+        return os.getuid(), os.getgid()
+    if 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
+        identity = int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID'])
+    else:
+        account = pwd.getpwnam('nobody')
+        identity = account.pw_uid, account.pw_gid
+    require(all(value > 0 for value in identity), 'a non-root worker UID/GID is required')
+    return identity
+
+
+def drop_privileges(identity):
+    if os.geteuid() == 0:
+        os.setgroups([])
+        os.setresgid(identity[1], identity[1], identity[1])
+        os.setresuid(identity[0], identity[0], identity[0])
+    require(os.getuid() == os.geteuid() == identity[0] != 0 and
+            os.getgid() == os.getegid() == identity[1] != 0, 'worker identity mismatch')
+    no_new_privileges()
+
+
 def child_limits():
     os.setsid()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    no_new_privileges()
 
 
-def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_listener=None):
+def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_listener=None,
+            result_uid=None, identity=None, pass_fds=()):
     """Capture bounded diagnostics in RAM; stop rather than truncate a valid run."""
+    credentials = {}
+    if identity is not None:
+        require(identity[0] != 0 and identity[1] != 0, 'privileged workload identity')
+        if os.geteuid() == 0:
+            credentials = dict(user=identity[0], group=identity[1], extra_groups=[])
+        else:
+            require((os.geteuid(), os.getegid()) == identity, 'cannot select worker identity')
     process = subprocess.Popen(command, cwd=SOURCE, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, preexec_fn=child_limits, env=env)
+                               stderr=subprocess.STDOUT, preexec_fn=child_limits, env=env,
+                               pass_fds=pass_fds, **credentials)
     output = bytearray()
     deadline = time.monotonic() + timeout
     selector = selectors.DefaultSelector()
@@ -153,7 +195,7 @@ def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_
                     result_stream, _ = result_listener.accept()
                     credentials = result_stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
                     _, peer_uid, _ = struct.unpack('=iii', credentials)
-                    require(peer_uid == 0, 'result peer is not the root job')
+                    require(result_uid is not None and peer_uid == result_uid, 'unexpected result peer UID')
                     result_stream.setblocking(False)
                     selector.unregister(result_listener)
                     selector.register(result_stream, selectors.EVENT_READ)
@@ -437,7 +479,7 @@ def callback_bytes(phase):
                for kind in ('data_blocks', 'metadata_blocks')) * 4096
 
 
-def baseline(binary, name):
+def baseline(binary, name, identity):
     results = []
     for population in (32, 256):
         for case in ('small', 'large', 'overwrite', 'compiler'):
@@ -445,6 +487,7 @@ def baseline(binary, name):
                                             ('btrfs', 'operation'), ('ext4', 'batch'), ('btrfs', 'batch')):
                 directory = SCRATCH / 'case'
                 directory.mkdir()
+                os.chown(directory, *identity)
                 loop = None
                 trace = None
                 try:
@@ -453,13 +496,26 @@ def baseline(binary, name):
                         loop = OwnedLoop(directory / 'image')
                         trace = BlockTrace(name, loop.device)
                         root = loop.mount(filesystem, trace)
+                        os.chown(root, *identity)
                     command = [str(binary), '--filesystem', 'pyxis' if filesystem == 'pyxis' else 'native',
                                '--root', str(root), '--population', str(population), '--case', case,
                                '--durability', durability, '--phase-stops', 'yes']
                     environment = os.environ.copy()
                     if filesystem == 'pyxis':
                         environment['TMPDIR'] = str(directory)
-                    text, counts = capture(command, trace=trace, phases=True, env=environment)
+                    descriptors = []
+                    try:
+                        if loop:
+                            descriptors.append(os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+                            descriptors.append(os.open(loop.device, os.O_RDONLY | os.O_NOFOLLOW))
+                            descriptors.append(os.open(loop.image, os.O_RDONLY | os.O_NOFOLLOW))
+                            for option, fd in zip(('root', 'loop', 'backing'), descriptors):
+                                command += [f'--native-{option}-fd', str(fd)]
+                        text, counts = capture(command, trace=trace, phases=True, env=environment,
+                                               identity=identity, pass_fds=descriptors)
+                    finally:
+                        for fd in descriptors:
+                            os.close(fd)
                     records = [json.loads(line) for line in text.splitlines() if line.startswith('{')]
                     require(records and 'measurement' in records[-1], 'comparison produced no summary')
                     record = records[-1]
@@ -506,20 +562,38 @@ def baseline(binary, name):
     return results
 
 
-def inner(suite, name, ci_quick=False):
+def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
     require(not ci_quick or suite == 'check', 'CI storage mode is restricted to the quick suite')
     evidence = preflight(ci_quick)
+    identity = identity or worker_identity()
     os.environ['TMPDIR'] = str(SCRATCH / 'tmp')
     Path(os.environ['TMPDIR']).mkdir()
     build = SCRATCH / 'build'
+    build.mkdir()
+    if os.geteuid() == 0:
+        os.chown(os.environ['TMPDIR'], *identity)
+        os.chown(build, *identity)
+    if suite not in ('baseline', 'safety'):
+        drop_privileges(identity)
+    os.environ['HOME'] = os.environ['TMPDIR']
+    evidence.update(worker_uid=identity[0], worker_gid=identity[1])
+    if result_socket:
+        trace_path(result_socket)
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.connect('\0' + result_socket)
+        sys.stdout = connection.makefile('w', buffering=1)
+        sys.stderr = sys.stdout
     runner = build / 'pyxis-fs-tests'
     comparison = build / 'pyxis-fs-compare'
-    targets = ['all', str(runner)] + ([str(comparison)] if suite == 'baseline' else [])
+    targets = ['all', str(runner)] + ([str(comparison)] if suite in ('baseline', 'safety') else [])
     if suite == 'preflight':
         return {'safety': evidence, 'status': 'preflight-only'}
-    capture(['make', '-j16', f'BUILD={build}', *targets])
-    if suite == 'baseline':
-        results = baseline(comparison, name)
+    capture(['make', '-j16', f'BUILD={build}', *targets], identity=identity)
+    if suite == 'safety':
+        import ram_safety
+        results = ram_safety.run(sys.modules[__name__], comparison, name, identity)
+    elif suite == 'baseline':
+        results = baseline(comparison, name, identity)
     else:
         command = [str(runner), '--suite', 'pr' if suite == 'check' else 'extended']
         if ci_quick:
@@ -539,12 +613,14 @@ def inner(suite, name, ci_quick=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--suite', choices=('preflight', 'check', 'extended', 'baseline'), default='check')
+    parser.add_argument('--suite', choices=('preflight', 'check', 'extended', 'safety', 'baseline'), default='check')
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--ci-quick', action='store_true',
                         help='quick suite only: verify zero-swap cgroup instead of requiring mount noswap')
     parser.add_argument('--cleanup-trace', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--result-socket', help=argparse.SUPPRESS)
+    parser.add_argument('--worker-uid', type=int, help=argparse.SUPPRESS)
+    parser.add_argument('--worker-gid', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--name', default='pyxis-fs-ram', help=argparse.SUPPRESS)
     args = parser.parse_args()
     require(not args.ci_quick or (args.inside and args.suite == 'check'),
@@ -555,13 +631,9 @@ def main():
         cleanup_trace(args.name)
         return
     if args.inside:
-        if args.result_socket:
-            trace_path(args.result_socket)
-            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            connection.connect('\0' + args.result_socket)
-            sys.stdout = connection.makefile('w', buffering=1)
-            sys.stderr = sys.stdout
-        result = json.dumps(inner(args.suite, args.name, args.ci_quick),
+        identity = worker_identity() if args.worker_uid is None else (args.worker_uid, args.worker_gid)
+        require(all(value is not None and value > 0 for value in identity), 'invalid worker identity')
+        result = json.dumps(inner(args.suite, args.name, args.ci_quick, identity, args.result_socket),
                             sort_keys=True, separators=(',', ':'))
         require(len(result.encode()) <= 65536, 'summary exceeds 64 KiB')
         print(result)
@@ -569,6 +641,7 @@ def main():
     require(os.geteuid() == 0, 'run this reviewed launcher with sudo; no unprivileged storage fallback')
     require(':' not in str(SOURCE) and not any(character.isspace() for character in str(SOURCE)),
             'source path cannot be represented safely as a systemd bind')
+    identity = worker_identity()
     name = 'pyxis-fs-ram-' + uuid.uuid4().hex[:12]
     launcher = BOUND_SOURCE / 'tests/ram_run.py'
     cleanup = f'{sys.executable} {launcher} --cleanup-trace --name {name}'
@@ -578,18 +651,20 @@ def main():
                '-p', 'RuntimeMaxSec=1200', '-p', 'PrivateMounts=yes', '-p', 'TimeoutStopSec=30',
                '-p', 'ProtectSystem=strict', '-p', 'ProtectHome=read-only',
                '-p', f'BindReadOnlyPaths={SOURCE}:{BOUND_SOURCE}',
-               '-p', f'TemporaryFileSystem={SCRATCH}:rw,nosuid,nodev,noswap,size={SCRATCH_BYTES},nr_inodes=65536',
+               '-p', f'TemporaryFileSystem={SCRATCH}:rw,nosuid,nodev,noswap,size={LOCAL_SCRATCH_BYTES},nr_inodes={LOCAL_SCRATCH_INODES}',
                '-p', 'InaccessiblePaths=/tmp /var/tmp /dev/shm',
                '-p', 'ReadWritePaths=/sys/kernel/tracing/instances',
                '-p', f'ExecStopPost={cleanup}', '-p', 'Environment=PYTHONDONTWRITEBYTECODE=1',
                '-p', 'StandardOutput=null', '-p', 'StandardError=null',
                sys.executable, str(launcher), '--inside', '--suite', args.suite, '--name', name,
-               '--result-socket', name]
+               '--result-socket', name, '--worker-uid', str(identity[0]),
+               '--worker-gid', str(identity[1])]
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind('\0' + name)
     listener.listen(1)
     try:
-        output, _ = capture(command, timeout=1250, result_listener=listener)
+        output, _ = capture(command, timeout=1250, result_listener=listener,
+                            result_uid=0 if args.suite in ('baseline', 'safety') else identity[0])
         print(output, end='')
     finally:
         listener.close()
