@@ -379,9 +379,10 @@ physical backing, free capacity, permanent deletion promises or writable
 admission. See [maintained contract checks](testing.md) for exercised boundaries.
 
 The private edit/validation/codec call path is not yet suitable for Caelum's
-16 KiB kernel-task stack. Pyxis GCC 16.2.0 with kernel flags reports 19,120 bytes
-across the principal nested frames after the split-boundary correction (19,104
-in the reviewed version), before deeper helpers and outer frames. These private objects are
+16 KiB kernel-task stack. Pyxis GCC 16.2.0 with kernel flags gives a conservative
+sum of maximum reported frames of 19,120 bytes along the principal nested path
+after the split-boundary correction (19,104 in the reviewed version), before
+deeper helpers and outer frames. This is not a runtime high-water measurement. These private objects are
 not kernel-linked; host checks and target compilation do not qualify their stack
 usage. Resolving this, preferably with caller-reserved temporary workspace, is a
 [prerequisite for native writable integration](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/technical-debt.md#writable-filesystem-kernel-stack-prerequisite).
