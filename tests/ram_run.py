@@ -114,6 +114,8 @@ def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_
     deadline = time.monotonic() + timeout
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
+    if trace:
+        selector.register(trace.fd, selectors.EVENT_READ)
     os.set_blocking(process.stdout.fileno(), False)
     phase_counts = []
     result_received = False
@@ -140,6 +142,9 @@ def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_
                 elif pid:
                     process.returncode = os.waitstatus_to_exitcode(status)
             for key, _ in selector.select(0.02):
+                if trace and key.fd == trace.fd:
+                    trace.drain()
+                    continue
                 if key.fileobj is result_listener:
                     result_stream, _ = result_listener.accept()
                     credentials = result_stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
@@ -159,7 +164,8 @@ def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_
             if not phases:
                 process.poll()
             active_streams = [key for key in selector.get_map().values()
-                              if key.fileobj is not result_listener]
+                              if key.fileobj is not result_listener and
+                              (not trace or key.fd != trace.fd)]
             if process.returncode is not None and not active_streams:
                 break
         if trace:
@@ -245,7 +251,8 @@ class BlockTrace:
             while b'\n' in self.pending:
                 line, self.pending = self.pending.split(b'\n', 1)
                 text = line.decode(errors='strict')
-                require('LOST' not in text.upper(), 'trace records lost; measurement invalid')
+                require('LOST' not in text.upper(),
+                        'trace records lost; measurement invalid: ' + text[:256])
                 if not text.strip() or text.startswith('#'):
                     continue
                 match = re.search(r'block_bio_queue:\s+(\d+),(\d+)\s+(\S+)\s+(\d+)\s+\+\s+(\d+)\s+\[.*\]$', text)
