@@ -718,7 +718,10 @@ failed_final_release_consumes_handle_and_startup_drains_abandoned_orphan(void)
 static void
 durable_restart_loses_runtime_retention_and_cleans_validated_orphans(void)
 {
-  open_fixture();
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 1, 7, 2, &limits));
+  uint64_t recovery = limits.recovery_blocks > 256 ? limits.recovery_blocks : 256;
+  open_fixture_config(9, 1, 7, 1024, recovery);
   struct pfs_write_result result;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
   expect_bytes(views[1], original, sizeof(original));
@@ -754,8 +757,14 @@ durable_restart_loses_runtime_retention_and_cleans_validated_orphans(void)
   TEST_ASSERT_EQUAL_UINT64(0, snapshot.ordinals[TEST_FAILURE_WRITE]);
 
   struct pfs_write_open_result opening;
+  publication_observed = false;
+  snapshot.observer = observe_first_publication;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &snapshot.builder,
     snapshot.memory, &options, &opening));
+  snapshot.observer = NULL;
+  TEST_ASSERT_TRUE(publication_observed);
+  TEST_ASSERT_EQUAL_UINT(publication_allocations, snapshot.backing.allocation_calls);
+  TEST_ASSERT_EQUAL_UINT64(limits.recovery_blocks, opening.required_recovery_blocks);
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, opening.writer.health);
   TEST_ASSERT_GREATER_THAN_UINT64(0, snapshot.ordinals[TEST_FAILURE_WRITE]);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &id, &volumes[0]));
@@ -898,6 +907,219 @@ quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release(void)
   check_durable(0, 9);
   expect_bytes(views[1], pressure_bytes, length);
   close_fixture();
+}
+
+static uint64_t
+first_maintenance_flush(const struct test_failure *adapter, uint64_t starting_flush)
+{
+  unsigned slots = 0;
+  for (size_t i = 0; i < adapter->event_count; i++) {
+    const struct test_failure_event *event = &adapter->events[i];
+    if (event->kind == TEST_FAILURE_WRITE &&
+        (event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1)) {
+      if (++slots == 2) {
+        TEST_ASSERT_GREATER_THAN_UINT64(starting_flush, event->flush_ordinal);
+        return event->flush_ordinal - starting_flush;
+      }
+    }
+  }
+  TEST_FAIL_MESSAGE("cleanup trace has no first maintenance slot write");
+  return 0;
+}
+
+static uint64_t
+selected_orphan_after_data_cleanup(struct test_failure *adapter)
+{
+  struct pfs_check_result check;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&adapter->builder.reader, adapter->memory,
+    NULL, NULL, &check));
+  for (size_t i = 0; i < 2; i++) {
+    TEST_ASSERT_TRUE(check.state[i].complete);
+    TEST_ASSERT_EQUAL_UINT64(1, check.state[i].orphans);
+    TEST_ASSERT_EQUAL_UINT64(9, check.state[i].grants);
+  }
+  struct pfs_pool_diagnostic diagnostic;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open(&pool, &adapter->builder.reader,
+    adapter->memory, &diagnostic));
+  TEST_ASSERT_EQUAL_UINT64(0, check.state[diagnostic.selected].file_blocks);
+  uint64_t generation = check.state[diagnostic.selected].generation;
+  const struct pfs_volume_id id = {{2}};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_diagnostic_volume_open(&pool, &id, &volumes[0]));
+  struct pfs_object_record object;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_object(&volumes[0], &file_id, &object));
+  TEST_ASSERT_EQUAL_MEMORY(&file_id, &object.id, sizeof(file_id));
+  const struct pfs_object_id no_parent = {{0}};
+  TEST_ASSERT_EQUAL_MEMORY(&no_parent, &object.parent, sizeof(no_parent));
+  TEST_ASSERT_EQUAL(PFS_OBJECT_FILE, object.kind);
+  TEST_ASSERT_EQUAL_UINT64(0, object.file_length);
+  size_t count;
+  uint8_t byte = 0xa5;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_read(&volumes[0], &file_id,
+    0, &byte, 1, &count));
+  TEST_ASSERT_EQUAL_UINT(0, count);
+  TEST_ASSERT_EQUAL_UINT8(0xa5, byte);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_grants(&volumes[0], &file_id,
+    NULL, 0, &count));
+  TEST_ASSERT_EQUAL_UINT(7, count);
+  TEST_ASSERT_EQUAL(PFS_NOT_FOUND, pfs_volume_diagnostic_resolve(&volumes[0],
+    &root_id, (const uint8_t *)"file", 4, &object));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volumes[0]));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+  return generation;
+}
+
+static void
+expect_cleaned_orphans(struct test_failure *adapter)
+{
+  struct pfs_check_result check;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&adapter->builder.reader, adapter->memory,
+    NULL, NULL, &check));
+  for (size_t i = 0; i < 2; i++) {
+    TEST_ASSERT_TRUE(check.state[i].complete);
+    TEST_ASSERT_EQUAL_UINT64(0, check.state[i].orphans);
+    TEST_ASSERT_EQUAL_UINT64(2, check.state[i].grants);
+    TEST_ASSERT_EQUAL_UINT64(0, check.state[i].file_blocks);
+  }
+}
+
+static void
+create_abandoned_snapshot(void)
+{
+  open_fixture();
+  struct pfs_write_result result;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
+  expect_complete(&result, true);
+  expect_bytes(views[1], original, sizeof(original));
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_clone_durable(&snapshot, &device, 0));
+  close_handles();
+  test_failure_trace_reset(&snapshot);
+}
+
+static void
+close_snapshot_fixture(void)
+{
+  TEST_ASSERT_FALSE(snapshot.infrastructure_failure);
+  TEST_ASSERT_TRUE(test_failure_close(&snapshot));
+  TEST_ASSERT_FALSE(device.infrastructure_failure);
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
+}
+
+static void
+final_close_maintenance_failures_consume_view_and_resume_paired_orphan(void)
+{
+  open_fixture();
+  struct pfs_write_result result;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
+  test_failure_trace_reset(&device);
+  uint64_t starting_flush = device.ordinals[TEST_FAILURE_FLUSH];
+  close_view(1);
+  uint64_t boundary = first_maintenance_flush(&device, starting_flush);
+  close_fixture();
+
+  for (unsigned second_flush = 0; second_flush < 2; second_flush++) {
+    open_fixture();
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
+    uint8_t bytes[PFS_BLOCK_SIZE];
+    struct pfs_superblock super;
+    uint64_t generation = 0;
+    for (unsigned slot = 0; slot < 2; slot++) {
+      uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+      TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(&device, block, 1, bytes));
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes),
+        PFS_POOL_BLOCKS_MIN, block, &super));
+      if (super.header.birth > generation) {
+        generation = super.header.birth;
+      }
+    }
+    struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
+      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + boundary + second_flush,
+      .mode = TEST_FAILURE_BEFORE, .enabled = true};
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
+    test_failure_memory_fail_after(&device, 0);
+    struct pfs_view_close_result closing;
+    TEST_ASSERT_EQUAL(PFS_IO, pfs_view_close(&views[1], &closing));
+    TEST_ASSERT_TRUE(device.triggered);
+    TEST_ASSERT_TRUE(closing.released);
+    TEST_ASSERT_NULL(views[1]);
+    TEST_ASSERT_EQUAL(second_flush ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED,
+      closing.maintenance_completion);
+    TEST_ASSERT_EQUAL(PFS_IO, closing.maintenance_status);
+    TEST_ASSERT_EQUAL(second_flush ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
+      closing.health);
+    device.backing.fail_after = SIZE_MAX;
+    uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+    uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_checkpoint(views[0], &result));
+    close_handles();
+    TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
+    TEST_ASSERT_EQUAL_UINT64(generation + 1, selected_orphan_after_data_cleanup(&device));
+    struct pfs_write_open_result opening;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &device.builder,
+      device.memory, &options, &opening));
+    TEST_ASSERT_EQUAL(PFS_WRITER_READY, opening.writer.health);
+    TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.maintenance_status);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+    expect_cleaned_orphans(&device);
+    close_fixture();
+  }
+}
+
+static void
+interrupted_startup_preserves_confirmed_generation_and_withholds_instance(void)
+{
+  create_abandoned_snapshot();
+  uint64_t starting_flush = snapshot.ordinals[TEST_FAILURE_FLUSH];
+  struct pfs_write_open_result opening;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &snapshot.builder,
+    snapshot.memory, &options, &opening));
+  uint64_t boundary = first_maintenance_flush(&snapshot, starting_flush);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+  close_snapshot_fixture();
+
+  for (unsigned second_flush = 0; second_flush < 2; second_flush++) {
+    create_abandoned_snapshot();
+    struct pfs_check_result before;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&snapshot.builder.reader, snapshot.memory,
+      NULL, NULL, &before));
+    uint64_t generation = before.state[before.pool.selected].generation;
+    struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
+      .ordinal = snapshot.ordinals[TEST_FAILURE_FLUSH] + boundary + second_flush,
+      .mode = TEST_FAILURE_BEFORE, .enabled = true};
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&snapshot, &fault));
+    publication_observed = false;
+    snapshot.observer = observe_first_publication;
+    TEST_ASSERT_EQUAL(PFS_IO, pfs_pool_open_writer(&pool, &snapshot.builder,
+      snapshot.memory, &options, &opening));
+    snapshot.observer = NULL;
+    TEST_ASSERT_TRUE(publication_observed);
+    TEST_ASSERT_EQUAL_UINT(publication_allocations, snapshot.backing.allocation_calls);
+    TEST_ASSERT_TRUE(snapshot.triggered);
+    TEST_ASSERT_NULL(pool.state.data);
+    TEST_ASSERT_NULL(pool.writer);
+    TEST_ASSERT_NULL(pool.reader);
+    TEST_ASSERT_EQUAL_UINT64(0, snapshot.memory->used);
+    TEST_ASSERT_EQUAL_UINT64(generation + 1, opening.confirmed_generation);
+    TEST_ASSERT_EQUAL(PFS_STOPPED, opening.recovery.completion);
+    TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.operation_status);
+    TEST_ASSERT_EQUAL(PFS_IO, opening.recovery.maintenance_status);
+    TEST_ASSERT_EQUAL(second_flush ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED,
+      opening.recovery.maintenance_completion);
+    TEST_ASSERT_EQUAL(second_flush ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
+      opening.writer.health);
+    TEST_ASSERT_EQUAL(PFS_IO, opening.writer.failure);
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&snapshot));
+    TEST_ASSERT_EQUAL_UINT64(generation + 1, selected_orphan_after_data_cleanup(&snapshot));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &snapshot.builder,
+      snapshot.memory, &options, &opening));
+    TEST_ASSERT_EQUAL(PFS_WRITER_READY, opening.writer.health);
+    TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, opening.recovery.maintenance_completion);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+    expect_cleaned_orphans(&snapshot);
+    close_snapshot_fixture();
+  }
 }
 
 static void
@@ -1061,4 +1283,6 @@ run_namespace_tests(void)
   RUN_TEST(generation_promise_funds_retained_file_cleanup_at_its_boundary);
   RUN_TEST(maximum_length_rename_names_preserve_source_identity_and_bytes);
   RUN_TEST(directory_child_handle_file_rights_are_invalid_before_publication);
+  RUN_TEST(final_close_maintenance_failures_consume_view_and_resume_paired_orphan);
+  RUN_TEST(interrupted_startup_preserves_confirmed_generation_and_withholds_instance);
 }
