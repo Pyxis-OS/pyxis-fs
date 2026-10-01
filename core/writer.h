@@ -47,6 +47,7 @@ struct pfs_writer {
   struct pfs_check_result opening;
   struct pfs_pool_diagnostic diagnostic;
   struct pfs_writer_status status;
+  struct pfs_runtime_object *runtime_objects;
   struct pfs_batch batch;
   pfs_random_fn random;
   void *random_context;

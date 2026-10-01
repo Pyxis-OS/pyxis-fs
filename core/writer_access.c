@@ -121,3 +121,86 @@ pfs_writer_dispose(struct pfs_pool *pool)
   pfs_memory_move(pool->memory, &writer->allocation, &allocation);
   pfs_memory_free(pool->memory, &allocation);
 }
+
+static struct pfs_runtime_object *
+runtime_find(const struct pfs_pool *pool, const struct pfs_volume_id *volume,
+             const struct pfs_object_id *object)
+{
+  if (!pool || !pool->writer || !volume || !object) {
+    return NULL;
+  }
+  for (struct pfs_runtime_object *entry = pool->writer->runtime_objects;
+       entry; entry = entry->next) {
+    if (!pfs_bytes_compare(entry->volume.bytes, PFS_ID_SIZE, volume->bytes, PFS_ID_SIZE) &&
+        !pfs_bytes_compare(entry->object.bytes, PFS_ID_SIZE, object->bytes, PFS_ID_SIZE)) {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+bool
+pfs_runtime_references(const struct pfs_pool *pool, const struct pfs_volume_id *volume,
+                       const struct pfs_object_id *object)
+{
+  const struct pfs_runtime_object *entry = runtime_find(pool, volume, object);
+  return entry && (entry->views || entry->operations);
+}
+
+enum pfs_status
+pfs_runtime_hold(struct pfs_pool *pool, const struct pfs_volume_id *volume,
+                 const struct pfs_object_id *object, struct pfs_runtime_object **out)
+{
+  if (!pool || !pool->writer || !pool->writer_busy || !volume || !object ||
+      !out || *out) {
+    return PFS_INVALID;
+  }
+  struct pfs_runtime_object *entry = runtime_find(pool, volume, object);
+  if (entry) {
+    if (entry->views == SIZE_MAX) {
+      return PFS_LIMIT;
+    }
+    ++entry->views;
+    *out = entry;
+    return PFS_OK;
+  }
+  struct pfs_allocation allocation = {0};
+  enum pfs_status status = pfs_memory_allocate(pool->memory, sizeof(*entry),
+    _Alignof(struct pfs_runtime_object), &allocation);
+  if (status != PFS_OK) {
+    return status;
+  }
+  entry = allocation.data;
+  *entry = (struct pfs_runtime_object){.volume = *volume, .object = *object, .views = 1};
+  status = pfs_memory_move(pool->memory, &allocation, &entry->allocation);
+  if (status != PFS_OK) {
+    pfs_memory_free(pool->memory, &allocation);
+    return status;
+  }
+  entry->next = pool->writer->runtime_objects;
+  pool->writer->runtime_objects = entry;
+  *out = entry;
+  return PFS_OK;
+}
+
+void
+pfs_runtime_drop(struct pfs_pool *pool, struct pfs_runtime_object *object)
+{
+  if (!pool || !pool->writer || !object || !object->views) {
+    return;
+  }
+  --object->views;
+  if (object->views || object->operations) {
+    return;
+  }
+  struct pfs_runtime_object **link = &pool->writer->runtime_objects;
+  while (*link && *link != object) {
+    link = &(*link)->next;
+  }
+  if (*link) {
+    *link = object->next;
+    struct pfs_allocation allocation = {0};
+    pfs_memory_move(pool->memory, &object->allocation, &allocation);
+    pfs_memory_free(pool->memory, &allocation);
+  }
+}
