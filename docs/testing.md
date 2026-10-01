@@ -493,7 +493,7 @@ RSS while other validation ran. These are correctness-run observations, not an
 isolated performance comparison. Ordinary host tools and the Pyxis GCC 16.2.0
 freestanding archive build; the parent read-only kernel also builds.
 
-The populated recovery run exposes a capacity shortfall. With seed 1 and the exact
+The initial populated recovery run exposed a capacity shortfall. With seed 1 and the exact
 census above, sequential call 1258 returns `PFS_LIMIT`, zero confirmed bytes for
 that call and a healthy writer. The preceding 1257 calls confirmed 329,515,008
 bytes (314.25 MiB). The selected state has 8187 extents against E=8192, 300 volume
@@ -502,7 +502,7 @@ new sequential file accounts for 7397 extents, versus 1257 in the contiguous
 model. `PFS_LIMIT` does not identify the refused candidate bound; the observed
 state strongly suggests extent pressure but does not prove E was the sole cause.
 The 2000-appends and churn phases are not reached. No profile increase,
-smaller-prefix retry or allocator change was made. Durable cold reopening
+smaller-prefix retry or allocator change was made in step 1. Durable cold reopening
 independently matched the entire confirmed output and all 12,460,032 imported
 source bytes, identities and directory counts; both retained states and the
 cross-state checker completed successfully. The command then exited 1 as required,
@@ -522,5 +522,131 @@ The charged owner peaked at 31,551,024 bytes before reopen and 34,684,976 during
 reopen, below the 128 MiB cap. Physical fixture storage at refusal was 348,237,824
 bytes, with 341,975,040 bytes for independent expectations; this does not reserve
 space for any future operation. The calculated arena bound did not promise that
-this history would fit E. Full workload success remains an open task-7 obligation;
-review allocation fragmentation and profile sizing before changing either.
+this history would fit E. This failure prompted the focused allocation investigation
+and unchanged-profile rerun below.
+
+### Contiguous volume selection follow-up
+
+Debugging the unchanged recovery workload at the rejected generation (3779)
+identified the exact failed bound: the candidate had E=8194 against 8192.
+The other first-envelope counts fit: M=300/4096, allocation records=7576/32256,
+claims=8682/13013, map nodes=185/714 and live pool blocks=188/725. Admission
+returned `PFS_LIMIT` before replacement writes. The 64 new data blocks were
+split into seven same-birth extents of lengths 57, 1, 1, 1, 1, 1 and 2.
+Independent intersection of both retained maps, subtracting both claim sets,
+found 963,749 eligible blocks, including a 963,557-block contiguous run. The
+old reservation exactly matched the lowest 128 eligible blocks: small reclaimed
+holes fragmented data even though a sufficient run existed. This is debugger
+and independent interval-analysis evidence, separate from the timings below.
+
+Volume preparation now prefers the first eligible contiguous 128-block run,
+joining adjacent eligible map intervals and excluding either retained state's
+live claims. If none exists it uses the original fragmented selection. Pool
+metadata keeps its existing lowest-eligible-first selection policy; physical
+locations can consequently differ when the volume candidate uses other blocks.
+Reservation size, admission bounds, publication and maintenance are unchanged.
+A run does not permit reuse of protected storage. Different birth generations
+still prevent extent coalescing, including separately completed small appends.
+
+Four additional quick groups bring `make check` to 111 groups. A real
+publication/reclamation history checks selection past reclaimed holes, file
+contents, eligibility and the cross-state checker. Small private-selection
+fixtures check FREE/RETIRED boundary joining, interruptions by either retained
+map or claim list, and fragmented fallback when aggregate free space exists but
+no complete run does. Expected eligibility is independently enumerated; assertions
+use adjacency and protection rather than fixed block numbers. These synthetic
+summary overlays exercise prepare/abort only and are not evidence that such an
+overlay constitutes an admissible on-disk filesystem. Existing publication and
+extended campaigns continue checking older payloads through maintenance writes.
+
+The comparison uses baseline `23be37b` (tree-identical to merged `14b24ca`) and
+implementation/tests `680cb63`. The recovery runner, source census, seed, profile,
+reservation and caps are byte-for-byte unchanged. Both native builds use GCC
+16.2.1, `-O2 -g3`, on the same Linux 6.19.10 KVM development guest (16 vCPUs,
+32 GiB RAM, reported i9-12900K). Each measured process is pinned to CPU 2, runs
+serially with builds/other validation stopped, and uses the same Btrfs-backed
+`TMPDIR` and existing census. Caches are not dropped. This is a host-simulator
+observation, not an 8 GiB QEMU qualification or NVMe/guest filesystem benchmark.
+
+```sh
+TMPDIR=/path/to/test-storage /usr/bin/time -f 'wall_seconds=%e max_rss_kib=%M' \
+  taskset -c 2 build/pyxis-fs-tests --suite workload --profile recovery \
+  --seed 1 --source /path/to/census
+```
+
+Equal-progress time is the runner's cumulative sequential-call time at 1152
+completed calls (288 MiB), a checkpoint reached by both implementations. Whole
+command time includes formatting and independent cold verification and covers
+different amounts of work when a version refuses early. Metadata amplification
+is callback metadata bytes divided by confirmed useful bytes in the stated
+phase; comparing different completed histories is not an equal-work speed ratio.
+
+One complete command per revision establishes the completion outcomes below.
+For timing variation, a second unchanged process per revision repeats the common
+prefix. The 1152-call timing line is recorded before any debugger attachment;
+these diagnostic processes are later terminated and do not supply additional
+full-workload passes. No time after attachment is used. Baseline counters are
+sampled from its repeat before call 1258; changed counters come from a separate
+GDB run stopped at that same point (1257 calls, 329,515,008 useful bytes). The
+counter-only run uses an `offset == 329515008` entry breakpoint in
+`recovery_workload.c:write_expected` and file-qualified `stats`/`pool` symbols,
+avoiding the smaller file workload's identically named statics. Read-only
+snapshots supply equal-progress metadata and extent/map counts, then the process
+is terminated. Neither a shortened history nor resource refusal substitutes for
+the full changed command's successful completion.
+
+| Equal-progress measurement | Baseline | Contiguous selection |
+| --- | ---: | ---: |
+| 288 MiB cumulative mutation seconds, samples 1 / 2 | 256.390 / 255.264 | 184.981 / 184.554 |
+| Two-sample mean seconds | 255.827 | 184.768 |
+| Sample spread / mean | 0.440% | 0.231% |
+| 314.25 MiB: sequential-file extents (excluding 790 imported) | 7397 | 1257 |
+| 314.25 MiB: allocation-map records | 7572 | 2812 |
+| 314.25 MiB: user metadata bytes | 512,024,576 | 214,421,504 |
+| 314.25 MiB: maintenance metadata bytes | 971,857,920 | 382,631,936 |
+| 314.25 MiB: total metadata bytes/useful byte | 4.503232 | 1.811916 |
+
+At that checkpoint the mean is about 27.8% lower with contiguous selection.
+Two samples show local repeatability, not a confidence interval or a general
+hardware speedup; they include the simulator and host callback costs. At the
+same 314.25 MiB prefix, metadata bytes decrease by about 59.8%. Publication and
+flush counts remain identical: 1257 user plus 2514 maintenance publications,
+each with two flushes. The improvement comes from placement and fewer map/extent
+records, without changing durability granularity.
+
+The full changed run passes every requested mutation and durable verification:
+all 1 GiB of sequential output, 8,192,000 appended bytes, all 790 imported files
+(12,460,032 bytes), object identities and directory counts match independent
+expectations. Both retained states and the cross-state checker complete. Final
+generation is 18751, with E=6947/8192, M=360/4096, 13,762 allocation records and
+7639 claims. Charged memory peaks at 34,439,216 bytes, below the unchanged 128 MiB
+cap. The baseline complete command exits 1 at its original refusal; the changed
+complete command exits 0. Full command wall times are respectively 429.65 and
+1608.77 seconds, covering substantially different completed histories.
+
+| Changed full-run phase | Confirmed useful bytes | Total extents after phase | Metadata bytes/useful byte, including maintenance | Mutation-call seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Sequential, 4096 calls | 1,073,741,824 | 4886 (790 imported + 4096 new) | 5.355392 | 906.313 |
+| Independent appends, 2000 calls | 8,192,000 | 6886 | 826.107500 | 345.863 |
+| 32 partial overwrites and 32 renames | 262,176 | 6947 | 992.988161 | 13.467 |
+| Eight retained unlink/name-reuse rounds | 114,696 | 6947 | 3136.352654 | 18.057 |
+
+These phase denominators count confirmed written bytes, including overwrites;
+rename, unlink and cleanup metadata remain in their associated phase. The larger
+sequential history can have a higher average metadata ratio than the baseline's
+shorter prefix despite better placement at equal progress. The small-append phase
+retains 2000 distinct birth generations, and each synchronous call still rebuilds
+the whole allocation map and drains maintenance. Those measured costs remain a
+follow-up limitation, not a finalized allocation strategy or acceptable device
+performance target.
+
+All 111 quick groups and six seed-1 extended groups pass natively and with
+ASan/UBSan in the existing GCC 14.2.0 builder container. A focused old-writer
+regression run fails the new reclaimed-hole and protected-run adjacency checks;
+the new writer passes all four groups. Ordinary host tools and the Pyxis GCC
+16.2.0 freestanding archive build. The full populated workload above is native,
+not an additional full-history sanitizer run. This closes the observed placement
+failure for this exact 4 GiB history; it does not establish arbitrary fragmentation,
+all histories at E/M, real-host post-error recovery, native writable integration,
+8 GiB guest memory qualification or the outstanding 64/256 GiB profiles. Task 7
+remains incomplete.

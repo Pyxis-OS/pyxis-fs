@@ -568,6 +568,15 @@ for each transaction. `prepare` holds the serial operation gate until `commit` o
 usable. There is no public test transaction interface. File mutation uses this
 same private path; it does not introduce an alternate publisher.
 
+Volume preparation prefers the first physically contiguous eligible run covering
+the existing 128-block candidate reservation. Eligibility still intersects both
+retained maps and excludes either state's live claims; adjacent eligible map
+segments may form one run. If no run is large enough, preparation uses the existing
+fragmented selection. This preference adds no contiguity admission requirement,
+changes no reservation size or E/M limit, and retains the existing
+lowest-eligible-first selection policy for pool metadata. Only blocks used by the final candidate become allocations. Physical
+fragmentation and different publication births can still prevent extent coalescing.
+
 Every admitted publication writes its complete replacement blocks, flushes,
 attempts the older slot once, then flushes again. No short/failed write is retried.
 All map nodes, pool root and changed catalog path are included in allocation
