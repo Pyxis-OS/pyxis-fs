@@ -493,6 +493,79 @@ extent_cross_leaf_overlap_is_refused(void)
 }
 
 static void
+extent_new_split_overlap_is_refused(void)
+{
+  start_case(PFS_INDEX_EXTENTS);
+  candidate.birth = 2;
+  uint8_t data[57][64];
+  struct pfs_encoded_record records[57];
+  struct pfs_record_context context = context_for(1);
+  for (unsigned i = 0; i < 57; ++i) {
+    struct pfs_extent_record extent = {
+      .mapping = {.logical_first = 2 * i, .count = 1, .physical_first = 9000 + i, .birth = 1},
+    };
+    records[i].data = data[i];
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_extent_record_encode(data[i], sizeof(data[i]),
+      &context, &extent, &records[i].length));
+  }
+  candidate.root = write_tree(600, 0, records, 57);
+  struct pfs_edit_candidate original;
+  memcpy(&original, &candidate, sizeof(original));
+  memcpy(saved_slots, slots, sizeof(slots));
+  static struct pfs_reference saved_retired[EDIT_TEST_SLOTS];
+  memcpy(saved_retired, retired, sizeof(retired));
+  uint64_t writes = fixture.writes;
+  uint8_t replacement[64];
+  struct pfs_extent_record extent = {
+    .mapping = {.logical_first = 111, .count = 2, .physical_first = 9100, .birth = 2},
+  };
+  context = context_for(candidate.birth);
+  struct pfs_encoded_record record = {.data = replacement};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_extent_record_encode(replacement, sizeof(replacement),
+    &context, &extent, &record.length));
+  struct pfs_key key = extent_key(111);
+  /* The extra record forces a split; [111,113) overlaps [112,113). */
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+  TEST_ASSERT_EQUAL_MEMORY(&original, &candidate, sizeof(candidate));
+  TEST_ASSERT_EQUAL_MEMORY(saved_slots, slots, sizeof(slots));
+  TEST_ASSERT_EQUAL_MEMORY(saved_retired, retired, sizeof(retired));
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+
+  /* [111,112) touches both neighbors and remains valid across the split. */
+  extent.mapping.count = 1;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_extent_record_encode(replacement, sizeof(replacement),
+    &context, &extent, &record.length));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_edit_tree(&candidate, &workspace, PFS_EDIT_INSERT, &key, &record));
+  get_node(candidate.root, 0);
+  TEST_ASSERT_EQUAL(1, walk_tree[0].level);
+  TEST_ASSERT_EQUAL(2, walk_tree[0].count);
+  unsigned position = 0;
+  for (uint16_t i = 0; i < walk_tree[0].count; ++i) {
+    struct pfs_internal_record child;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_internal_record_decode(walk_data[0] + walk_tree[0].slots[i].offset,
+      walk_tree[0].slots[i].length, PFS_INDEX_EXTENTS, &context, &child));
+    get_node(child.child, 1);
+    for (uint16_t j = 0; j < walk_tree[1].count; ++j, ++position) {
+      TEST_ASSERT_LESS_THAN(58, position);
+      struct pfs_extent_record actual;
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_extent_record_decode(walk_data[1] + walk_tree[1].slots[j].offset,
+        walk_tree[1].slots[j].length, &context, &actual));
+      uint64_t logical = position < 56 ? 2 * position : position == 56 ? 111 : 112;
+      TEST_ASSERT_EQUAL_UINT64(logical, actual.mapping.logical_first);
+      TEST_ASSERT_EQUAL_UINT64(1, actual.mapping.count);
+      TEST_ASSERT_EQUAL_UINT64(position == 56 ? 9100 : 9000 + logical / 2,
+        actual.mapping.physical_first);
+      TEST_ASSERT_EQUAL_UINT64(position == 56 ? 2 : 1, actual.mapping.birth);
+    }
+  }
+  TEST_ASSERT_EQUAL(58, position);
+  TEST_ASSERT_EQUAL(1, candidate.retired_count);
+  TEST_ASSERT_EQUAL_MEMORY(&original.root, &retired[0], sizeof(retired[0]));
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+}
+
+static void
 sparse_internal_merge_collapses_root(void)
 {
   sparse_repair(2);
@@ -769,6 +842,7 @@ run_edit_tests(void)
   RUN_TEST(namespace_edits_preserve_order_profile_and_published_blocks);
   RUN_TEST(repeated_updates_reuse_private_buffers_and_fail_atomically);
   RUN_TEST(extent_cross_leaf_overlap_is_refused);
+  RUN_TEST(extent_new_split_overlap_is_refused);
   RUN_TEST(sparse_internal_merge_collapses_root);
   RUN_TEST(sparse_internal_redistribution_preserves_depth);
   RUN_TEST(minimum_and_maximum_component_lengths);

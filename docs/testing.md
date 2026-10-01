@@ -32,8 +32,8 @@ executed total; several groups contain boundary tables or repeated edit historie
 | Encoding and corruption | Independently assembled orphan/volume vectors; feature scope; checkpoint and unknown rights; reserved bytes, padding and compatible extensions; canonical block/tree encoding |
 | Orphan recognition | Named-or-orphan exclusivity, missing/root/parent conflicts, empty orphan directories, retained file data/grants, diagnostic reads and refusal of fresh ordinary acquisition |
 | Formatter | Root exceptions, short leaf/internal tails and mixed/minimum/maximum names; occupancy, exact minima, payloads, grants and metadata/allocation accounting across 30 populated fixtures |
-| Private tree edits | Independently maintained expected entries through insert/update/delete histories; exact minima, ordering, byte fit, namespace occupancy, split/merge/redistribution/root collapse; maximum-depth sparse deletion, separator growth during namespace deletion, unpublished buffer reuse and atomic refusal |
-| Private map planning | Independent interval/ownership expectations, canonical coalescing, unchanged inputs and refusal outputs; fragmented interior allocations accounting for every replacement map/catalog/root block, exact finite bounds and reachable nonempty nodes |
+| Private tree edits | Independently maintained expected entries through insert/update/delete histories; exact minima, ordering, byte fit, namespace occupancy, split/merge/redistribution/root collapse; maximum-depth sparse deletion, separator growth during namespace deletion, unpublished buffer reuse and atomic refusal; overlapping newly split extents rejected while touching ranges remain valid |
+| Private map planning | Independent interval/ownership expectations, canonical coalescing, unchanged inputs and refusal outputs; inconsistent deltas distinguished from corrupt bases; fragmented interior allocations accounting for every replacement map/catalog/root block, exact finite bounds and reachable nonempty nodes |
 | Reserved memory | Accepted profile arithmetic, capped arena reservation, allocation failure, release and no further allocation/I/O during private map planning |
 
 On 2026-10-01 the 30 task-2 groups passed with native GCC 16.2.1 in 2.22 seconds
@@ -43,6 +43,16 @@ compiled the freestanding archive, and the parent kernel and host tools built.
 A fresh 64 MiB source import passed both-state checking and byte-for-byte
 extraction comparison. These are bounded host observations; no QEMU/guest or
 large-workload validation is claimed.
+
+The combined review adds two focused regression groups (32 total): split-boundary
+extent adjacency and map-delta error classification. All 32 pass in the native
+host build and with ASan/UBSan in the existing builder container; the Pyxis target
+archive also compiles. The split regression fails
+against the previous editor, which incorrectly accepts `[111,113)` into a leaf
+of 57 one-block extents at `0,2,...,112`. The corrected editor rejects it without
+changing the candidate and accepts `[111,112)`. These tests do not establish
+suitability for Caelum's kernel-task stack; the native integration prerequisite
+is recorded in [private candidate planning](core.md#private-candidate-planning).
 
 Fixture storage and allocator controls live in `tests/support.c`, behind the
 existing platform callbacks. Temporary sparse files satisfy the format geometry

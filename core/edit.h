@@ -62,7 +62,8 @@ enum pfs_edit_operation {
 /* Candidate birth exceeds every source birth; context supplies the index owners,
  * geometry, pool and understood features. Empty indexes have a zero root.
  * UPDATE requires identical key and encoded length. Extent ranges cannot overlap
- * the next leaf; a range ending exactly at its minimum remains valid.
+ * the next leaf, including across a newly split leaf boundary; touching ranges
+ * remain valid.
  * VOLUMES supports UPDATE only.
  * Success replaces the candidate root, staging buffers and retirement list;
  * failure leaves all candidate state unchanged. No device writes or allocation.

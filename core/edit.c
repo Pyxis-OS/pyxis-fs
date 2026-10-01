@@ -229,6 +229,22 @@ partition(struct pfs_edit_candidate *candidate, struct pfs_edit_workspace *works
   if (!cut) {
     return PFS_LIMIT;
   }
+  /* Each leaf encoder checks its own adjacency; also check the new boundary. */
+  if (!level && candidate->context.kind == PFS_INDEX_EXTENTS) {
+    struct pfs_record_context context = record_context(candidate, candidate->birth);
+    struct pfs_extent_record left, right;
+    enum pfs_status status = pfs_extent_record_decode(records[cut - 1].data,
+      records[cut - 1].length, &context, &left);
+    if (status == PFS_OK) {
+      status = pfs_extent_record_decode(records[cut].data, records[cut].length, &context, &right);
+    }
+    if (status != PFS_OK) {
+      return status;
+    }
+    if (left.mapping.logical_first + left.mapping.count > right.mapping.logical_first) {
+      return PFS_INVALID;
+    }
+  }
   enum pfs_status status = emit(candidate, workspace, level, records, cut,
                                 &result->children[0], &result->minima[0]);
   if (status == PFS_OK) {

@@ -322,8 +322,11 @@ staging slots, retirement references and disjoint workspace before calling.
 Failure leaves the candidate root, slots and retirement list unchanged; workspace
 is scratch. Superseded private nodes are discarded, not durably retired.
 Extent insert/update also enforces the nearest successor subtree minimum: a
-range may end at that boundary but cannot overlap the next leaf. There are no
-device writes or heap allocations during an edit.
+range may end at that boundary but cannot overlap the next leaf. Split plans
+also check adjacency between the last extent in the new left leaf and the first
+in the new right leaf. Overlap is `PFS_INVALID`, with the candidate unchanged;
+touching ranges remain valid. There are no device writes or heap allocations
+during an edit.
 
 At maximum depth eight, insert plans create at most 15 nodes and retire eight;
 fixed-length updates create/retire eight. Sparse deletes create/retire at most
@@ -334,6 +337,8 @@ not complete transaction/admission costs.
 checking the source state, owner, birth, retirement and charge before replacing
 each range and coalescing the result. Inputs remain unchanged; the result count
 is published only on success, while output bytes are scratch on failure.
+A delta whose expected before-state disagrees with the validated base is a
+caller error (`PFS_INVALID`); malformed base data remains `PFS_CORRUPT`.
 Protection and valid retire/free transitions require separate caller evidence.
 
 `pfs_plan_map_build` takes a canonical base after volume changes, old pool/map/
@@ -372,6 +377,15 @@ charges to the same memory owner. Arena creation owns one allocation; destroy
 clears its pointers. These computed envelopes and reserved storage do not prove
 physical backing, free capacity, permanent deletion promises or writable
 admission. See [maintained contract checks](testing.md) for exercised boundaries.
+
+The private edit/validation/codec call path is not yet suitable for Caelum's
+16 KiB kernel-task stack. Pyxis GCC 16.2.0 with kernel flags reports 19,120 bytes
+across the principal nested frames after the split-boundary correction (19,104
+in the reviewed version), before deeper helpers and outer frames. These private objects are
+not kernel-linked; host checks and target compilation do not qualify their stack
+usage. Resolving this, preferably with caller-reserved temporary workspace, is a
+[prerequisite for native writable integration](https://git.internal/PyxisOS/pyxis-os/src/branch/main/docs/technical-debt.md#writable-filesystem-kernel-stack-prerequisite).
+The buffer refactor is deferred beyond this task.
 
 ## Policy acquisition and ordinary views
 
