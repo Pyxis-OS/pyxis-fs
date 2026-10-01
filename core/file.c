@@ -487,7 +487,7 @@ pfs_file_write(struct pfs_volume *volume, const struct pfs_object_id *id,
     /* A distant extending write must first discard the old partial EOF suffix.
      * The payload case in that same block combines both edits below. */
     if (offset + length > original_length && original_length % PFS_BLOCK_SIZE &&
-        position / PFS_BLOCK_SIZE != original_length / PFS_BLOCK_SIZE) {
+        position / PFS_BLOCK_SIZE > original_length / PFS_BLOCK_SIZE) {
       struct pfs_extent_mapping old;
       uint64_t eof_block = original_length / PFS_BLOCK_SIZE;
       if (mapping_find(mutation, id, eof_block, false, &old)) {
