@@ -3,6 +3,7 @@
 
 #include "internal.h"
 #include "read_internal.h"
+#include "writer_access.h"
 
 #define DIRECTORY_POSITION_SLOT_BITS 8u
 #define DIRECTORY_POSITION_SLOT_MASK UINT64_C(0xff)
@@ -113,8 +114,12 @@ enum pfs_status
 pfs_pool_open(struct pfs_pool *pool, const struct pfs_block_reader *reader,
               struct pfs_memory *memory, struct pfs_pool_diagnostic *diagnostic)
 {
+  if (pfs_writer_active(pool)) {
+    return PFS_BUSY;
+  }
   if (!pool || !reader || !reader->read || !memory || !diagnostic ||
-      pool->reader || pool->memory || pool->state.owner || pool->state.data ||
+      pool->reader || pool->memory || pool->writer || pool->writer_busy ||
+      pool->state.owner || pool->state.data ||
       pool->state.size || pool->state.alignment || reader->geometry.block_count < 3 ||
       !reader->geometry.max_transfer_blocks || !memory->allocate || !memory->free ||
       !memory->limit || memory->limit > PFS_MEMORY_MAX || memory->used > memory->limit) {
@@ -194,7 +199,10 @@ pfs_pool_close(struct pfs_pool *pool)
   if (!pool) {
     return PFS_INVALID;
   }
-  if (!pool->state.data && !pool->reader && !pool->memory) {
+  if (pfs_writer_active(pool)) {
+    return PFS_BUSY;
+  }
+  if (!pool->state.data && !pool->reader && !pool->memory && !pool->writer) {
     return PFS_OK;
   }
   if (!pool->state.data || !pool->reader || !pool->memory ||
@@ -204,10 +212,16 @@ pfs_pool_close(struct pfs_pool *pool)
   if (((struct pool_state *)pool->state.data)->volumes) {
     return PFS_BUSY;
   }
-  enum pfs_status status = pfs_memory_free(pool->memory, &pool->state);
+  enum pfs_status status = pfs_writer_lifetime_begin(pool);
+  if (status != PFS_OK) {
+    return status;
+  }
+  pfs_writer_dispose(pool);
+  status = pfs_memory_free(pool->memory, &pool->state);
   if (status == PFS_OK) {
     pool->reader = NULL;
     pool->memory = NULL;
+    pool->writer_busy = false;
   }
   return status;
 }
@@ -772,6 +786,12 @@ pfs_pool_diagnostic_volumes(struct pfs_pool *pool, struct pfs_volume_record *out
   if (!pool || !pool->reader || !pool->memory || !pool->state.data || !out || !count) {
     return PFS_INVALID;
   }
+  if (pfs_writer_active(pool)) {
+    return PFS_BUSY;
+  }
+  if (pool->writer) {
+    return PFS_READ_ONLY;
+  }
   const struct pool_state *state = pool->state.data;
   const struct pfs_pool_candidate *selected = &state->diagnostic.candidate[state->diagnostic.selected];
   if (capacity < selected->root.volume_count) {
@@ -817,7 +837,9 @@ static const struct pfs_pool_candidate *
 selected_candidate(const struct pfs_pool *pool)
 {
   const struct pool_state *state = pool->state.data;
-  return &state->diagnostic.candidate[state->diagnostic.selected];
+  const struct pfs_pool_diagnostic *diagnostic = pool->writer ?
+    pfs_writer_diagnostic(pool) : &state->diagnostic;
+  return &diagnostic->candidate[diagnostic->selected];
 }
 
 static enum pfs_status
@@ -1192,8 +1214,8 @@ ancestry_collect(struct catalog_operation *operation, const struct pfs_object_id
   }
 }
 
-enum pfs_status
-pfs_pool_diagnostic_volume_open(struct pfs_pool *pool, const struct pfs_volume_id *id,
+static enum pfs_status
+volume_open(struct pfs_pool *pool, const struct pfs_volume_id *id,
                                 struct pfs_volume *volume)
 {
   if (!pool || !pool->state.data || !pool->reader || !pool->memory || !id || !volume ||
@@ -1285,15 +1307,23 @@ pfs_volume_close(struct pfs_volume *volume)
   if (!volume_live(volume)) {
     return PFS_INVALID;
   }
+  if (pfs_writer_active(volume->pool)) {
+    return PFS_BUSY;
+  }
   if (((struct volume_state *)volume->state.data)->retained) {
     return PFS_BUSY;
   }
   struct pfs_pool *pool = volume->pool;
-  enum pfs_status status = pfs_memory_free(pool->memory, &volume->state);
+  enum pfs_status status = pfs_writer_lifetime_begin(pool);
+  if (status != PFS_OK) {
+    return status;
+  }
+  status = pfs_memory_free(pool->memory, &volume->state);
   if (status == PFS_OK) {
     --((struct pool_state *)pool->state.data)->volumes;
     volume->pool = NULL;
   }
+  pfs_writer_end(pool, status);
   return status;
 }
 
@@ -1338,7 +1368,7 @@ pfs_volume_pool_id(const struct pfs_volume *volume)
 }
 
 enum pfs_status
-pfs_volume_diagnostic_metadata(struct pfs_volume *volume, struct pfs_volume_record *out)
+pfs_volume_metadata(struct pfs_volume *volume, struct pfs_volume_record *out)
 {
   if (!volume_live(volume) || !out) {
     return PFS_INVALID;
@@ -1349,7 +1379,7 @@ pfs_volume_diagnostic_metadata(struct pfs_volume *volume, struct pfs_volume_reco
 }
 
 enum pfs_status
-pfs_volume_diagnostic_ancestry(struct pfs_volume *volume, const struct pfs_object_id *id,
+pfs_volume_ancestry(struct pfs_volume *volume, const struct pfs_object_id *id,
                               struct pfs_object_record *out, size_t capacity, size_t *count)
 {
   if (!volume_live(volume) || !id || !count || (!out && capacity) ||
@@ -1381,7 +1411,7 @@ pfs_volume_diagnostic_ancestry(struct pfs_volume *volume, const struct pfs_objec
 }
 
 enum pfs_status
-pfs_volume_diagnostic_object(struct pfs_volume *volume, const struct pfs_object_id *id,
+pfs_volume_object(struct pfs_volume *volume, const struct pfs_object_id *id,
                             struct pfs_object_record *out)
 {
   if (!volume_live(volume) || !id || !out || pfs_bytes_are_zero(id->bytes, PFS_ID_SIZE)) {
@@ -1404,7 +1434,7 @@ pfs_volume_diagnostic_object(struct pfs_volume *volume, const struct pfs_object_
 }
 
 enum pfs_status
-pfs_volume_diagnostic_resolve(struct pfs_volume *volume, const struct pfs_object_id *root,
+pfs_volume_resolve(struct pfs_volume *volume, const struct pfs_object_id *root,
                              const uint8_t *path, size_t length, struct pfs_object_record *out)
 {
   if (!volume_live(volume) || !root || !out || (!path && length) ||
@@ -1489,7 +1519,7 @@ pfs_volume_diagnostic_resolve(struct pfs_volume *volume, const struct pfs_object
 }
 
 enum pfs_status
-pfs_volume_diagnostic_grants(struct pfs_volume *volume, const struct pfs_object_id *id,
+pfs_volume_grants(struct pfs_volume *volume, const struct pfs_object_id *id,
                             struct pfs_grant_record *out, size_t capacity, size_t *count)
 {
   if (!volume_live(volume) || !id || !count || (!out && capacity) ||
@@ -1697,7 +1727,7 @@ range_match(struct catalog_operation *operation, uint64_t first, uint64_t count,
 }
 
 enum pfs_status
-pfs_volume_diagnostic_read(struct pfs_volume *volume, const struct pfs_object_id *id,
+pfs_volume_read(struct pfs_volume *volume, const struct pfs_object_id *id,
                           uint64_t offset, void *buffer, size_t length, size_t *count)
 {
   if (!volume_live(volume) || !id || !count || (!buffer && length) ||
@@ -1783,8 +1813,14 @@ pfs_volume_diagnostic_directory_open(struct pfs_volume *volume, const struct pfs
       cursor->state.data || cursor->state.size || cursor->state.alignment) {
     return PFS_INVALID;
   }
+  if (pfs_writer_active(volume->pool)) {
+    return PFS_BUSY;
+  }
+  if (volume->pool->writer) {
+    return PFS_READ_ONLY;
+  }
   struct pfs_object_record object;
-  enum pfs_status status = pfs_volume_diagnostic_object(volume, id, &object);
+  enum pfs_status status = pfs_volume_object(volume, id, &object);
   if (status != PFS_OK) {
     return status;
   }
@@ -1821,6 +1857,9 @@ pfs_directory_close(struct pfs_directory_cursor *cursor)
   }
   if (!volume_live(cursor->volume) || !cursor->state.data) {
     return PFS_INVALID;
+  }
+  if (pfs_writer_active(cursor->volume->pool)) {
+    return PFS_BUSY;
   }
   enum pfs_status status = pfs_memory_free(cursor->volume->pool->memory, &cursor->state);
   if (status == PFS_OK) {
@@ -2081,4 +2120,111 @@ pfs_volume_directory_page(struct pfs_volume *volume, const struct pfs_object_id 
   pfs_memory_free(volume->pool->memory, &output);
   operation_destroy(operation, &storage);
   return status;
+}
+
+
+enum pfs_status
+pfs_volume_begin(struct pfs_volume *volume)
+{
+  if (!volume_live(volume)) {
+    return PFS_INVALID;
+  }
+  struct pfs_pool *pool = volume->pool;
+  enum pfs_status status = pfs_writer_begin(pool, false);
+  if (status != PFS_OK) {
+    return status;
+  }
+  if (pool->writer) {
+    struct volume_state *state = volume->state.data;
+    uint64_t birth;
+    const struct pfs_volume_record *record = pfs_writer_volume(pool, &state->record.id, &birth);
+    if (!record) {
+      pfs_writer_end(pool, PFS_NOT_FOUND);
+      return PFS_NOT_FOUND;
+    }
+    state->record = *record;
+    state->birth = birth;
+  }
+  return PFS_OK;
+}
+
+static enum pfs_status
+diagnostic_available(const struct pfs_pool *pool)
+{
+  if (pfs_writer_active(pool)) {
+    return PFS_BUSY;
+  }
+  return pool && pool->writer ? PFS_READ_ONLY : PFS_OK;
+}
+
+enum pfs_status
+pfs_pool_diagnostic_volume_open(struct pfs_pool *pool, const struct pfs_volume_id *id,
+                                struct pfs_volume *volume)
+{
+  enum pfs_status status = diagnostic_available(pool);
+  return status == PFS_OK ? volume_open(pool, id, volume) : status;
+}
+
+enum pfs_status
+pfs_pool_volume_open(struct pfs_pool *pool, const struct pfs_volume_id *id,
+                     struct pfs_volume *volume)
+{
+  if (!pool || !pool->state.data || !pool->reader || !pool->memory || !id || !volume ||
+      pfs_bytes_are_zero(id->bytes, PFS_ID_SIZE) || volume->pool || volume->state.owner ||
+      volume->state.data || volume->state.size || volume->state.alignment) {
+    return PFS_INVALID;
+  }
+  enum pfs_status status = pfs_writer_begin(pool, false);
+  if (status == PFS_OK) {
+    status = volume_open(pool, id, volume);
+    pfs_writer_end(pool, status);
+  }
+  return status;
+}
+
+enum pfs_status
+pfs_volume_diagnostic_metadata(struct pfs_volume *volume, struct pfs_volume_record *out)
+{
+  enum pfs_status status = diagnostic_available(volume ? volume->pool : NULL);
+  return status == PFS_OK ? pfs_volume_metadata(volume, out) : status;
+}
+
+enum pfs_status
+pfs_volume_diagnostic_ancestry(struct pfs_volume *volume, const struct pfs_object_id *id,
+  struct pfs_object_record *out, size_t capacity, size_t *count)
+{
+  enum pfs_status status = diagnostic_available(volume ? volume->pool : NULL);
+  return status == PFS_OK ? pfs_volume_ancestry(volume, id, out, capacity, count) : status;
+}
+
+enum pfs_status
+pfs_volume_diagnostic_object(struct pfs_volume *volume, const struct pfs_object_id *id,
+  struct pfs_object_record *out)
+{
+  enum pfs_status status = diagnostic_available(volume ? volume->pool : NULL);
+  return status == PFS_OK ? pfs_volume_object(volume, id, out) : status;
+}
+
+enum pfs_status
+pfs_volume_diagnostic_resolve(struct pfs_volume *volume, const struct pfs_object_id *root,
+  const uint8_t *path, size_t length, struct pfs_object_record *out)
+{
+  enum pfs_status status = diagnostic_available(volume ? volume->pool : NULL);
+  return status == PFS_OK ? pfs_volume_resolve(volume, root, path, length, out) : status;
+}
+
+enum pfs_status
+pfs_volume_diagnostic_grants(struct pfs_volume *volume, const struct pfs_object_id *id,
+  struct pfs_grant_record *out, size_t capacity, size_t *count)
+{
+  enum pfs_status status = diagnostic_available(volume ? volume->pool : NULL);
+  return status == PFS_OK ? pfs_volume_grants(volume, id, out, capacity, count) : status;
+}
+
+enum pfs_status
+pfs_volume_diagnostic_read(struct pfs_volume *volume, const struct pfs_object_id *id,
+  uint64_t offset, void *buffer, size_t length, size_t *count)
+{
+  enum pfs_status status = diagnostic_available(volume ? volume->pool : NULL);
+  return status == PFS_OK ? pfs_volume_read(volume, id, offset, buffer, length, count) : status;
 }
