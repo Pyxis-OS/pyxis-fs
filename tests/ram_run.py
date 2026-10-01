@@ -562,6 +562,14 @@ def baseline(binary, name, identity):
     return results
 
 
+def connect_result(name):
+    trace_path(name)
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.connect('\0' + name)
+    sys.stdout = connection.makefile('w', buffering=1)
+    sys.stderr = sys.stdout
+
+
 def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
     require(not ci_quick or suite == 'check', 'CI storage mode is restricted to the quick suite')
     evidence = preflight(ci_quick)
@@ -578,11 +586,7 @@ def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
     os.environ['HOME'] = os.environ['TMPDIR']
     evidence.update(worker_uid=identity[0], worker_gid=identity[1])
     if result_socket:
-        trace_path(result_socket)
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.connect('\0' + result_socket)
-        sys.stdout = connection.makefile('w', buffering=1)
-        sys.stderr = sys.stdout
+        connect_result(result_socket)
     runner = build / 'pyxis-fs-tests'
     comparison = build / 'pyxis-fs-compare'
     targets = ['all', str(runner)] + ([str(comparison)] if suite in ('baseline', 'safety') else [])
@@ -633,8 +637,16 @@ def main():
     if args.inside:
         identity = worker_identity() if args.worker_uid is None else (args.worker_uid, args.worker_gid)
         require(all(value is not None and value > 0 for value in identity), 'invalid worker identity')
-        result = json.dumps(inner(args.suite, args.name, args.ci_quick, identity, args.result_socket),
-                            sort_keys=True, separators=(',', ':'))
+        try:
+            result = json.dumps(inner(args.suite, args.name, args.ci_quick, identity, args.result_socket),
+                                sort_keys=True, separators=(',', ':'))
+        except (RuntimeError, OSError, ValueError):
+            if args.result_socket and sys.stdout is sys.__stdout__:
+                # Preflight/setup errors still use the selected sender identity.
+                if args.suite not in ('baseline', 'safety'):
+                    drop_privileges(identity)
+                connect_result(args.result_socket)
+            raise
         require(len(result.encode()) <= 65536, 'summary exceeds 64 KiB')
         print(result)
         return

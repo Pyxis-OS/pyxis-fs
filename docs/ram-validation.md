@@ -116,7 +116,9 @@ operations between barriers have a weaker recovery contract and are reported
 separately. Both native modes finish with parent fsync, filesystem sync and clean
 unmount. No cross-call batching is added to Pyxis.
 
-The native comparison requires held read-only descriptors for its workload root,
+The native comparison supports ext4 with an internal journal and single-device
+Btrfs; external ext4 journal UUID/device fields and multi-device Btrfs are refused.
+It requires held read-only descriptors for its workload root,
 loop device and regular backing file, supplied by the launcher. Before workload
 writes, it independently ties the actual root mount source to that autoclear
 loop, verifies its backing identity, and requires the backing file to be on the
@@ -298,6 +300,17 @@ inodes and 3 GiB / 131,072 inodes; both guards accepted these distinct bounded
 inputs, and refused unlimited bytes or inodes. The C guard refused a root
 workload, and socket probes accepted the selected non-root peer and rejected a
 different UID. These tests did not allocate payloads up to the configured caps.
+
+The final native safety run passed both 32-file/compiler cases and ten refusal
+checks as UID/GID 1000. Tracing counted 55,422,976 ext4 and 21,716,992 Btrfs submitted
+bytes including formatting and final unmount, entirely on RAM-backed loops; no
+trace loss/budget failure occurred. Peak job memory was 300,560,384 bytes, with
+zero swap/max/OOM events. Four additional in-memory journal-field probes accepted
+an internal ext4 journal and refused external UUID/device or missing internal
+inode fields. The scoped missing-scratch probe preserved its diagnostic through
+the authenticated non-root result socket. These are small safety checks, not a
+new performance baseline or real-host durability qualification. The original
+comparison measurements and primary timing table are unchanged.
 
 Keep `Filesystem / host-contract (pull_request)` required in pyxis-fs. Pyxis's
 existing `Build Pyxis / build (pull_request)` check explicitly requires the
