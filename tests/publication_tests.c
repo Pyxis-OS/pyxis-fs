@@ -625,6 +625,11 @@ real_publications_carry_debt_and_preserve_retained_payloads(void)
     TEST_ASSERT_TRUE(writer_status().drain_pending);
     TEST_ASSERT_TRUE(retained_payload(&device, 0));
     TEST_ASSERT_TRUE(retained_payload(&device, 1));
+    if (step == 1) {
+      for (size_t i = 0; i < sizeof(first_retired) / sizeof(first_retired[0]); i++) {
+        TEST_ASSERT_TRUE(selection_block_eligible(first_retired[i]));
+      }
+    }
   }
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(view, &result));
   TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, result.maintenance_completion);
@@ -633,9 +638,6 @@ real_publications_carry_debt_and_preserve_retained_payloads(void)
   TEST_ASSERT_FALSE(payload_violation);
   TEST_ASSERT_GREATER_THAN_UINT(0, slot_writes(&device));
   TEST_ASSERT_EQUAL_UINT(slot_writes(&device), payload_checks);
-  for (size_t i = 0; i < sizeof(first_retired) / sizeof(first_retired[0]); i++) {
-    TEST_ASSERT_TRUE(selection_block_eligible(first_retired[i]));
-  }
   uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
   uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
   uint64_t generation = durable_generation(&device);
@@ -878,6 +880,7 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
   const struct pfs_rights rights = {.file = PFS_FILE_READ | PFS_FILE_WRITE | PFS_FILE_CHECKPOINT};
   struct pfs_trusted_context authority = {.principal = {{5}}, .root = {{3}},
     .scope = PFS_SCOPE_SUBTREE, .ceiling = rights};
+  authority.ceiling.directory = PFS_DIR_LOOKUP;
   for (size_t i = 0; i < 3; i++) {
     rolling_volumes[i] = (struct pfs_volume){0};
     rolling_views[i] = NULL;

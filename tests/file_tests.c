@@ -1147,7 +1147,7 @@ public_overwrite_reuse_and_shrink_preserve_both_payloads_through_maintenance(voi
 }
 
 static void
-named_close_and_pool_disposal_leave_pending_debt_without_io(void)
+named_close_leaves_pending_debt_and_pool_disposal_is_io_free(void)
 {
   build_seed(PFS_BLOCK_SIZE, 1024, 64);
   open_device();
@@ -1192,7 +1192,7 @@ run_file_tests(void)
   RUN_TEST(public_write_flush_failures_preserve_progress_and_stop_without_retry);
   RUN_TEST(planning_read_and_replacement_write_failures_keep_distinct_health);
   RUN_TEST(public_overwrite_reuse_and_shrink_preserve_both_payloads_through_maintenance);
-  RUN_TEST(named_close_and_pool_disposal_leave_pending_debt_without_io);
+  RUN_TEST(named_close_leaves_pending_debt_and_pool_disposal_is_io_free);
   RUN_TEST(creation_failures_publish_a_view_only_after_confirmed_namespace_commit);
   RUN_TEST(live_directory_tokens_follow_namespace_changes_and_writer_instance);
   RUN_TEST(creation_randomness_refuses_zero_and_existing_identity_without_publication);
