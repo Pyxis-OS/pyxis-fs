@@ -131,8 +131,8 @@ and are not measurements of the sorting change. Linking the revised test runner
 against the pre-review writer (`e768b6c`) fails exactly the two new planning and
 maintenance read-error groups: it incorrectly reports `READABLE_STOPPED`.
 
-The minimum-resource fixture uses 16,384 blocks, two objects and one data mapping.
-The E=1/M=3 profile computes H=27, recovery=465, Pmax=29 and an arena of
+The initial synchronous-drain qualification used 16,384 blocks, two objects and
+one data mapping. Its then-current E=1/M=3 profile computed H=27, recovery=465, Pmax=29 and an arena of
 9,644,032 bytes. Ordinary and migration reserves stay at their 1,024-block
 formatter floors; quota=4 and a separate exact pool-promise boundary are covered.
 The same small reachable fixture with E=4096/M=2048 computes H=375,
@@ -715,3 +715,36 @@ failure for this exact 4 GiB history; it does not establish arbitrary fragmentat
 all histories at E/M, real-host post-error recovery, native writable integration,
 8 GiB guest memory qualification or the outstanding 64/256 GiB profiles. Task 7
 remains incomplete.
+
+## Bounded retirement carryover coverage
+
+The maintained quick suite now exercises consecutive ordinary and orphan batches
+with healthy pending retirement, rather than inserting implicit fences between
+operations. It verifies derived record/workspace/generation bounds, refusal
+before admission, allocation-free private publications and complete funded orphan
+cleanup/terminal fences. Ordinary public authorization and reads can allocate
+before admission; the no-additional-allocation promise applies to admitted work,
+not every reader call.
+
+The cross-volume fixture discovers a shared catalog leaf pair and another leaf
+from its encoded image, then exercises three volumes without restricting allocator
+placement. An independent per-generation payload ledger checks every retained
+file before slot writes, after replacement writes, in both rolling and startup
+fences. It also imports a fully checked nonadjacent pair protecting two owners;
+opening must use its broader profile and establish an empty volume-debt seed.
+A durable allocation-tree walk verifies old cohorts are free at the freeing
+publication boundary; later publications may legitimately reuse those ranges.
+
+Checkpoint-only held rights settle pool-wide debt without read/lookup widening or
+orphan deletion. Tests cover no-publication idempotence, complete final orphan
+release with pending retirement, I/O-free volume/pool disposal, independently
+confirmed prefixes, and actual planning/replacement/slot failures with sticky
+provenance. Healthy-trace cuts identify initial startup fences, object cleanup and
+trailing fences by independently observed logical progress. Publication counts,
+physical numbers, fixture shape and benchmark configuration are not acceptance
+assertions. The deliberate two-flush protocol and proved resource bounds remain.
+
+See [matched RAM measurements](retirement-carryover-measurements.md) for the
+unchanged comparison through all trailing maintenance. This bounded suite does
+not close task 7, qualify real-host post-error recovery or enable the Caelum
+writer; the kernel-stack integration prerequisite remains deferred.
