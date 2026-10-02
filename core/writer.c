@@ -807,6 +807,7 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
   writer->map_metrics.growth_passes = incremental->growth_passes;
   writer->map_metrics.largest_addition = incremental->largest_addition;
   writer->map_metrics.redistribution_additions = incremental->redistribution_additions;
+  writer->map_metrics.repair = incremental->repair;
   writer->map_metrics.failed_run_leaves = incremental->failed_run_leaves;
   writer->map_metrics.failed_run_records = incremental->failed_run_records;
   writer->map_metrics.fallback |= incremental->fallback;

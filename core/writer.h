@@ -4,6 +4,7 @@
 
 #include "admit.h"
 #include "edit.h"
+#include "incremental_map.h"
 #include "writer_access.h"
 
 struct pfs_batch_block {
@@ -53,6 +54,7 @@ struct pfs_map_metrics {
   uint64_t generation;
   size_t source_nodes, closure_nodes, replacement_nodes, bulk_reference_nodes;
   size_t growth_passes, largest_addition, redistribution_additions;
+  struct pfs_incremental_repair_metrics repair;
   size_t failed_run_leaves, failed_run_records;
   unsigned fallback;
   bool local;
