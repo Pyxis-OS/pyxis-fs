@@ -592,6 +592,79 @@ observe_payloads(struct test_failure *adapter, const struct test_failure_event *
   }
 }
 
+static bool
+durable_allocation_state(struct test_failure *adapter, const struct pfs_tree_context *context,
+                         uint64_t block, enum pfs_allocation_state *state)
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  struct pfs_tree tree;
+  if (test_failure_durable_read(adapter, context->block.reference.block, 1, bytes) != PFS_OK ||
+      pfs_tree_decode(bytes, sizeof(bytes), context, &tree) != PFS_OK) {
+    return false;
+  }
+  struct pfs_record_context records = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = context->block.selected_generation,
+    .containing_birth = tree.header.birth, .features = context->block.features};
+  for (size_t i = 0; i < tree.count; i++) {
+    if (tree.level) {
+      struct pfs_internal_record internal;
+      if (pfs_internal_record_decode(bytes + tree.slots[i].offset, tree.slots[i].length,
+          PFS_INDEX_ALLOCATION, &records, &internal) != PFS_OK) {
+        return false;
+      }
+      struct pfs_tree_context child = *context;
+      child.block.reference = internal.child;
+      child.block.referring_birth = tree.header.birth;
+      child.parent_level = tree.level;
+      if (durable_allocation_state(adapter, &child, block, state)) {
+        return true;
+      }
+    } else {
+      struct pfs_allocation_record record;
+      if (pfs_allocation_record_decode(bytes + tree.slots[i].offset, tree.slots[i].length,
+          &records, &record) != PFS_OK) {
+        return false;
+      }
+      if (block >= record.first && block - record.first < record.count) {
+        *state = record.state;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static bool
+durable_selected_block_is_free(struct test_failure *adapter, uint64_t block)
+{
+  uint64_t generation = durable_generation(adapter);
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t physical = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock super;
+    if (test_failure_durable_read(adapter, physical, 1, bytes) != PFS_OK ||
+        pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN, physical, &super) != PFS_OK) {
+      return false;
+    }
+    if (super.header.birth != generation) {
+      continue;
+    }
+    struct pfs_block_context context = {.block_count = PFS_POOL_BLOCKS_MIN,
+      .selected_generation = generation, .referring_birth = generation,
+      .pool = super.header.pool, .features = super.features, .reference = super.root};
+    struct pfs_pool_root root;
+    if (test_failure_durable_read(adapter, super.root.block, 1, bytes) != PFS_OK ||
+        pfs_pool_root_decode(bytes, sizeof(bytes), &context, &root) != PFS_OK) {
+      return false;
+    }
+    struct pfs_tree_context allocation = {.block = context, .kind = PFS_INDEX_ALLOCATION};
+    allocation.block.reference = root.allocation;
+    enum pfs_allocation_state state;
+    return durable_allocation_state(adapter, &allocation, block, &state) && state == PFS_ALLOCATION_FREE;
+  }
+  return false;
+}
+
 static void
 real_publications_carry_debt_and_preserve_retained_payloads(void)
 {
@@ -627,6 +700,7 @@ real_publications_carry_debt_and_preserve_retained_payloads(void)
     TEST_ASSERT_TRUE(retained_payload(&device, 1));
     if (step == 1) {
       for (size_t i = 0; i < sizeof(first_retired) / sizeof(first_retired[0]); i++) {
+        TEST_ASSERT_TRUE(durable_selected_block_is_free(&device, first_retired[i]));
         TEST_ASSERT_TRUE(selection_block_eligible(first_retired[i]));
       }
     }
