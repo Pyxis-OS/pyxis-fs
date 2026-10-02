@@ -28,13 +28,32 @@ ancestors. It also adds adjacent leaves when a canonical record straddles an
 original coverage endpoint. After accounting and seams stabilize, each maximal
 dirty run of l leaves must hold r records with l <= r <= 46l; 46 derives from the
 format's block/header/slot/record sizes. For the first failing run in key order,
-add its clean predecessor, or successor if no predecessor exists, and all
-ancestors, including across parents. Renew all accounting and seam closure.
-Expansion does not guarantee success.
+score both available immediate clean neighbours. An expansion includes that
+neighbour and any already-marked run joined across its one-leaf gap. Its score
+is the record distance outside the expanded run's interval
+`[expanded_leaves, 46*expanded_leaves]`; a fit scores zero. Prefer the lower
+deficit, with a left tie. Both fitting alternatives therefore retain the left
+preference even if the right offers more spare slots. This is the accepted
+intermediate repair policy, not a new physical placement rule.
+
+Evaluate both alternatives before marking. At this point, the unchanged-leaf
+comparison establishes that each clean neighbour has exactly its source record
+count in the validated candidate, and canonical seams align. The adjoining
+counts therefore add without hidden coalescing. Score the whole expanded run:
+bridging can reverse the failure direction, so a neighbour-only score is wrong.
+Mark only the chosen clean leaf and all ancestors, including across parents,
+then renew accounting and seam closure. A predicted fit cannot seal directly,
+and expansion does not guarantee success.
 
 Each growth pass adds a previously unmarked source identity. There are at most
 J growth passes and one final decision, shared by accounting, seams and
-redistribution. A fitting run is partitioned into exactly its source leaf count;
+redistribution. Selection reads the two adjacent run descriptors and scalar
+counts, without scanning farther neighbours, speculative marks or another map.
+Expanded leaf counts never exceed the source leaf inventory. Within either
+expansion, its component intervals are disjoint, and its total record count
+never exceeds the validated candidate count. The existing
+admitted record/node bounds cover their arithmetic. A fitting run is
+partitioned into exactly its source leaf count;
 ancestor levels and fanout stay unchanged. Child-first encoding preserves shared
 references, while all q emitted replacements are reachable. No live padding or
 same-publication reuse is allowed.
@@ -71,6 +90,11 @@ reusable ranges remain outside that overwrite. The existing publication editor
 supplies traversal, canonical re-encoding and record buffers before catalog
 editing. Admission uses the lower scratch half; publication the third quarter;
 mutation staging the final quarter. No extra allocation occurs after admission.
+Neighbour scoring adds only constant local scalars. Its fixed diagnostic
+counters remain in the existing publication scratch quarter and private writer
+header, whose size/charged allocation is computed normally. The publication
+size assertion still prevents overlap; no arena region, memory ceiling,
+caller budget, reserve or admission bound increases.
 
 The index is constructed once after complete source validation, using an in-place
 heapsort with constant extra storage. It stores descriptor identities rather than
@@ -94,6 +118,17 @@ keeps separate phase aggregates, including each phase's
 trailing maintenance and final checkpoints. Fallback reason counts can overlap.
 It reports each phase's last exhausted run's l/r, emitted map nodes and local cost
 categories. Earlier combined records cannot establish measurement-window hit rates.
+
+Repair diagnostics count underflow/overflow selections, two-sided comparisons,
+right preferences within those comparisons, ties and predicted fitting choices.
+Left/right bridge counts describe evaluated alternatives, including unchosen
+ones. Left/right deficit sums cover only two-sided comparisons; chosen deficit
+sum and fitting cover every selected repair, including one-sided boundary cases.
+The scores precede renewed accounting. All repair counters can include attempts
+later discarded for funded bulk construction; they are not final leaf occupancy,
+successful local repairs or eliminated writes. Per-publication selection counts
+are bounded by J and deficit sums by J times the admitted candidate-record
+bound, using 64-bit diagnostic accumulators. No policy depends on the counters.
 
 To retain all fields within the unchanged bounded output budget, `map_plans`
 serializes one set of field names with `phase_order` set to

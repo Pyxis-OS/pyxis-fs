@@ -37,6 +37,13 @@ struct pfs_incremental_run {
   size_t record_count;
 };
 
+/* Bounded observations of repair choices, never inputs to publication policy. */
+struct pfs_incremental_repair_metrics {
+  uint64_t underflow, overflow, compared, right_preferred, ties, fitting;
+  uint64_t left_bridges, right_bridges;
+  uint64_t left_deficit_sum, right_deficit_sum, chosen_deficit_sum;
+};
+
 struct pfs_incremental_map {
   struct pfs_plan_arena *arena;
   struct pfs_map_change *changes;
@@ -61,6 +68,7 @@ struct pfs_incremental_map {
   size_t largest_addition;
   size_t redistribution_additions;
   size_t redistribution_leaves;
+  struct pfs_incremental_repair_metrics repair;
   size_t failed_run_leaves;
   size_t failed_run_records;
   unsigned fallback;

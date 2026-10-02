@@ -58,6 +58,7 @@ struct callback_stats {
 struct map_stats {
   uint64_t publications, local, bulk, source_sum, source_max, closure_sum, closure_max;
   uint64_t passes, largest_addition, redistribution, emitted, bulk_reference;
+  struct pfs_incremental_repair_metrics repair;
   uint64_t local_emitted, bulk_emitted;
   uint64_t fallback[4], local_cost[3], failed_leaves, failed_records;
   int64_t local_node_difference;
@@ -275,6 +276,17 @@ observe_plan(const struct test_failure_event *event)
     stats->largest_addition = metrics->largest_addition;
   }
   stats->redistribution += metrics->redistribution_additions;
+  stats->repair.underflow += metrics->repair.underflow;
+  stats->repair.overflow += metrics->repair.overflow;
+  stats->repair.compared += metrics->repair.compared;
+  stats->repair.right_preferred += metrics->repair.right_preferred;
+  stats->repair.ties += metrics->repair.ties;
+  stats->repair.fitting += metrics->repair.fitting;
+  stats->repair.left_bridges += metrics->repair.left_bridges;
+  stats->repair.right_bridges += metrics->repair.right_bridges;
+  stats->repair.left_deficit_sum += metrics->repair.left_deficit_sum;
+  stats->repair.right_deficit_sum += metrics->repair.right_deficit_sum;
+  stats->repair.chosen_deficit_sum += metrics->repair.chosen_deficit_sum;
   stats->emitted += metrics->replacement_nodes;
   if (metrics->local) {
     stats->local_emitted += metrics->replacement_nodes;
@@ -1126,6 +1138,17 @@ print_map_stats(void)
   MAP_FIELD("growth_passes", passes, "%" PRIu64);
   MAP_FIELD("largest_addition", largest_addition, "%" PRIu64);
   MAP_FIELD("redistribution_additions", redistribution, "%" PRIu64);
+  MAP_FIELD("repair_underflow", repair.underflow, "%" PRIu64);
+  MAP_FIELD("repair_overflow", repair.overflow, "%" PRIu64);
+  MAP_FIELD("repair_compared", repair.compared, "%" PRIu64);
+  MAP_FIELD("repair_right_preferred", repair.right_preferred, "%" PRIu64);
+  MAP_FIELD("repair_ties", repair.ties, "%" PRIu64);
+  MAP_FIELD("repair_fitting", repair.fitting, "%" PRIu64);
+  MAP_FIELD("repair_left_bridges", repair.left_bridges, "%" PRIu64);
+  MAP_FIELD("repair_right_bridges", repair.right_bridges, "%" PRIu64);
+  MAP_FIELD("repair_left_deficit_sum", repair.left_deficit_sum, "%" PRIu64);
+  MAP_FIELD("repair_right_deficit_sum", repair.right_deficit_sum, "%" PRIu64);
+  MAP_FIELD("repair_chosen_deficit_sum", repair.chosen_deficit_sum, "%" PRIu64);
   MAP_FIELD("emitted_nodes", emitted, "%" PRIu64);
   MAP_FIELD("bulk_reference_nodes", bulk_reference, "%" PRIu64);
   MAP_FIELD("local_node_difference", local_node_difference, "%" PRId64);

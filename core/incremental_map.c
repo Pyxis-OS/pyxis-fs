@@ -451,6 +451,44 @@ make_runs(struct pfs_incremental_map *map,
   return PFS_OK;
 }
 
+struct neighbour_score {
+  size_t leaf;
+  size_t deficit;
+  bool bridges;
+};
+
+static struct neighbour_score
+score_neighbour(const struct pfs_incremental_map *map, size_t index, bool right)
+{
+  const struct pfs_incremental_run *run = &map->runs[index];
+  size_t end = run->first_leaf + run->leaf_count;
+  if (right ? end == map->leaf_count : !run->first_leaf) {
+    return (struct neighbour_score){.leaf = SIZE_MAX};
+  }
+  struct neighbour_score score = {.leaf = right ? end : run->first_leaf - 1};
+  size_t leaves = run->leaf_count + 1;
+  /* The unchanged-leaf comparison and canonical seam closure establish that
+   * this clean leaf retains exactly its source records in the candidate. */
+  size_t records = run->record_count + map->source[map->leaves[score.leaf]].record_count;
+  const struct pfs_incremental_run *adjacent = NULL;
+  if (right && index + 1 < map->run_count &&
+      map->runs[index + 1].first_leaf == score.leaf + 1) {
+    adjacent = &map->runs[index + 1];
+  } else if (!right && index &&
+      map->runs[index - 1].first_leaf + map->runs[index - 1].leaf_count == score.leaf) {
+    adjacent = &map->runs[index - 1];
+  }
+  if (adjacent) {
+    leaves += adjacent->leaf_count;
+    records += adjacent->record_count;
+    score.bridges = true;
+  }
+  size_t capacity = PFS_INCREMENTAL_LEAF_RECORDS * leaves;
+  score.deficit = records < leaves ? leaves - records :
+    records > capacity ? records - capacity : 0;
+  return score;
+}
+
 enum pfs_status
 pfs_incremental_map_close(struct pfs_incremental_map *map,
   const struct pfs_allocation_record *candidate, size_t count, bool *again)
@@ -509,14 +547,27 @@ pfs_incremental_map_close(struct pfs_incremental_map *map,
         run->record_count <= PFS_INCREMENTAL_LEAF_RECORDS * run->leaf_count) {
       continue;
     }
-    size_t neighbour = SIZE_MAX;
-    if (run->first_leaf) {
-      neighbour = run->first_leaf - 1;
-    } else if (run->first_leaf + run->leaf_count < map->leaf_count) {
-      neighbour = run->first_leaf + run->leaf_count;
-    }
-    if (neighbour != SIZE_MAX) {
-      mark_path(map, map->leaves[neighbour]);
+    struct neighbour_score left = score_neighbour(map, i, false);
+    struct neighbour_score right = score_neighbour(map, i, true);
+    bool compared = left.leaf != SIZE_MAX && right.leaf != SIZE_MAX;
+    bool use_right = left.leaf == SIZE_MAX ||
+      (right.leaf != SIZE_MAX && right.deficit < left.deficit);
+    struct neighbour_score chosen = use_right ? right : left;
+    if (chosen.leaf != SIZE_MAX) {
+      map->repair.underflow += run->record_count < run->leaf_count;
+      map->repair.overflow += run->record_count > PFS_INCREMENTAL_LEAF_RECORDS * run->leaf_count;
+      map->repair.compared += compared;
+      map->repair.right_preferred += compared && use_right;
+      map->repair.ties += compared && left.deficit == right.deficit;
+      map->repair.fitting += chosen.deficit == 0;
+      map->repair.left_bridges += left.bridges;
+      map->repair.right_bridges += right.bridges;
+      if (compared) {
+        map->repair.left_deficit_sum += left.deficit;
+        map->repair.right_deficit_sum += right.deficit;
+      }
+      map->repair.chosen_deficit_sum += chosen.deficit;
+      mark_path(map, map->leaves[chosen.leaf]);
       map->redistribution_additions += map->marked_count - before;
       map->redistribution_leaves++;
       growth(map, before);

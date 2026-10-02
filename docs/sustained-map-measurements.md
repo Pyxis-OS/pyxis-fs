@@ -273,9 +273,14 @@ acceptance threshold or disk-deployment qualification follows from this matrix.
 
 ## Recommended next bounded improvement
 
+The owner subsequently approved and assigned this bounded correction after
+filesystem #23 / Pyxis #324 merged. Its implementation and matched observations
+are recorded separately in [neighbour repair](neighbour-repair-measurements.md).
+The recommendation below describes this report's unchanged baseline.
+
 Propose a separately assigned **occupancy-aware immediate-neighbour choice** for
 the existing topology-preserving repair, rather than another allocator redesign.
-Current repair always chooses the clean left neighbour when one exists. The
+At this baseline, repair always chooses the clean left neighbour when one exists. The
 measured redistribution marks identify a cost worth investigating, but do not
 establish which direction or occupancy caused it: additions include ancestors
 and can include attempts subsequently discarded for bulk construction.
