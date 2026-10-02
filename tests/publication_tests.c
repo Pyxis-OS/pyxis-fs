@@ -612,7 +612,8 @@ real_publications_carry_debt_and_preserve_retained_payloads(void)
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
   TEST_ASSERT_TRUE(writer_status().drain_pending);
   middle_payload_generation = durable_generation(&device);
-  expect_read('B');
+  TEST_ASSERT_TRUE(retained_payload(&device, 0));
+  TEST_ASSERT_TRUE(retained_payload(&device, 1));
   for (size_t i = 0; i < sizeof(first_retired) / sizeof(first_retired[0]); i++) {
     TEST_ASSERT_FALSE(selection_block_eligible(first_retired[i]));
   }
@@ -622,7 +623,8 @@ real_publications_carry_debt_and_preserve_retained_payloads(void)
     TEST_ASSERT_EQUAL(PFS_MAINTENANCE_PENDING, result.maintenance_completion);
     TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
     TEST_ASSERT_TRUE(writer_status().drain_pending);
-    expect_read('C');
+    TEST_ASSERT_TRUE(retained_payload(&device, 0));
+    TEST_ASSERT_TRUE(retained_payload(&device, 1));
   }
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(view, &result));
   TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, result.maintenance_completion);
@@ -643,6 +645,7 @@ real_publications_carry_debt_and_preserve_retained_payloads(void)
   TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
   device.backing.fail_after = SIZE_MAX;
+  expect_read('C');
   close_device();
   struct pfs_check_result check;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&device.builder.reader, device.memory, NULL, NULL, &check));
@@ -723,7 +726,7 @@ rolling_volume_record(struct test_failure *adapter, struct pfs_tree_context cont
 }
 
 static bool
-rolling_payloads_match(struct test_failure *adapter, unsigned slot, uint64_t leaves[3])
+rolling_payloads_match(struct test_failure *adapter, unsigned slot, uint64_t leaves[ROLLING_VOLUMES])
 {
   uint8_t bytes[PFS_BLOCK_SIZE];
   struct pfs_superblock super;
@@ -753,9 +756,7 @@ rolling_payloads_match(struct test_failure *adapter, unsigned slot, uint64_t lea
     if (!rolling_volume_record(adapter, catalog, v, &record, &leaf)) {
       return false;
     }
-    if (v == 0 || v == 1 || v == ROLLING_VOLUMES - 1) {
-      leaves[v == 0 ? 0 : v == 1 ? 1 : 2] = leaf;
-    }
+    leaves[v] = leaf;
     struct pfs_tree_context objects = {.block = context, .kind = PFS_INDEX_OBJECTS,
       .volume = record.id};
     objects.block.reference = record.object_root;
@@ -774,7 +775,7 @@ rolling_payloads_match(struct test_failure *adapter, unsigned slot, uint64_t lea
           &records, &object) != PFS_OK) {
         return false;
       }
-      if (object.id.bytes[0] == 4) {
+      if (object.id.bytes[0] == 65 + 2 * v) {
         found = true;
         break;
       }
@@ -799,7 +800,7 @@ observe_rolling_payloads(struct test_failure *adapter, const struct test_failure
   (void)context;
   if (before && event->kind == TEST_FAILURE_WRITE &&
       (event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1)) {
-    uint64_t leaves[3];
+    uint64_t leaves[ROLLING_VOLUMES];
     rolling_checks++;
     rolling_violation |= !rolling_payloads_match(adapter, 0, leaves) ||
                          !rolling_payloads_match(adapter, 1, leaves);
@@ -810,16 +811,19 @@ static void
 run_cross_volume_rolling_history(bool restore_seed_slot)
 {
   TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&seed, PFS_POOL_BLOCKS_MIN, 0));
-  struct pfs_build_object objects[] = {
-    {.id = {{3}}, .parent = UINT32_MAX, .kind = PFS_OBJECT_DIRECTORY},
-    {.id = {{4}}, .parent = 0, .name = {4, "file"}, .kind = PFS_OBJECT_FILE,
-      .file_length = PFS_BLOCK_SIZE},
-  };
+  struct pfs_build_object objects[ROLLING_VOLUMES][2];
   struct pfs_build_volume specs[ROLLING_VOLUMES];
   for (size_t i = 0; i < ROLLING_VOLUMES; i++) {
-    specs[i] = (struct pfs_build_volume){.id = {{(uint8_t)(10 + i)}}, .root_object = {{3}},
-      .name = {.length = 1, .bytes = {(uint8_t)('a' + i)}}, .owner = {{5}}, .guarantee_set = true, .quota_set = true,
-      .quota = 64, .object_count = 2, .objects = objects};
+    objects[i][0] = (struct pfs_build_object){.id = {{(uint8_t)(64 + 2 * i)}},
+      .parent = UINT32_MAX, .kind = PFS_OBJECT_DIRECTORY};
+    objects[i][1] = (struct pfs_build_object){.id = {{(uint8_t)(65 + 2 * i)}},
+      .parent = 0, .name = {4, "file"}, .kind = PFS_OBJECT_FILE,
+      .file_length = PFS_BLOCK_SIZE};
+    specs[i] = (struct pfs_build_volume){.id = {{(uint8_t)(10 + i)}},
+      .root_object = {{(uint8_t)(64 + 2 * i)}},
+      .name = {.length = 1, .bytes = {(uint8_t)('a' + i)}}, .owner = {{5}},
+      .guarantee_set = true, .quota_set = true,
+      .quota = 64, .object_count = 2, .objects = objects[i]};
   }
   options = (struct pfs_write_options){.extent_limit = ROLLING_VOLUMES,
     .metadata_limit = 4 * ROLLING_VOLUMES, .random = test_random};
@@ -851,11 +855,26 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
   for (size_t i = 0; i < ROLLING_VOLUMES; i++) {
     rolling_history[0].bytes[i] = (uint8_t)('a' + i);
   }
-  uint64_t leaves[3];
+  uint64_t leaves[ROLLING_VOLUMES];
   TEST_ASSERT_TRUE(rolling_payloads_match(&device, 0, leaves));
-  TEST_ASSERT_EQUAL_UINT64(leaves[0], leaves[1]);
-  TEST_ASSERT_NOT_EQUAL(leaves[0], leaves[2]);
-  const size_t indexes[] = {0, 1, ROLLING_VOLUMES - 1};
+  size_t indexes[3] = {SIZE_MAX, SIZE_MAX, SIZE_MAX};
+  for (size_t i = 0; i < ROLLING_VOLUMES && indexes[0] == SIZE_MAX; i++) {
+    for (size_t j = i + 1; j < ROLLING_VOLUMES; j++) {
+      if (leaves[i] == leaves[j]) {
+        indexes[0] = i;
+        indexes[1] = j;
+        break;
+      }
+    }
+  }
+  TEST_ASSERT_NOT_EQUAL(SIZE_MAX, indexes[0]);
+  for (size_t i = 0; i < ROLLING_VOLUMES; i++) {
+    if (leaves[i] != leaves[indexes[0]]) {
+      indexes[2] = i;
+      break;
+    }
+  }
+  TEST_ASSERT_NOT_EQUAL(SIZE_MAX, indexes[2]);
   const struct pfs_rights rights = {.file = PFS_FILE_READ | PFS_FILE_WRITE | PFS_FILE_CHECKPOINT};
   struct pfs_trusted_context authority = {.principal = {{5}}, .root = {{3}},
     .scope = PFS_SCOPE_SUBTREE, .ceiling = rights};
@@ -863,14 +882,15 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
     rolling_volumes[i] = (struct pfs_volume){0};
     rolling_views[i] = NULL;
     struct pfs_volume_id id = {{(uint8_t)(10 + indexes[i])}};
-    const struct pfs_object_id file = {{4}};
+    const struct pfs_object_id file = {{(uint8_t)(65 + 2 * indexes[i])}};
+    authority.root = (struct pfs_object_id){{(uint8_t)(64 + 2 * indexes[i])}};
     TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &id, &rolling_volumes[i]));
     TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&rolling_volumes[i], &authority,
       &file, PFS_SCOPE_OBJECT, &rights, &rolling_views[i]));
   }
   struct pfs_view *checkpoint_view = NULL;
   const struct pfs_rights checkpoint_rights = {.file = PFS_FILE_CHECKPOINT};
-  const struct pfs_object_id file = {{4}};
+  const struct pfs_object_id file = {{(uint8_t)(65 + 2 * indexes[2])}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&rolling_volumes[2], &authority,
     &file, PFS_SCOPE_OBJECT, &checkpoint_rights, &checkpoint_view));
   rolling_checks = 0;

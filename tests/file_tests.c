@@ -1167,6 +1167,9 @@ named_close_and_pool_disposal_leave_pending_debt_without_io(void)
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, closing.health);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
   TEST_ASSERT_TRUE(status.drain_pending);
+  /* View release reads current identity to decide whether orphan cleanup is
+   * required. Pool and volume disposal themselves perform no backing I/O. */
+  reads = device.ordinals[TEST_FAILURE_READ];
   close_handles();
   TEST_ASSERT_EQUAL_UINT64(reads, device.ordinals[TEST_FAILURE_READ]);
   TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);

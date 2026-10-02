@@ -929,6 +929,7 @@ quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release(void)
 }
 
 static struct test_failure_flush_cut cleanup_cuts[TEST_FAILURE_EVENTS_MAX];
+static size_t cleanup_cut_count;
 static uint64_t cleanup_generations[TEST_FAILURE_EVENTS_MAX];
 struct cleanup_progress {
   uint64_t orphans;
@@ -987,8 +988,19 @@ startup_cut_completion(const struct test_failure_flush_cut *cut)
 {
   const struct cleanup_progress *before = &cleanup_before[cut->ordinal - 1];
   const struct cleanup_progress *after = &cleanup_after[cut->ordinal - 1];
-  if (!before->orphans) {
-    /* Final paired deletion was confirmed; only its retained-root drain fails. */
+  bool cleanup_started = false;
+  for (size_t i = 0; i < cleanup_cut_count; i++) {
+    if (cleanup_cuts[i].publication > cut->publication) {
+      break;
+    }
+    const struct cleanup_progress *prior = &cleanup_before[cleanup_cuts[i].ordinal - 1];
+    const struct cleanup_progress *next = &cleanup_after[cleanup_cuts[i].ordinal - 1];
+    cleanup_started |= prior->orphans != next->orphans ||
+      prior->file_blocks != next->file_blocks || prior->grants != next->grants;
+  }
+  if (!cleanup_started || !before->orphans) {
+    /* Allocator fencing is independent of orphan progress: an initial fence
+     * has not begun cleanup; the trailing fence follows confirmed deletion. */
     return PFS_COMPLETE;
   }
   bool progress = before->orphans != after->orphans ||
@@ -1020,6 +1032,7 @@ finish_cleanup_trace(struct test_failure *adapter)
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(adapter, cleanup_flush_base,
     cleanup_cuts, TEST_FAILURE_EVENTS_MAX, &count));
   TEST_ASSERT_GREATER_THAN_UINT(0, count);
+  cleanup_cut_count = count;
   return count;
 }
 
@@ -1203,8 +1216,7 @@ interrupted_startup_preserves_confirmed_generation_and_withholds_instance(void)
     TEST_ASSERT_NULL(pool.reader);
     TEST_ASSERT_EQUAL_UINT64(0, snapshot.memory->used);
     TEST_ASSERT_EQUAL_UINT64(generation, opening.confirmed_generation);
-    enum pfs_completion expected = cut->publication == 0 ?
-      cut->publishes ? PFS_UNKNOWN : PFS_STOPPED : startup_cut_completion(cut);
+    enum pfs_completion expected = startup_cut_completion(cut);
     TEST_ASSERT_EQUAL(expected, opening.recovery.completion);
     TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.operation_status);
     TEST_ASSERT_EQUAL(PFS_IO, opening.recovery.maintenance_status);
@@ -1759,8 +1771,22 @@ create_small_file(size_t length)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(views[2], 0, small_bytes, length, &result));
   expect_complete(&result, false);
   expect_bytes(views[2], small_bytes, length);
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  uint64_t generation = 0;
+  unsigned selected = 0;
+  for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock super;
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(&device, block, 1, bytes));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes),
+      PFS_POOL_BLOCKS_MIN, block, &super));
+    if (super.header.birth > generation) {
+      generation = super.header.birth;
+      selected = slot;
+    }
+  }
   struct pfs_object_record object;
-  TEST_ASSERT_EQUAL(PFS_OK, small_durable_object(&device, 0, &object));
+  TEST_ASSERT_EQUAL(PFS_OK, small_durable_object(&device, selected, &object));
   TEST_ASSERT_EQUAL(PFS_STORAGE_INLINE, object.storage_kind);
   TEST_ASSERT_EQUAL_UINT64((length + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE,
     object.inline_extent.count);
