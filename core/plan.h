@@ -77,6 +77,16 @@ enum pfs_status pfs_plan_map_apply(const struct pfs_record_context *context,
   const struct pfs_map_change *changes, size_t change_count,
   struct pfs_allocation_record *out, size_t capacity, size_t *count);
 
+/* Diagnostic counterparts for the same canonical stream and current bulk
+ * shape. Neither writes output records, allocates, or changes any input. Counts
+ * are published only on success. The size is derived from the preclaim base,
+ * not the local candidate's final record count. */
+enum pfs_status pfs_plan_map_count(const struct pfs_record_context *context,
+  const struct pfs_allocation_record *base, size_t base_count,
+  const struct pfs_map_change *changes, size_t change_count,
+  size_t capacity, size_t *count);
+enum pfs_status pfs_plan_map_bulk_size(size_t base_count, size_t catalog_count, size_t *count);
+
 struct pfs_reusable_range {
   uint64_t first;
   uint64_t count;

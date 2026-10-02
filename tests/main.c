@@ -3,6 +3,7 @@
 #include "ram_guard.h"
 #include "build_tests.h"
 #include "plan_tests.h"
+#include "incremental_tests.h"
 #include "codec_tests.h"
 #include "edit_tests.h"
 #include "unity.h"
@@ -124,6 +125,7 @@ main(int argc, char **argv)
     run_baseline_tests();
     run_build_tests();
     run_plan_tests();
+    run_incremental_tests();
     run_codec_tests();
     run_edit_tests();
     run_live_tests();

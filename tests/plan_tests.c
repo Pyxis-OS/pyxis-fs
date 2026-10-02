@@ -178,6 +178,13 @@ interval_changes_are_private_and_canonical(void)
   TEST_ASSERT_EQUAL_MEMORY(original, base, sizeof(base));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_apply(&context, base, 2, changes, 2, output, 6, &count));
   TEST_ASSERT_EQUAL_UINT(5, count);
+  size_t counted = 99;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_count(&context, base, 2, changes, 2, 6, &counted));
+  TEST_ASSERT_EQUAL_UINT(5, counted);
+  TEST_ASSERT_EQUAL_MEMORY(original, base, sizeof(base));
+  TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_plan_map_count(&context, base, 2, changes, 2, 2, &counted));
+  TEST_ASSERT_EQUAL_UINT(5, counted);
+
   const uint64_t first[] = {1, 3, 7, 11, 16};
   const uint64_t length[] = {2, 4, 4, 5, PFS_POOL_BLOCKS_MIN - 17};
   const uint8_t states[] = {PFS_ALLOCATION_VOLUME, PFS_ALLOCATION_RETIRED,
@@ -196,6 +203,9 @@ interval_changes_are_private_and_canonical(void)
   };
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_apply(&context, base, 2, &free_change, 1, output, 1, &count));
   TEST_ASSERT_EQUAL_UINT(1, count);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_count(&context, base, 2, &free_change, 1, 1, &counted));
+  TEST_ASSERT_EQUAL_UINT(1, counted);
+
   TEST_ASSERT_EQUAL_UINT64(PFS_POOL_BLOCKS_MIN - 2, output[0].count);
   TEST_ASSERT_EQUAL_UINT(PFS_ALLOCATION_FREE, output[0].state);
 }

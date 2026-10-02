@@ -205,30 +205,37 @@ map_validate(const struct pfs_record_context *context,
 
 static enum pfs_status
 append(struct pfs_allocation_record *out, size_t capacity, size_t *count,
-       struct pfs_allocation_record record)
+       struct pfs_allocation_record *last, struct pfs_allocation_record record)
 {
   if (!record.count) {
     return PFS_OK;
   }
-  if (*count && same_allocation(&out[*count - 1], &record) &&
-      out[*count - 1].first + out[*count - 1].count == record.first) {
-    out[*count - 1].count += record.count;
+  if (*count && same_allocation(last, &record) &&
+      last->first + last->count == record.first) {
+    last->count += record.count;
+    if (out) {
+      out[*count - 1] = *last;
+    }
     return PFS_OK;
   }
   if (*count == capacity) {
     return PFS_LIMIT;
   }
-  out[(*count)++] = record;
+  *last = record;
+  if (out) {
+    out[*count] = record;
+  }
+  (*count)++;
   return PFS_OK;
 }
 
-enum pfs_status
-pfs_plan_map_apply(const struct pfs_record_context *context,
+static enum pfs_status
+map_apply(const struct pfs_record_context *context,
                    const struct pfs_allocation_record *base, size_t base_count,
                    const struct pfs_map_change *changes, size_t change_count,
                    struct pfs_allocation_record *out, size_t capacity, size_t *count)
 {
-  if (!context || !out || !count || (change_count && !changes) || !capacity ||
+  if (!context || !count || (change_count && !changes) || !capacity ||
       capacity > PFS_ALLOCATION_COUNT_MAX) {
     return PFS_INVALID;
   }
@@ -248,6 +255,7 @@ pfs_plan_map_apply(const struct pfs_record_context *context,
     end = change->before.first + change->before.count;
   }
   size_t produced = 0, change_index = 0;
+  struct pfs_allocation_record last = {0};
   for (size_t i = 0; i < base_count; i++) {
     uint64_t position = base[i].first;
     uint64_t limit = position + base[i].count;
@@ -272,7 +280,7 @@ pfs_plan_map_apply(const struct pfs_record_context *context,
           record.count = change->before.first - position;
         }
       }
-      status = append(out, capacity, &produced, record);
+      status = append(out, capacity, &produced, &last, record);
       if (status != PFS_OK) {
         return status;
       }
@@ -284,6 +292,54 @@ pfs_plan_map_apply(const struct pfs_record_context *context,
   }
   *count = produced;
   return PFS_OK;
+}
+
+enum pfs_status
+pfs_plan_map_apply(const struct pfs_record_context *context,
+                   const struct pfs_allocation_record *base, size_t base_count,
+                   const struct pfs_map_change *changes, size_t change_count,
+                   struct pfs_allocation_record *out, size_t capacity, size_t *count)
+{
+  if (!out) {
+    return PFS_INVALID;
+  }
+  return map_apply(context, base, base_count, changes, change_count, out, capacity, count);
+}
+
+enum pfs_status
+pfs_plan_map_count(const struct pfs_record_context *context,
+                   const struct pfs_allocation_record *base, size_t base_count,
+                   const struct pfs_map_change *changes, size_t change_count,
+                   size_t capacity, size_t *count)
+{
+  return map_apply(context, base, base_count, changes, change_count, NULL, capacity, count);
+}
+
+static enum pfs_status
+bulk_shape(size_t base_count, size_t catalog_count, uint64_t levels[PFS_TREE_DEPTH_MAX],
+           size_t *depth, uint64_t *nodes, uint64_t *records)
+{
+  if (!base_count || base_count > PFS_ALLOCATION_COUNT_MAX ||
+      catalog_count > PFS_PLAN_CATALOG_UNION) {
+    return PFS_INVALID;
+  }
+  *records = ceil_div(23 * (base_count + 2 * catalog_count + 4), 21);
+  return map_shape(*records, levels, depth, nodes);
+}
+
+enum pfs_status
+pfs_plan_map_bulk_size(size_t base_count, size_t catalog_count, size_t *count)
+{
+  if (!count) {
+    return PFS_INVALID;
+  }
+  uint64_t levels[PFS_TREE_DEPTH_MAX], nodes, records;
+  size_t depth;
+  enum pfs_status status = bulk_shape(base_count, catalog_count, levels, &depth, &nodes, &records);
+  if (status == PFS_OK) {
+    *count = (size_t)nodes;
+  }
+  return status;
 }
 
 static struct pfs_reference
@@ -399,10 +455,9 @@ pfs_plan_map_build(struct pfs_plan_arena *arena, const struct pfs_block_context 
       return PFS_INVALID;
     }
   }
-  uint64_t s = ceil_div(23 * (base_count + 2 * catalog_count + 4), 21);
-  uint64_t levels[PFS_TREE_DEPTH_MAX], nodes;
+  uint64_t s, levels[PFS_TREE_DEPTH_MAX], nodes;
   size_t depth;
-  status = map_shape(s, levels, &depth, &nodes);
+  status = bulk_shape(base_count, catalog_count, levels, &depth, &nodes, &s);
   if (status != PFS_OK) {
     return status;
   }

@@ -2,6 +2,7 @@
 #include "writer.h"
 #include "canonical.h"
 #include "file.h"
+#include "incremental_map.h"
 
 /* Planning performs backing reads only. Keep its I/O failures distinct from
  * replacement writes/flushes and the slot publication uncertainty window. */
@@ -20,6 +21,8 @@ struct publication {
   size_t volume_indices[2];
   size_t volume_count;
   struct pfs_map_plan map;
+  struct pfs_incremental_map incremental;
+  bool bulk;
   uint8_t root[PFS_BLOCK_SIZE];
   uint8_t slot[PFS_BLOCK_SIZE];
   uint8_t record[PFS_BLOCK_SIZE];
@@ -29,6 +32,11 @@ _Static_assert(sizeof(struct publication) <= PFS_PLAN_SCRATCH_BYTES / 4,
   "publication must not overlap the final quarter used by mutation staging");
 _Static_assert(2 * PFS_VOLUME_MAX * sizeof(struct check_volume) <= PFS_PLAN_SCRATCH_BYTES / 2,
   "admission owns only the lower half of scratch");
+
+_Static_assert((unsigned)PFS_MAP_FALLBACK_GLOBAL == (unsigned)PFS_INCREMENTAL_GLOBAL &&
+  (unsigned)PFS_MAP_FALLBACK_OVERFLOW == (unsigned)PFS_INCREMENTAL_OVERFLOW &&
+  (unsigned)PFS_MAP_FALLBACK_UNDERFLOW == (unsigned)PFS_INCREMENTAL_UNDERFLOW,
+  "planner and publisher diagnostics use the same fallback reasons");
 
 static bool
 same_id(const void *a, const void *b)
@@ -214,14 +222,14 @@ pfs_writer_funded_failure(struct pfs_pool *pool, enum pfs_status status)
 }
 
 static enum pfs_status
-change_add(struct pfs_writer *writer, size_t *count, uint64_t first, uint64_t length,
+change_add(struct pfs_writer *writer, struct publication *publication, size_t *count, uint64_t first, uint64_t length,
            uint8_t state, const struct pfs_volume_id *owner, uint64_t birth, uint8_t charge)
 {
   const struct pfs_admit_state *source = &writer->states[writer->selected];
-  struct pfs_map_change *changes = (struct pfs_map_change *)writer->arena.deltas;
+  struct pfs_map_change *changes = publication->incremental.changes;
   const struct pfs_allocation_record *before = allocation_at(source, first);
   if (!length || !before || length > before->first + before->count - first ||
-      *count >= writer->arena.limits.deltas * 128 / sizeof(*changes)) {
+      *count >= publication->incremental.change_capacity) {
     return PFS_LIMIT;
   }
   struct pfs_map_change *change = &changes[(*count)++];
@@ -242,9 +250,11 @@ change_add(struct pfs_writer *writer, size_t *count, uint64_t first, uint64_t le
 static bool
 pool_removed(const struct check_claim *claim, const struct publication *publication)
 {
-  if (claim->type == PFS_BLOCK_POOL ||
-      (claim->type == PFS_BLOCK_TREE && claim->kind == PFS_INDEX_ALLOCATION)) {
+  if (claim->type == PFS_BLOCK_POOL) {
     return true;
+  }
+  if (claim->type == PFS_BLOCK_TREE && claim->kind == PFS_INDEX_ALLOCATION) {
+    return publication->bulk || pfs_incremental_map_retired(&publication->incremental, claim->first);
   }
   for (size_t i = 0; i < publication->path_count; i++) {
     if (claim->first == publication->path[i].block) {
@@ -433,34 +443,15 @@ make_claims(struct pfs_writer *writer, const struct pfs_batch *batch,
 }
 
 static enum pfs_status
-build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
-                  struct publication *publication)
+gather_changes(struct pfs_writer *writer, const struct pfs_batch *batch,
+               struct publication *publication, bool allocate, size_t *count)
 {
-  struct pfs_admit_state *source = &writer->states[writer->selected];
+  const struct pfs_admit_state *source = &writer->states[writer->selected];
   const struct pfs_admit_state *older = &writer->states[1 - writer->selected];
   struct pfs_admit_state *candidate = &writer->states[2];
-  struct pfs_allocation_record *maps = candidate->maps;
-  struct check_claim *claims = candidate->claims;
-  *candidate = *source;
-  candidate->maps = maps;
-  candidate->claims = claims;
   uint64_t generation = source->candidate.superblock.header.birth + 1;
-  if (!generation) {
-    return PFS_LIMIT;
-  }
-  publication->path_count = 0;
-  publication->volume_count = 0;
-  enum pfs_status status;
-  if (batch) {
-    status = changed_volume(candidate, publication, &batch->volume.record.id);
-    if (status != PFS_OK) {
-      return status == PFS_CORRUPT ? PFS_INVALID : status;
-    }
-    candidate->volumes[publication->volume_indices[0]] = batch->volume;
-  }
   size_t changes_count = 0;
-  /* Reclaim every eligible old cohort using both input states. Newly freed
-   * blocks remain unavailable to this publication's allocation selection. */
+  enum pfs_status status;
   for (size_t i = 0; i < source->map_count; i++) {
     const struct pfs_allocation_record *record = &source->maps[i];
     if (record->state != PFS_ALLOCATION_RETIRED) {
@@ -471,7 +462,7 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
       if (!can_free(older, block)) {
         continue;
       }
-      status = change_add(writer, &changes_count, block, 1, PFS_ALLOCATION_FREE, NULL, 0, 0);
+      status = change_add(writer, publication, &changes_count, block, 1, PFS_ALLOCATION_FREE, NULL, 0, 0);
       if (status != PFS_OK) {
         return status;
       }
@@ -483,17 +474,10 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
       }
     }
   }
-  for (size_t i = 0; i < publication->volume_count; i++) {
-    const struct pfs_volume_id *id = &candidate->volumes[publication->volume_indices[i]].record.id;
-    status = catalog_path(writer, publication, id);
-    if (status != PFS_OK) {
-      return status;
-    }
-  }
   for (size_t i = 0; i < source->claim_count; i++) {
     const struct check_claim *claim = &source->claims[i];
     if (pool_removed(claim, publication)) {
-      status = change_add(writer, &changes_count, claim->first, claim->count,
+      status = change_add(writer, publication, &changes_count, claim->first, claim->count,
         PFS_ALLOCATION_RETIRED, NULL, claim->birth, PFS_CHARGE_RECOVERY);
       if (status != PFS_OK) {
         return status;
@@ -509,7 +493,7 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
         return PFS_INVALID;
       }
       retired += claim->count;
-      status = change_add(writer, &changes_count, claim->first, claim->count,
+      status = change_add(writer, publication, &changes_count, claim->first, claim->count,
         PFS_ALLOCATION_RETIRED, &claim->volume, claim->birth,
         batch->orphan_cleanup ? PFS_CHARGE_RECOVERY : PFS_CHARGE_ORDINARY);
       if (status != PFS_OK) {
@@ -517,53 +501,44 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
       }
     }
     for (size_t i = 0; i < batch->block_count; i++) {
-      status = change_add(writer, &changes_count, batch->blocks[i].block, 1,
+      status = change_add(writer, publication, &changes_count, batch->blocks[i].block, 1,
         PFS_ALLOCATION_VOLUME, &batch->volume.record.id, generation, PFS_CHARGE_PERMANENT);
       if (status != PFS_OK) {
         return status;
       }
     }
   }
-  struct pfs_map_change *changes = (struct pfs_map_change *)writer->arena.deltas;
-  pfs_plan_sort_changes(changes, changes_count);
-  struct pfs_block_context context = {.block_count = writer->backing->reader.geometry.block_count,
-    .selected_generation = generation, .referring_birth = generation,
-    .pool = source->candidate.superblock.header.pool,
-    .features = source->candidate.superblock.features};
-  struct pfs_record_context record_context = {.block_count = context.block_count,
-    .selected_generation = generation, .containing_birth = generation, .features = context.features};
-  status = pfs_plan_map_apply(&record_context, source->maps, source->map_count,
-    changes, changes_count, candidate->maps, (size_t)writer->arena.limits.records, &candidate->map_count);
-  if (status != PFS_OK) {
-    return status;
-  }
-  /* Map construction owns the front of deltas. Bounded reusable IDs/ranges live
-   * after its H descriptors, replacing the no-longer-needed interval deltas. */
-  size_t demand = (size_t)writer->arena.limits.pool_blocks;
-  uint64_t *ids = (uint64_t *)(writer->arena.deltas + demand * sizeof(struct pfs_map_node));
-  struct pfs_reusable_range *ranges = (struct pfs_reusable_range *)(ids + demand);
-  status = select_free(writer, ids, demand, batch);
-  if (status != PFS_OK) {
-    /* Admission guarantees H+V input blocks; excluding at most V batch blocks
-     * cannot exhaust the publisher's H-block reservation. */
-    stop_writer(writer, status, PUBLICATION_PLANNING, true);
-    return status;
-  }
-  size_t range_count = 0;
-  for (size_t i = 0; i < demand; i++) {
-    if (range_count && ranges[range_count - 1].first + ranges[range_count - 1].count == ids[i]) {
-      ranges[range_count - 1].count++;
-    } else {
-      ranges[range_count++] = (struct pfs_reusable_range){ids[i], 1};
+  if (allocate) {
+    size_t total = publication->incremental.marked_count + publication->path_count + 1;
+    if (total > writer->arena.limits.pool_blocks) {
+      return PFS_LIMIT;
+    }
+    for (size_t i = 0; i < total; i++) {
+      status = change_add(writer, publication, &changes_count, publication->incremental.ids[i], 1,
+        PFS_ALLOCATION_POOL, NULL, generation, PFS_CHARGE_PERMANENT);
+      if (status != PFS_OK) {
+        return status;
+      }
     }
   }
-  /* Allocation IDs may be contiguous across a base-free boundary introduced by
-   * this publication, but never across any newly live or retired allocation. */
-  status = pfs_plan_map_build(&writer->arena, &context, candidate->maps, candidate->map_count,
-    ranges, range_count, publication->path_count, &publication->map);
-  if (status != PFS_OK) {
-    return status;
-  }
+  pfs_plan_sort_changes(publication->incremental.changes, changes_count);
+  *count = changes_count;
+  return PFS_OK;
+}
+
+static enum pfs_status
+seal_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
+                 struct publication *publication, struct pfs_block_context context,
+                 bool *resource_miss)
+{
+  struct pfs_admit_state *source = &writer->states[writer->selected];
+  const struct pfs_admit_state *older = &writer->states[1 - writer->selected];
+  struct pfs_admit_state *candidate = &writer->states[2];
+  uint64_t generation = context.selected_generation;
+  struct pfs_record_context record_context = {.block_count = context.block_count,
+    .selected_generation = generation, .containing_birth = generation, .features = context.features};
+  enum pfs_status status;
+  *resource_miss = false;
   candidate->map_count = publication->map.record_count;
   candidate->candidate.root = source->candidate.root;
   struct pfs_pool_root *root = &candidate->candidate.root;
@@ -698,11 +673,217 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
   }
   check_sort_claims(candidate->claims, candidate->claim_count);
   status = pfs_admit_candidate(&writer->arena, candidate, source, batch != NULL);
+  *resource_miss = status == PFS_LIMIT || status == PFS_NO_SPACE;
   if (status == PFS_OK) {
     status = pfs_pool_root_encode(publication->root, PFS_BLOCK_SIZE, &context, root);
   }
   if (status == PFS_OK) {
     status = pfs_superblock_encode(publication->slot, PFS_BLOCK_SIZE, &candidate->candidate.superblock);
+  }
+  return status;
+}
+
+static enum pfs_status
+build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
+                  struct publication *publication)
+{
+  struct pfs_admit_state *source = &writer->states[writer->selected];
+  const struct pfs_admit_state *older = &writer->states[1 - writer->selected];
+  struct pfs_admit_state *candidate = &writer->states[2];
+  struct pfs_allocation_record *maps = candidate->maps;
+  struct check_claim *claims = candidate->claims;
+  *candidate = *source;
+  candidate->maps = maps;
+  candidate->claims = claims;
+  uint64_t generation = source->candidate.superblock.header.birth + 1;
+  if (!generation) {
+    return PFS_LIMIT;
+  }
+  publication->path_count = publication->volume_count = 0;
+  publication->bulk = false;
+  writer->map_metrics = (struct pfs_map_metrics){.generation = generation};
+  enum pfs_status status = pfs_incremental_map_init(&writer->arena, &publication->incremental);
+  if (status != PFS_OK) {
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
+    return status;
+  }
+  if (batch) {
+    status = changed_volume(candidate, publication, &batch->volume.record.id);
+    if (status != PFS_OK) {
+      return status == PFS_CORRUPT ? PFS_INVALID : status;
+    }
+    size_t index = publication->volume_indices[0];
+    const struct pfs_admit_volume *previous = &source->volumes[index];
+    if (previous->file_extents > source->file_extents ||
+        previous->metadata_blocks > source->metadata_blocks) {
+      return PFS_CORRUPT;
+    }
+    uint64_t extents = source->file_extents - previous->file_extents;
+    uint64_t metadata = source->metadata_blocks - previous->metadata_blocks;
+    /* Establish the existing physical E/M guards before relying on the S/H
+     * map-storage proof. Final admission still checks actual claims, deletion
+     * headroom, quotas, debt and next-step funding. */
+    if (batch->volume.file_extents > writer->arena.limits.extents - extents ||
+        batch->volume.metadata_blocks > writer->arena.limits.metadata - metadata) {
+      return PFS_LIMIT;
+    }
+    candidate->volumes[index] = batch->volume;
+  }
+  /* Determine catalog owners once from the immutable input retirement cohorts. */
+  for (size_t i = 0; i < source->map_count; i++) {
+    const struct pfs_allocation_record *record = &source->maps[i];
+    if (record->state != PFS_ALLOCATION_RETIRED ||
+        pfs_bytes_are_zero(record->owner.bytes, PFS_ID_SIZE)) {
+      continue;
+    }
+    for (uint64_t block = record->first; block < record->first + record->count; block++) {
+      if (can_free(older, block)) {
+        status = changed_volume(candidate, publication, &record->owner);
+        if (status != PFS_OK) {
+          return status;
+        }
+        break;
+      }
+    }
+  }
+  for (size_t i = 0; i < publication->volume_count; i++) {
+    status = catalog_path(writer, publication,
+      &candidate->volumes[publication->volume_indices[i]].record.id);
+    if (status != PFS_OK) {
+      return status;
+    }
+  }
+  struct pfs_block_context context = {.block_count = writer->backing->reader.geometry.block_count,
+    .selected_generation = generation, .referring_birth = generation,
+    .pool = source->candidate.superblock.header.pool,
+    .features = source->candidate.superblock.features};
+  struct pfs_block_context source_context = context;
+  source_context.selected_generation = source->candidate.superblock.header.birth;
+  source_context.referring_birth = source->candidate.root.header.birth;
+  source_context.reference = source->candidate.root.allocation;
+  struct pfs_incremental_map *incremental = &publication->incremental;
+  status = pfs_incremental_map_load(incremental, &writer->backing->reader, &source_context,
+    source->maps, source->map_count, &publication->editor);
+  if (status != PFS_OK || incremental->source_count != source->map_nodes) {
+    if (status != PFS_OK && status != PFS_IO && status != PFS_CORRUPT) {
+      stop_writer(writer, status, PUBLICATION_PLANNING, true);
+    }
+    return status != PFS_OK ? status : PFS_CORRUPT;
+  }
+  size_t demand = (size_t)writer->arena.limits.pool_blocks;
+  status = select_free(writer, incremental->ids, demand, batch);
+  if (status != PFS_OK) {
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
+    return status;
+  }
+  struct pfs_record_context record_context = {.block_count = context.block_count,
+    .selected_generation = generation, .containing_birth = generation, .features = context.features};
+  bool again;
+  do {
+    size_t count;
+    status = gather_changes(writer, batch, publication, true, &count);
+    if (status != PFS_OK) {
+      stop_writer(writer, status, PUBLICATION_PLANNING, true);
+      return status;
+    }
+    status = pfs_plan_map_apply(&record_context, source->maps, source->map_count,
+      incremental->changes, count, candidate->maps, (size_t)writer->arena.limits.records,
+      &candidate->map_count);
+    if (status == PFS_LIMIT) {
+      /* Canonical stream storage is guaranteed once physical E/M fits. */
+      stop_writer(writer, status, PUBLICATION_PLANNING, true);
+      return status;
+    }
+    if (status != PFS_OK) {
+      return status;
+    }
+    status = pfs_incremental_map_close(incremental, candidate->maps, candidate->map_count, &again);
+    if (status != PFS_OK) {
+      return status;
+    }
+  } while (again);
+  writer->map_metrics.source_nodes = incremental->source_count;
+  writer->map_metrics.closure_nodes = incremental->marked_count;
+  writer->map_metrics.growth_passes = incremental->growth_passes;
+  writer->map_metrics.largest_addition = incremental->largest_addition;
+  writer->map_metrics.redistribution_additions = incremental->redistribution_additions;
+  writer->map_metrics.failed_run_leaves = incremental->failed_run_leaves;
+  writer->map_metrics.failed_run_records = incremental->failed_run_records;
+  writer->map_metrics.fallback |= incremental->fallback;
+  bool resource_miss;
+  if (!writer->map_metrics.fallback) {
+    status = pfs_incremental_map_encode(incremental, &context, candidate->maps, candidate->map_count,
+      publication->path_count, &publication->editor, publication->record, &publication->map);
+    if (status != PFS_OK) {
+      stop_writer(writer, status, PUBLICATION_PLANNING, true);
+      return status;
+    }
+    status = seal_publication(writer, batch, publication, context, &resource_miss);
+    if (status == PFS_OK) {
+      writer->map_metrics.local = true;
+      writer->map_metrics.replacement_nodes = publication->map.node_count;
+      if (!writer->collect_map_metrics) {
+        return PFS_OK;
+      }
+      /* Reuse only the dead raw deltas. The sealed map and topology survive. */
+      publication->bulk = true;
+      size_t changes_count, base_count;
+      status = gather_changes(writer, batch, publication, false, &changes_count);
+      if (status == PFS_OK) {
+        status = pfs_plan_map_count(&record_context, source->maps, source->map_count,
+          incremental->changes, changes_count, (size_t)writer->arena.limits.records, &base_count);
+      }
+      if (status == PFS_OK) {
+        status = pfs_plan_map_bulk_size(base_count, publication->path_count,
+          &writer->map_metrics.bulk_reference_nodes);
+      }
+      publication->bulk = false;
+      if (status != PFS_OK) {
+        stop_writer(writer, status, PUBLICATION_PLANNING, true);
+      }
+      return status;
+    }
+    if (!resource_miss) {
+      return status;
+    }
+    writer->map_metrics.fallback |= PFS_MAP_FALLBACK_RESOURCE;
+  }
+  /* A scratch miss discards all provisional accounting. The funded legacy
+   * builder consumes the same fixed eligible prefix, at this generation. */
+  publication->bulk = true;
+  size_t changes_count;
+  status = gather_changes(writer, batch, publication, false, &changes_count);
+  if (status == PFS_OK) {
+    status = pfs_plan_map_apply(&record_context, source->maps, source->map_count,
+      incremental->changes, changes_count, candidate->maps, (size_t)writer->arena.limits.records,
+      &candidate->map_count);
+  }
+  if (status != PFS_OK) {
+    if (status == PFS_LIMIT || status == PFS_NO_SPACE || status == PFS_NO_MEMORY) {
+      stop_writer(writer, status, PUBLICATION_PLANNING, true);
+    }
+    return status;
+  }
+  size_t range_count = 0;
+  for (size_t i = 0; i < demand; i++) {
+    uint64_t id = incremental->ids[i];
+    if (range_count && incremental->ranges[range_count - 1].first +
+        incremental->ranges[range_count - 1].count == id) {
+      incremental->ranges[range_count - 1].count++;
+    } else {
+      incremental->ranges[range_count++] = (struct pfs_reusable_range){id, 1};
+    }
+  }
+  status = pfs_plan_map_build(&writer->arena, &context, candidate->maps, candidate->map_count,
+    incremental->ranges, range_count, publication->path_count, &publication->map);
+  if (status != PFS_OK &&
+      (status == PFS_LIMIT || status == PFS_NO_SPACE || status == PFS_NO_MEMORY)) {
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
+  }
+  if (status == PFS_OK) {
+    writer->map_metrics.replacement_nodes = publication->map.node_count;
+    writer->map_metrics.bulk_reference_nodes = publication->map.node_count;
+    status = seal_publication(writer, batch, publication, context, &resource_miss);
   }
   return status;
 }
@@ -714,10 +895,12 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, enum publicati
     PFS_PLAN_SCRATCH_BYTES / 2);
   writer->active_batch = batch;
   *phase = PUBLICATION_PLANNING;
+  writer->map_planning = true;
   enum pfs_status status = build_publication(writer, batch, publication);
   if (status != PFS_OK) {
     goto done;
   }
+  writer->map_planning = false;
   *phase = PUBLICATION_REPLACEMENTS;
   if (batch) {
     for (size_t i = 0; status == PFS_OK && i < batch->block_count; i++) {
@@ -770,6 +953,7 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, enum publicati
   writer->diagnostic.selected = (uint16_t)target;
   writer->status.drain_pending = writer->states[target].retired_volume != 0;
 done:
+  writer->map_planning = false;
   writer->active_batch = NULL;
   return status;
 }

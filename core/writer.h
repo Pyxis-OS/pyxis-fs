@@ -40,6 +40,24 @@ struct pfs_changed_directory {
 };
 _Static_assert(sizeof(struct pfs_changed_directory) <= 48, "directory arena slot");
 
+enum pfs_map_fallback {
+  PFS_MAP_FALLBACK_GLOBAL = 1u,
+  PFS_MAP_FALLBACK_OVERFLOW = 2u,
+  PFS_MAP_FALLBACK_UNDERFLOW = 4u,
+  PFS_MAP_FALLBACK_RESOURCE = 8u,
+};
+
+/* Private, bounded plan diagnostics. No clock or public policy depends on them.
+ * The optional bulk reference counts the unchanged builder's preclaim shape. */
+struct pfs_map_metrics {
+  uint64_t generation;
+  size_t source_nodes, closure_nodes, replacement_nodes, bulk_reference_nodes;
+  size_t growth_passes, largest_addition, redistribution_additions;
+  size_t failed_run_leaves, failed_run_records;
+  unsigned fallback;
+  bool local;
+};
+
 struct pfs_writer {
   struct pfs_allocation allocation;
   struct pfs_pool *pool;
@@ -57,6 +75,9 @@ struct pfs_writer {
   struct pfs_batch batch;
   /* Borrowed only during the active user/orphan publication; NULL for fences. */
   const struct pfs_batch *active_batch;
+  struct pfs_map_metrics map_metrics;
+  bool collect_map_metrics;
+  bool map_planning;
   pfs_random_fn random;
   void *random_context;
   uint8_t nonce[PFS_ID_SIZE];

@@ -7,7 +7,7 @@ HOST_AR ?= ar
 CFLAGS ?= -O2 -g3
 WARNINGS := -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Werror
 CORE_FLAGS := -std=gnu23 -ffreestanding -fno-builtin -fno-stack-protector
-SOURCES := mutate file writer writer_access admit plan edit canonical base block record tree platform build pool access check check_walk check_reconcile
+SOURCES := mutate file writer writer_access admit plan incremental_map edit canonical base block record tree platform build pool access check check_walk check_reconcile
 OBJECTS := $(addprefix $(BUILD)/core/,$(addsuffix .o,$(SOURCES)))
 ARCHIVE := $(BUILD)/libpyxis-fs.a
 HOST_OBJECTS := $(addprefix $(BUILD)/host/,write.o host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o)
@@ -18,7 +18,7 @@ TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect $(BUILD)/pyxisfs-write
 
 all: $(ARCHIVE) $(TOOLS)
 
-TEST_SOURCES := ram_guard recovery_workload extended_tests namespace_failure_tests namespace_tests file_workloads file_tests publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests codec_tests edit_tests
+TEST_SOURCES := ram_guard recovery_workload extended_tests namespace_failure_tests namespace_tests file_workloads file_tests publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests incremental_tests codec_tests edit_tests
 TEST_HOST_OBJECTS := $(addprefix $(BUILD)/host/,source.o host.o gpt.o)
 TEST_OBJECTS := $(addprefix $(BUILD)/tests/,$(addsuffix .o,$(TEST_SOURCES)))
 UNITY_OBJECT := $(BUILD)/tests/unity.o
