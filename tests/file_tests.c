@@ -609,6 +609,8 @@ large_write_and_shrink_report_confirmed_progress(void)
   TEST_ASSERT_EQUAL(PFS_IO, pfs_view_write(file_view, 0, payload, sizeof(payload), &result));
   TEST_ASSERT_TRUE(device.triggered);
   TEST_ASSERT_EQUAL(PFS_UNKNOWN, result.completion);
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_NONE, result.maintenance_completion);
+  TEST_ASSERT_EQUAL(PFS_OK, result.maintenance_status);
   TEST_ASSERT_GREATER_THAN_UINT64(0, result.confirmed_bytes);
   TEST_ASSERT_LESS_THAN_UINT64(sizeof(payload), result.confirmed_bytes);
   TEST_ASSERT_EQUAL(PFS_WRITER_ACCESS_STOPPED, result.health);
@@ -627,6 +629,8 @@ large_write_and_shrink_report_confirmed_progress(void)
   TEST_ASSERT_EQUAL(PFS_IO, pfs_view_resize(file_view, 37, &result));
   TEST_ASSERT_TRUE(device.triggered);
   TEST_ASSERT_EQUAL(PFS_UNKNOWN, result.completion);
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_NONE, result.maintenance_completion);
+  TEST_ASSERT_EQUAL(PFS_OK, result.maintenance_status);
   TEST_ASSERT_TRUE(result.confirmed_length_valid);
   TEST_ASSERT_GREATER_THAN_UINT64(37, result.confirmed_length);
   TEST_ASSERT_LESS_THAN_UINT64(sizeof(expected), result.confirmed_length);
@@ -671,9 +675,8 @@ public_write_flush_failures_preserve_progress_and_stop_without_retry(void)
     TEST_ASSERT_EQUAL(user_confirmed ? PFS_OK : PFS_IO, result.operation_status);
     TEST_ASSERT_EQUAL(uncertain ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
       result.health);
-    if (user_confirmed) {
-      TEST_ASSERT_EQUAL(PFS_IO, result.maintenance_status);
-    }
+    TEST_ASSERT_EQUAL(PFS_MAINTENANCE_NONE, result.maintenance_completion);
+    TEST_ASSERT_EQUAL(PFS_OK, result.maintenance_status);
     if (!uncertain) {
       expect_bytes(file_view, user_confirmed ? payload : expected, expected_length);
     }
@@ -1021,9 +1024,13 @@ public_mutation_callbacks_cannot_reenter_or_change_outputs(void)
   close_fixture();
 }
 
-static uint8_t retained_before[PFS_BLOCK_SIZE], retained_after[PFS_BLOCK_SIZE];
-static size_t retained_before_length, retained_after_length;
-static uint64_t retained_generation;
+struct retained_expectation {
+  uint64_t generation;
+  size_t length;
+  uint8_t bytes[PFS_BLOCK_SIZE];
+};
+static struct retained_expectation retained_history[8];
+static size_t retained_history_count;
 static unsigned retained_checks;
 static bool retained_violation;
 
@@ -1039,8 +1046,13 @@ retained_payload_matches(struct test_failure *adapter, size_t slot)
     return false;
   }
   uint8_t bytes[PFS_BLOCK_SIZE];
-  const uint8_t *wanted = super.header.birth <= retained_generation ? retained_before : retained_after;
-  size_t length = super.header.birth <= retained_generation ? retained_before_length : retained_after_length;
+  size_t index = 0;
+  while (index + 1 < retained_history_count &&
+         retained_history[index + 1].generation <= super.header.birth) {
+    index++;
+  }
+  const uint8_t *wanted = retained_history[index].bytes;
+  size_t length = retained_history[index].length;
   if (object.file_length != length || object.inline_extent.count != 1 ||
       test_failure_durable_read(adapter, object.inline_extent.physical_first, 1, bytes) != PFS_OK) {
     return false;
@@ -1064,21 +1076,29 @@ observe_retained_payloads(struct test_failure *adapter, const struct test_failur
 static void
 prepare_retained_comparison(size_t new_length, uint8_t new_byte)
 {
-  memcpy(retained_before, expected, expected_length);
-  retained_before_length = expected_length;
-  memset(retained_after, new_byte, sizeof(retained_after));
-  retained_after_length = new_length;
+  if (!retained_history_count) {
+    retained_history[0].generation = 0;
+    retained_history[0].length = expected_length;
+    memcpy(retained_history[0].bytes, expected, expected_length);
+    retained_history_count = 1;
+  }
   uint8_t bytes[PFS_BLOCK_SIZE];
-  retained_generation = 0;
+  uint64_t generation = 0;
   for (size_t i = 0; i < 2; i++) {
     uint64_t block = i ? PFS_POOL_BLOCKS_MIN - 1 : 0;
     struct pfs_superblock super;
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(&device, block, 1, bytes));
     TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN, block, &super));
-    if (super.header.birth > retained_generation) {
-      retained_generation = super.header.birth;
+    if (super.header.birth > generation) {
+      generation = super.header.birth;
     }
   }
+  TEST_ASSERT_LESS_THAN_UINT(sizeof(retained_history) / sizeof(retained_history[0]),
+    retained_history_count);
+  struct retained_expectation *next = &retained_history[retained_history_count++];
+  next->generation = generation + 1;
+  next->length = new_length;
+  memset(next->bytes, new_byte, sizeof(next->bytes));
   test_failure_trace_reset(&device);
   retained_checks = 0;
   retained_violation = false;
@@ -1106,6 +1126,7 @@ public_overwrite_reuse_and_shrink_preserve_both_payloads_through_maintenance(voi
 {
   build_seed(PFS_BLOCK_SIZE, 1024, 64);
   open_device();
+  retained_history_count = 0;
   for (unsigned i = 0; i < 3; i++) {
     uint8_t byte = (uint8_t)('B' + i);
     prepare_retained_comparison(PFS_BLOCK_SIZE, byte);
@@ -1116,9 +1137,42 @@ public_overwrite_reuse_and_shrink_preserve_both_payloads_through_maintenance(voi
   prepare_retained_comparison(37, 'D');
   resize_expected(37);
   expect_retained_slot_coverage();
+  struct pfs_write_result fence;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(file_view, &fence));
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, fence.maintenance_completion);
+  expect_retained_slot_coverage();
   device.observer = NULL;
   cold_reopen_expected();
   close_fixture();
+}
+
+static void
+named_close_and_pool_disposal_leave_pending_debt_without_io(void)
+{
+  build_seed(PFS_BLOCK_SIZE, 1024, 64);
+  open_device();
+  struct pfs_write_result result;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(file_view, 0, "pending", 7, &result));
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_PENDING, result.maintenance_completion);
+  struct pfs_writer_status status;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
+  TEST_ASSERT_TRUE(status.drain_pending);
+  uint64_t reads = device.ordinals[TEST_FAILURE_READ];
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+  struct pfs_view_close_result closing;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view, &closing));
+  TEST_ASSERT_TRUE(closing.released);
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_NONE, closing.maintenance_completion);
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, closing.health);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
+  TEST_ASSERT_TRUE(status.drain_pending);
+  close_handles();
+  TEST_ASSERT_EQUAL_UINT64(reads, device.ordinals[TEST_FAILURE_READ]);
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
 }
 
 void
@@ -1135,6 +1189,7 @@ run_file_tests(void)
   RUN_TEST(public_write_flush_failures_preserve_progress_and_stop_without_retry);
   RUN_TEST(planning_read_and_replacement_write_failures_keep_distinct_health);
   RUN_TEST(public_overwrite_reuse_and_shrink_preserve_both_payloads_through_maintenance);
+  RUN_TEST(named_close_and_pool_disposal_leave_pending_debt_without_io);
   RUN_TEST(creation_failures_publish_a_view_only_after_confirmed_namespace_commit);
   RUN_TEST(live_directory_tokens_follow_namespace_changes_and_writer_instance);
   RUN_TEST(creation_randomness_refuses_zero_and_existing_identity_without_publication);

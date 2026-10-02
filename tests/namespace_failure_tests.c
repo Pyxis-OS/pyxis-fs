@@ -90,7 +90,7 @@ open_fixture(void)
     .scope = PFS_SCOPE_SUBTREE, .ceiling = {PFS_FILE_RIGHTS_ALL, PFS_DIR_RIGHTS_ALL, 0}};
   const struct pfs_rights source_rights = {.directory = PFS_DIR_REMOVE};
   const struct pfs_rights destination_rights = {.directory = PFS_DIR_CREATE | PFS_DIR_REPLACE};
-  const struct pfs_rights read_rights = {.file = PFS_FILE_READ};
+  const struct pfs_rights read_rights = {.file = PFS_FILE_READ | PFS_FILE_CHECKPOINT};
   const struct pfs_object_id source_directory = {{4}}, destination_directory = {{5}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &context, &source_directory,
     PFS_SCOPE_OBJECT, &source_rights, &source_parent));
@@ -233,49 +233,52 @@ rename_flush_failures_preserve_atomic_namespace_and_confirmed_progress(void)
 }
 
 static void
-rename_planning_and_maintenance_reads_stop_access_without_erasing_commit(void)
+rename_planning_and_checkpoint_reads_stop_access_without_erasing_commit(void)
 {
-  open_fixture();
-  uint64_t first_read = device.ordinals[TEST_FAILURE_READ];
-  uint64_t first_flush = device.ordinals[TEST_FAILURE_FLUSH];
-  struct pfs_write_result result;
-  TEST_ASSERT_EQUAL(PFS_OK, rename_file(&result));
-  size_t cut_count;
-  TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(&device, first_flush,
-    rename_cuts, TEST_FAILURE_EVENTS_MAX, &cut_count));
-  uint64_t user_confirmed_flush = 0;
-  for (size_t i = 0; i < cut_count; i++) {
-    if (!rename_cuts[i].publication && rename_cuts[i].publishes) {
-      user_confirmed_flush = first_flush + rename_cuts[i].ordinal;
-      break;
-    }
-  }
-  TEST_ASSERT_GREATER_THAN_UINT64(first_flush, user_confirmed_flush);
-  uint64_t maintenance_read = 0;
-  for (size_t i = 0; i < device.event_count; i++) {
-    const struct test_failure_event *event = &device.events[i];
-    if (event->kind == TEST_FAILURE_READ && event->flush_ordinal >= user_confirmed_flush) {
-      maintenance_read = event->ordinal - first_read;
-      break;
-    }
-  }
-  TEST_ASSERT_GREATER_THAN_UINT64(0, maintenance_read);
-  close_handles();
-  TEST_ASSERT_TRUE(test_failure_close(&device));
-  TEST_ASSERT_TRUE(test_fixture_close(&seed));
   for (unsigned maintenance = 0; maintenance < 2; maintenance++) {
     open_fixture();
+    struct pfs_write_result result;
+    if (maintenance) {
+      TEST_ASSERT_EQUAL(PFS_OK, rename_file(&result));
+      TEST_ASSERT_TRUE(result.namespace_confirmed);
+      TEST_ASSERT_EQUAL(PFS_MAINTENANCE_PENDING, result.maintenance_completion);
+    }
+    uint64_t first_read = device.ordinals[TEST_FAILURE_READ];
+    test_failure_trace_reset(&device);
+    TEST_ASSERT_EQUAL(PFS_OK, maintenance ? pfs_view_checkpoint(victim, &result) : rename_file(&result));
+    uint64_t read_cut = 0;
+    for (size_t i = 0; i < device.event_count; i++) {
+      if (device.events[i].kind == TEST_FAILURE_READ) {
+        read_cut = device.events[i].ordinal - first_read;
+        break;
+      }
+    }
+    TEST_ASSERT_GREATER_THAN_UINT64(0, read_cut);
+    close_handles();
+    TEST_ASSERT_TRUE(test_failure_close(&device));
+    TEST_ASSERT_TRUE(test_fixture_close(&seed));
+    open_fixture();
+    struct pfs_write_result confirmed;
+    if (maintenance) {
+      TEST_ASSERT_EQUAL(PFS_OK, rename_file(&confirmed));
+    }
     struct test_failure_fault fault = {.kind = TEST_FAILURE_READ,
-      .ordinal = device.ordinals[TEST_FAILURE_READ] + (maintenance ? maintenance_read : 1),
+      .ordinal = device.ordinals[TEST_FAILURE_READ] + read_cut,
       .mode = TEST_FAILURE_BEFORE, .enabled = true};
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
-    TEST_ASSERT_EQUAL(PFS_IO, rename_file(&result));
+    TEST_ASSERT_EQUAL(PFS_IO, maintenance ? pfs_view_checkpoint(victim, &result) : rename_file(&result));
     TEST_ASSERT_TRUE(device.triggered);
-    TEST_ASSERT_EQUAL(maintenance != 0, result.namespace_confirmed);
-    TEST_ASSERT_EQUAL(maintenance ? PFS_COMPLETE : PFS_STOPPED, result.completion);
+    TEST_ASSERT_FALSE(result.namespace_confirmed);
+    TEST_ASSERT_EQUAL(PFS_STOPPED, result.completion);
     TEST_ASSERT_EQUAL(PFS_WRITER_ACCESS_STOPPED, result.health);
-    TEST_ASSERT_EQUAL(maintenance ? PFS_OK : PFS_IO, result.operation_status);
+    TEST_ASSERT_EQUAL(PFS_IO, result.operation_status);
     TEST_ASSERT_EQUAL(maintenance ? PFS_IO : PFS_OK, result.maintenance_status);
+    TEST_ASSERT_EQUAL(maintenance ? PFS_MAINTENANCE_STOPPED : PFS_MAINTENANCE_NONE,
+      result.maintenance_completion);
+    if (maintenance) {
+      TEST_ASSERT_TRUE(confirmed.namespace_confirmed);
+      TEST_ASSERT_EQUAL(PFS_COMPLETE, confirmed.completion);
+    }
     close_handles();
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
     expect_namespace(maintenance != 0, false);
@@ -290,5 +293,5 @@ run_namespace_failure_tests(void)
 {
   Unity.TestFile = __FILE__;
   RUN_TEST(rename_flush_failures_preserve_atomic_namespace_and_confirmed_progress);
-  RUN_TEST(rename_planning_and_maintenance_reads_stop_access_without_erasing_commit);
+  RUN_TEST(rename_planning_and_checkpoint_reads_stop_access_without_erasing_commit);
 }
