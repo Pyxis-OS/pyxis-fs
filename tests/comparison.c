@@ -198,8 +198,12 @@ accept_operation(enum pfs_status status, const struct pfs_write_result *result,
     planning_phase = NULL;
     return false;
   }
-  require_status(status, operation);
-  return false;
+  fprintf(stderr, "comparison: %s failed (status=%s, completion=%u, health=%u, "
+    "confirmed_bytes=%" PRIu64 ", namespace_confirmed=%u, maintenance=%u, maintenance_status=%s)\n",
+    operation, pfs_status_string(status), (unsigned)result->completion, (unsigned)result->health,
+    result->confirmed_bytes, result->namespace_confirmed, (unsigned)result->maintenance_completion,
+    pfs_status_string(result->maintenance_status));
+  exit(EXIT_FAILURE);
 }
 
 static bool
