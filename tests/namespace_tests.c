@@ -1582,6 +1582,32 @@ static struct pfs_object_id small_id;
 static uint8_t small_bytes[2u * PFS_BLOCK_SIZE];
 static size_t small_length, small_slot_checks;
 static bool small_atomic, small_payload_violation;
+static uint64_t small_unlink_generation, small_deletion_generation;
+
+static enum pfs_status
+small_slot_generation(struct test_failure *adapter, unsigned slot, uint64_t *generation)
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+  struct pfs_superblock super;
+  enum pfs_status status = test_failure_durable_read(adapter, block, 1, bytes);
+  if (status == PFS_OK) {
+    status = pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN, block, &super);
+  }
+  if (status == PFS_OK) {
+    *generation = super.header.birth;
+  }
+  return status;
+}
+
+static uint64_t
+small_selected_generation(struct test_failure *adapter)
+{
+  uint64_t first, last;
+  TEST_ASSERT_EQUAL(PFS_OK, small_slot_generation(adapter, 0, &first));
+  TEST_ASSERT_EQUAL(PFS_OK, small_slot_generation(adapter, 1, &last));
+  return first > last ? first : last;
+}
 
 /* Locate records through each durable root independently. The fixture supplies
  * IDs and expected bytes, never block placements or editor/checker summaries. */
@@ -1679,14 +1705,19 @@ small_durable_object(struct test_failure *adapter, unsigned slot,
 }
 
 static bool
-small_payload_matches(struct test_failure *adapter, unsigned slot)
+small_payload_matches(struct test_failure *adapter, unsigned slot, uint64_t deletion_generation)
 {
+  uint64_t generation;
+  if (small_slot_generation(adapter, slot, &generation) != PFS_OK) {
+    return false;
+  }
+  bool expected_present = generation < deletion_generation;
   struct pfs_object_record object;
   enum pfs_status status = small_durable_object(adapter, slot, &object);
   if (status == PFS_NOT_FOUND) {
-    return true;
+    return !expected_present;
   }
-  if (status != PFS_OK || object.kind != PFS_OBJECT_FILE ||
+  if (!expected_present || status != PFS_OK || object.kind != PFS_OBJECT_FILE ||
       object.file_length > small_length ||
       (small_atomic && object.file_length != small_length)) {
     return false;
@@ -1721,11 +1752,21 @@ observe_small_cleanup(struct test_failure *adapter, const struct test_failure_ev
   observe_cleanup_generation(adapter, event, before, context);
   observe_durable_cleanup_charges(adapter, event, before, context);
   observe_first_publication(adapter, event, before, context);
+  if (!before && event->kind == TEST_FAILURE_FLUSH && event->status == PFS_OK &&
+      cleanup_trace_status == PFS_OK) {
+    size_t index = event->ordinal - cleanup_flush_base - 1;
+    if (index < TEST_FAILURE_EVENTS_MAX && cleanup_before[index].orphans == 1 &&
+        cleanup_after[index].orphans == 0) {
+      /* Marker removal identifies the confirmed paired deletion independently
+       * of the payload/object decoder. Earlier allocator fences do not do so. */
+      small_deletion_generation = cleanup_generations[index] + 1;
+    }
+  }
   if (before && event->kind == TEST_FAILURE_WRITE &&
       (event->first == 0 || event->first == adapter->builder.reader.geometry.block_count - 1)) {
     small_slot_checks++;
-    small_payload_violation |= !small_payload_matches(adapter, 0) ||
-                               !small_payload_matches(adapter, 1);
+    small_payload_violation |= !small_payload_matches(adapter, 0, small_deletion_generation) ||
+                               !small_payload_matches(adapter, 1, small_deletion_generation);
   }
 }
 
@@ -1733,6 +1774,8 @@ static void
 start_small_cleanup(struct test_failure *adapter, bool atomic)
 {
   start_cleanup_trace(adapter);
+  small_unlink_generation = small_selected_generation(adapter);
+  small_deletion_generation = UINT64_MAX;
   small_atomic = atomic;
   small_slot_checks = 0;
   small_payload_violation = false;
@@ -1802,6 +1845,7 @@ unlink_small_file(void)
   struct pfs_write_result result;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"small", 5, &result));
   expect_complete(&result, true);
+  small_unlink_generation = small_selected_generation(&device);
   expect_missing(0, "small");
   expect_fresh_id_denied(&small_id);
   expect_bytes(views[2], small_bytes, small_length);
@@ -1815,23 +1859,23 @@ expect_small_durable(struct test_failure *adapter, uint64_t generation, bool cle
     NULL, NULL, &check));
   TEST_ASSERT_TRUE(check.cross_complete);
   for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t slot_generation;
+    TEST_ASSERT_EQUAL(PFS_OK, small_slot_generation(adapter, slot, &slot_generation));
+    bool expected_present = !cleaned && slot_generation < small_deletion_generation;
+    bool expected_orphan = expected_present && slot_generation >= small_unlink_generation;
     struct pfs_object_record object;
     enum pfs_status status = small_durable_object(adapter, slot, &object);
-    TEST_ASSERT_TRUE(status == PFS_OK || status == PFS_NOT_FOUND);
-    bool present = status == PFS_OK;
-    const struct pfs_object_id no_parent = {{0}};
-    bool orphan = present && !memcmp(&object.parent, &no_parent, sizeof(no_parent));
+    TEST_ASSERT_EQUAL(expected_present ? PFS_OK : PFS_NOT_FOUND, status);
     TEST_ASSERT_TRUE(check.state[slot].complete);
-    TEST_ASSERT_EQUAL_UINT64(orphan, check.state[slot].orphans);
-    TEST_ASSERT_EQUAL_UINT64((sizeof(original) + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE + present,
+    TEST_ASSERT_EQUAL_UINT64(expected_orphan, check.state[slot].orphans);
+    TEST_ASSERT_EQUAL_UINT64((sizeof(original) + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE + expected_present,
       check.state[slot].file_blocks);
     TEST_ASSERT_EQUAL_UINT64(NS_GRANTS, check.state[slot].grants);
-    TEST_ASSERT_TRUE(small_payload_matches(adapter, slot));
-    if (present && !orphan) {
-      TEST_ASSERT_EQUAL_MEMORY(&root_id, &object.parent, sizeof(root_id));
-    }
-    if (cleaned) {
-      TEST_ASSERT_FALSE(present);
+    TEST_ASSERT_TRUE(small_payload_matches(adapter, slot, cleaned ? 0 : small_deletion_generation));
+    if (expected_present) {
+      const struct pfs_object_id no_parent = {{0}};
+      TEST_ASSERT_EQUAL_MEMORY(expected_orphan ? &no_parent : &root_id,
+        &object.parent, sizeof(root_id));
     }
   }
   if (generation) {
@@ -2018,6 +2062,7 @@ small_cleanup_planning_reads_stop_access_without_fallback(void)
   uint64_t read_base = device.ordinals[TEST_FAILURE_READ];
   test_failure_trace_reset(&device);
   close_view(2);
+  small_deletion_generation = small_selected_generation(&device);
   size_t count = 0;
   /* Every healthy pre-write read is a planning cut, including the eligibility
    * grant probe. No physical address or saved callback ordinal is required. */
