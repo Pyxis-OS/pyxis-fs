@@ -111,6 +111,7 @@ main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     printf("suite=%s seed=%" PRIu64 "\n", suite, seed);
   }
+  bool workload_complete = true;
   UNITY_BEGIN();
   if (files) {
     run_file_workloads();
@@ -118,7 +119,7 @@ main(int argc, char **argv)
     run_extended_edit_tests(seed);
     run_extended_tests(seed);
   } else if (workload) {
-    run_recovery_workload(seed, source);
+    workload_complete = run_recovery_workload(seed, source);
   } else {
     run_baseline_tests();
     run_build_tests();
@@ -135,5 +136,5 @@ main(int argc, char **argv)
   }
   UNITY_END();
   return Unity.NumberOfTests == 0 || Unity.TestFailures != 0 ||
-         Unity.TestIgnores != 0 ? 1 : 0;
+         Unity.TestIgnores != 0 || !workload_complete ? 1 : 0;
 }

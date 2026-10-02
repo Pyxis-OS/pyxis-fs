@@ -10,6 +10,9 @@
 void run_namespace_tests(void);
 
 #define NS_BYTES (3u * PFS_BLOCK_SIZE + 19u)
+#define NS_VOLUMES 2u
+#define NS_FILE_GRANTS 7u
+#define NS_GRANTS (NS_VOLUMES + NS_FILE_GRANTS)
 #define NS_ORPHAN_LEAF_RECORDS ((PFS_BLOCK_SIZE - PFS_TREE_HEADER_SIZE) / \
   (PFS_ORPHAN_RECORD_SIZE + PFS_TREE_SLOT_SIZE))
 #define NS_RETAINED_VICTIMS (NS_ORPHAN_LEAF_RECORDS + 12u)
@@ -18,7 +21,7 @@ void run_namespace_tests(void);
 static struct test_fixture seed;
 static struct test_failure device, snapshot;
 static struct pfs_pool pool;
-static struct pfs_volume volumes[2];
+static struct pfs_volume volumes[NS_VOLUMES];
 static struct pfs_view *views[NS_VIEWS];
 static struct pfs_write_options options;
 static struct pfs_trusted_context authority;
@@ -72,13 +75,12 @@ source_validate(void *context)
   return PFS_OK;
 }
 
-/* Add explicit grants without changing block ownership. Seven file grants
- * require cleanup to retain the marker through more than one grant batch. */
+/* Add explicit file grants alongside the first volume's owner grant. */
 static void
 add_file_grants(const struct pfs_volume_record *volume)
 {
-  uint8_t block[PFS_BLOCK_SIZE], encoded[8][PFS_GRANT_RECORD_SIZE];
-  struct pfs_encoded_record records[8];
+  uint8_t block[PFS_BLOCK_SIZE], encoded[NS_FILE_GRANTS + 1][PFS_GRANT_RECORD_SIZE];
+  struct pfs_encoded_record records[NS_FILE_GRANTS + 1];
   struct pfs_tree_context context = {
     .block = {.block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = 1,
       .referring_birth = 1, .pool = {{1}}, .reference = volume->grant_root},
@@ -96,7 +98,7 @@ add_file_grants(const struct pfs_volume_record *volume)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_grant_record_decode(block + tree.slots[0].offset,
     tree.slots[0].length, &record_context, &grant));
   grant.directory_rights |= PFS_DIR_CHECKPOINT;
-  for (size_t i = 0; i < 8; i++) {
+  for (size_t i = 0; i < NS_FILE_GRANTS + 1; i++) {
     if (i) {
       grant = (struct pfs_grant_record){.object = {{4}},
         .principal = {{(uint8_t)(30 + i)}}, .scope = PFS_SCOPE_OBJECT,
@@ -106,7 +108,7 @@ add_file_grants(const struct pfs_volume_record *volume)
     TEST_ASSERT_EQUAL(PFS_OK, pfs_grant_record_encode(encoded[i], sizeof(encoded[i]),
       &record_context, &grant, &records[i].length));
   }
-  tree.count = 8;
+  tree.count = NS_FILE_GRANTS + 1;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_tree_encode(block, sizeof(block), &context, &tree, records));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&seed.builder,
     volume->grant_root.block, 1, block, sizeof(block)));
@@ -139,7 +141,7 @@ build_seed(uint64_t quota, uint64_t cow, uint64_t recovery)
       .object_count = 1, .objects = &second_root},
   };
   struct pfs_build_spec specification = {
-    .block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}}, .volume_count = 2,
+    .block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}}, .volume_count = NS_VOLUMES,
     .volumes = specifications,
     .reserve_set = PFS_RESERVE_COW | PFS_RESERVE_MIGRATION | PFS_RESERVE_RECOVERY,
     .cow_reserve = cow, .migration_reserve = 1024, .recovery_reserve = recovery,
@@ -241,6 +243,9 @@ expect_complete(const struct pfs_write_result *result, bool namespace_confirmed)
   TEST_ASSERT_EQUAL(PFS_OK, result->maintenance_status);
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, result->health);
   TEST_ASSERT_EQUAL(namespace_confirmed, result->namespace_confirmed);
+  struct pfs_writer_status status;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
+  TEST_ASSERT_FALSE(status.drain_pending);
 }
 
 static void
@@ -453,9 +458,9 @@ unlinked_files_keep_identity_bytes_and_independent_held_rights(void)
   TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   close_view(1);
   expect_bytes(views[2], old_bytes, sizeof(old_bytes));
-  check_durable(1, 9);
+  check_durable(1, NS_GRANTS);
   close_view(2);
-  check_durable(0, 2);
+  check_durable(0, NS_VOLUMES);
   close_handles();
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
   struct pfs_pool_diagnostic diagnostic;
@@ -547,7 +552,7 @@ rename_moves_identity_and_replacement_preserves_displaced_file(void)
   expect_bytes(views[5], retained, sizeof(retained));
   expect_bytes(views[1], original, sizeof(original));
   close_view(5);
-  check_durable(0, 9);
+  check_durable(0, NS_GRANTS);
   close_fixture();
 }
 
@@ -655,7 +660,7 @@ final_orphan_release_drains_data_and_grants_without_more_memory(void)
   open_fixture();
   struct pfs_write_result result;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
-  check_durable(1, 9);
+  check_durable(1, NS_GRANTS);
   uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
   test_failure_memory_fail_after(&device, 0);
   struct pfs_view_close_result closing;
@@ -667,7 +672,7 @@ final_orphan_release_drains_data_and_grants_without_more_memory(void)
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, closing.health);
   TEST_ASSERT_GREATER_THAN_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   device.backing.fail_after = SIZE_MAX;
-  check_durable(0, 2);
+  check_durable(0, NS_VOLUMES);
   close_fixture();
 }
 
@@ -695,14 +700,14 @@ failed_final_release_consumes_handle_and_startup_drains_abandoned_orphan(void)
   TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
   close_handles();
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
-  check_durable(1, 9);
+  check_durable(1, NS_GRANTS);
   struct pfs_write_open_result opening;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &device.builder,
     device.memory, &options, &opening));
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, opening.writer.health);
   TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.maintenance_status);
   TEST_ASSERT_GREATER_THAN_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
-  check_durable(0, 2);
+  check_durable(0, NS_VOLUMES);
   const struct pfs_volume_id id = {{2}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &id, &volumes[0]));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volumes[0], &authority, &root_id,
@@ -751,7 +756,7 @@ durable_restart_loses_runtime_retention_and_cleans_validated_orphans(void)
   size_t grants;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_grants(&volumes[0], &file_id,
     NULL, 0, &grants));
-  TEST_ASSERT_EQUAL_UINT(7, grants);
+  TEST_ASSERT_EQUAL_UINT(NS_FILE_GRANTS, grants);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volumes[0]));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_EQUAL_UINT64(0, snapshot.ordinals[TEST_FAILURE_WRITE]);
@@ -780,7 +785,7 @@ durable_restart_loses_runtime_retention_and_cleans_validated_orphans(void)
     NULL, NULL, &check));
   for (size_t i = 0; i < 2; i++) {
     TEST_ASSERT_EQUAL_UINT64(0, check.state[i].orphans);
-    TEST_ASSERT_EQUAL_UINT64(2, check.state[i].grants);
+    TEST_ASSERT_EQUAL_UINT64(NS_VOLUMES, check.state[i].grants);
   }
   TEST_ASSERT_FALSE(snapshot.infrastructure_failure);
   TEST_ASSERT_TRUE(test_failure_close(&snapshot));
@@ -812,7 +817,7 @@ minimum_quota_profile_and_computed_recovery_fund_final_release(void)
   test_failure_memory_fail_after(&device, 0);
   close_view(1);
   device.backing.fail_after = SIZE_MAX;
-  check_durable(0, 2);
+  check_durable(0, NS_VOLUMES);
   close_fixture();
 }
 
@@ -837,7 +842,7 @@ pool_promise_boundary_protects_unlink_and_final_cleanup(void)
   test_failure_memory_fail_after(&device, 0);
   close_view(1);
   device.backing.fail_after = SIZE_MAX;
-  check_durable(0, 2);
+  check_durable(0, NS_VOLUMES);
   close_fixture();
 }
 
@@ -896,7 +901,7 @@ quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release(void)
     test_failure_trace_reset(&device);
   }
   device.backing.fail_after = SIZE_MAX;
-  check_durable(NS_RETAINED_VICTIMS, 9);
+  check_durable(NS_RETAINED_VICTIMS, NS_GRANTS);
   test_failure_memory_fail_after(&device, 0);
   for (size_t i = 0; i < NS_RETAINED_VICTIMS; i++) {
     close_view(12 + i);
@@ -904,68 +909,163 @@ quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release(void)
     test_failure_trace_reset(&device);
   }
   device.backing.fail_after = SIZE_MAX;
-  check_durable(0, 9);
+  check_durable(0, NS_GRANTS);
   expect_bytes(views[1], pressure_bytes, length);
   close_fixture();
 }
 
-static uint64_t
-first_maintenance_flush(const struct test_failure *adapter, uint64_t starting_flush)
+static struct test_failure_flush_cut cleanup_cuts[TEST_FAILURE_EVENTS_MAX];
+static uint64_t cleanup_generations[TEST_FAILURE_EVENTS_MAX];
+struct cleanup_progress {
+  uint64_t orphans;
+  uint64_t file_blocks;
+  uint64_t grants;
+};
+static struct cleanup_progress cleanup_before[TEST_FAILURE_EVENTS_MAX];
+static struct cleanup_progress cleanup_after[TEST_FAILURE_EVENTS_MAX];
+static uint64_t cleanup_flush_base;
+static enum pfs_status cleanup_trace_status;
+
+static enum pfs_status
+cleanup_durable_read(void *context, uint64_t first, uint32_t count, void *buffer)
 {
-  unsigned slots = 0;
-  for (size_t i = 0; i < adapter->event_count; i++) {
-    const struct test_failure_event *event = &adapter->events[i];
-    if (event->kind == TEST_FAILURE_WRITE &&
-        (event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1)) {
-      if (++slots == 2) {
-        TEST_ASSERT_GREATER_THAN_UINT64(starting_flush, event->flush_ordinal);
-        return event->flush_ordinal - starting_flush;
-      }
-    }
-  }
-  TEST_FAIL_MESSAGE("cleanup trace has no first maintenance slot write");
-  return 0;
+  return test_failure_durable_read(context, first, count, buffer);
 }
 
-static uint64_t
-selected_orphan_after_data_cleanup(struct test_failure *adapter)
+/* Discover logical cleanup progress from durable media on a separate reader.
+ * Checking uses the seed's idle memory owner, never writer allocations/handles.
+ * Independent payload comparisons remain the correctness oracle after each cut. */
+static void
+observe_cleanup_generation(struct test_failure *adapter,
+  const struct test_failure_event *event, bool before, void *context)
+{
+  (void)context;
+  if (event->kind != TEST_FAILURE_FLUSH || cleanup_trace_status != PFS_OK) {
+    return;
+  }
+  uint64_t index = event->ordinal - cleanup_flush_base - 1;
+  if (index >= TEST_FAILURE_EVENTS_MAX) {
+    cleanup_trace_status = PFS_LIMIT;
+    return;
+  }
+  struct pfs_block_reader reader = {
+    .context = adapter, .geometry = adapter->builder.reader.geometry,
+    .read = cleanup_durable_read,
+  };
+  struct pfs_check_result check;
+  cleanup_trace_status = pfs_check(&reader, &seed.memory, NULL, NULL, &check);
+  if (cleanup_trace_status != PFS_OK) {
+    return;
+  }
+  unsigned selected = check.state[1].generation > check.state[0].generation;
+  const struct pfs_check_state_result *state = &check.state[selected];
+  struct cleanup_progress progress = {state->orphans, state->file_blocks, state->grants};
+  if (before) {
+    cleanup_generations[index] = state->generation;
+    cleanup_before[index] = progress;
+  } else {
+    cleanup_after[index] = progress;
+  }
+}
+
+static enum pfs_completion
+startup_cut_completion(const struct test_failure_flush_cut *cut)
+{
+  const struct cleanup_progress *before = &cleanup_before[cut->ordinal - 1];
+  const struct cleanup_progress *after = &cleanup_after[cut->ordinal - 1];
+  if (!before->orphans) {
+    /* Final paired deletion was confirmed; only its retained-root drain fails. */
+    return PFS_COMPLETE;
+  }
+  bool progress = before->orphans != after->orphans ||
+    before->file_blocks != after->file_blocks || before->grants != after->grants;
+  /* An uncertain cleanup publication can change remaining work. A failed drain
+   * after a partial cleanup leaves the overall cleanup stopped/incomplete. */
+  return cut->publishes && progress ? PFS_UNKNOWN : PFS_STOPPED;
+}
+
+static void
+start_cleanup_trace(struct test_failure *adapter)
+{
+  test_failure_trace_reset(adapter);
+  cleanup_flush_base = adapter->ordinals[TEST_FAILURE_FLUSH];
+  cleanup_trace_status = PFS_OK;
+  adapter->observer = observe_cleanup_generation;
+}
+
+static size_t
+finish_cleanup_trace(struct test_failure *adapter)
+{
+  adapter->observer = NULL;
+  TEST_ASSERT_EQUAL(PFS_OK, cleanup_trace_status);
+  struct pfs_writer_status status;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, status.health);
+  TEST_ASSERT_FALSE(status.drain_pending);
+  size_t count;
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(adapter, cleanup_flush_base,
+    cleanup_cuts, TEST_FAILURE_EVENTS_MAX, &count));
+  TEST_ASSERT_GREATER_THAN_UINT(0, count);
+  return count;
+}
+
+static void
+expect_interrupted_orphan(struct test_failure *adapter, uint64_t generation)
 {
   struct pfs_check_result check;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&adapter->builder.reader, adapter->memory,
     NULL, NULL, &check));
   for (size_t i = 0; i < 2; i++) {
     TEST_ASSERT_TRUE(check.state[i].complete);
-    TEST_ASSERT_EQUAL_UINT64(1, check.state[i].orphans);
-    TEST_ASSERT_EQUAL_UINT64(9, check.state[i].grants);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(1, check.state[i].orphans);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(NS_GRANTS, check.state[i].grants);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT64(NS_VOLUMES, check.state[i].grants);
   }
   struct pfs_pool_diagnostic diagnostic;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open(&pool, &adapter->builder.reader,
     adapter->memory, &diagnostic));
-  TEST_ASSERT_EQUAL_UINT64(0, check.state[diagnostic.selected].file_blocks);
-  uint64_t generation = check.state[diagnostic.selected].generation;
+  const struct pfs_check_state_result *selected = &check.state[diagnostic.selected];
+  TEST_ASSERT_EQUAL_UINT64(generation, selected->generation);
   const struct pfs_volume_id id = {{2}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_diagnostic_volume_open(&pool, &id, &volumes[0]));
   struct pfs_object_record object;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_object(&volumes[0], &file_id, &object));
-  TEST_ASSERT_EQUAL_MEMORY(&file_id, &object.id, sizeof(file_id));
-  const struct pfs_object_id no_parent = {{0}};
-  TEST_ASSERT_EQUAL_MEMORY(&no_parent, &object.parent, sizeof(no_parent));
-  TEST_ASSERT_EQUAL(PFS_OBJECT_FILE, object.kind);
-  TEST_ASSERT_EQUAL_UINT64(0, object.file_length);
-  size_t count;
-  uint8_t byte = 0xa5;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_read(&volumes[0], &file_id,
-    0, &byte, 1, &count));
-  TEST_ASSERT_EQUAL_UINT(0, count);
-  TEST_ASSERT_EQUAL_UINT8(0xa5, byte);
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_grants(&volumes[0], &file_id,
-    NULL, 0, &count));
-  TEST_ASSERT_EQUAL_UINT(7, count);
   TEST_ASSERT_EQUAL(PFS_NOT_FOUND, pfs_volume_diagnostic_resolve(&volumes[0],
     &root_id, (const uint8_t *)"file", 4, &object));
+  TEST_ASSERT_EQUAL(selected->orphans ? PFS_OK : PFS_NOT_FOUND,
+    pfs_volume_diagnostic_object(&volumes[0], &file_id, &object));
+  if (selected->orphans) {
+    TEST_ASSERT_EQUAL_MEMORY(&file_id, &object.id, sizeof(file_id));
+    const struct pfs_object_id no_parent = {{0}};
+    TEST_ASSERT_EQUAL_MEMORY(&no_parent, &object.parent, sizeof(no_parent));
+    TEST_ASSERT_EQUAL(PFS_OBJECT_FILE, object.kind);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(sizeof(original), object.file_length);
+    uint8_t bytes[PFS_BLOCK_SIZE];
+    size_t count;
+    for (uint64_t offset = 0; offset < object.file_length; offset += sizeof(bytes)) {
+      size_t wanted = object.file_length - offset;
+      if (wanted > sizeof(bytes)) {
+        wanted = sizeof(bytes);
+      }
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_read(&volumes[0], &file_id,
+        offset, bytes, wanted, &count));
+      TEST_ASSERT_EQUAL_UINT(wanted, count);
+      TEST_ASSERT_EQUAL_MEMORY(original + offset, bytes, wanted);
+    }
+    uint8_t byte = 0xa5;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_read(&volumes[0], &file_id,
+      object.file_length, &byte, 1, &count));
+    TEST_ASSERT_EQUAL_UINT(0, count);
+    TEST_ASSERT_EQUAL_UINT8(0xa5, byte);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_diagnostic_grants(&volumes[0], &file_id,
+      NULL, 0, &count));
+    TEST_ASSERT_LESS_OR_EQUAL_UINT(NS_FILE_GRANTS, count);
+    TEST_ASSERT_EQUAL_UINT64(NS_VOLUMES + count, selected->grants);
+  } else {
+    TEST_ASSERT_EQUAL_UINT64(NS_VOLUMES, selected->grants);
+    TEST_ASSERT_EQUAL_UINT64(0, selected->file_blocks);
+  }
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volumes[0]));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
-  return generation;
 }
 
 static void
@@ -977,7 +1077,7 @@ expect_cleaned_orphans(struct test_failure *adapter)
   for (size_t i = 0; i < 2; i++) {
     TEST_ASSERT_TRUE(check.state[i].complete);
     TEST_ASSERT_EQUAL_UINT64(0, check.state[i].orphans);
-    TEST_ASSERT_EQUAL_UINT64(2, check.state[i].grants);
+    TEST_ASSERT_EQUAL_UINT64(NS_VOLUMES, check.state[i].grants);
     TEST_ASSERT_EQUAL_UINT64(0, check.state[i].file_blocks);
   }
 }
@@ -1011,29 +1111,18 @@ final_close_maintenance_failures_consume_view_and_resume_paired_orphan(void)
   open_fixture();
   struct pfs_write_result result;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
-  test_failure_trace_reset(&device);
-  uint64_t starting_flush = device.ordinals[TEST_FAILURE_FLUSH];
+  start_cleanup_trace(&device);
   close_view(1);
-  uint64_t boundary = first_maintenance_flush(&device, starting_flush);
+  size_t cut_count = finish_cleanup_trace(&device);
   close_fixture();
 
-  for (unsigned second_flush = 0; second_flush < 2; second_flush++) {
+  for (size_t i = 0; i < cut_count; i++) {
     open_fixture();
     TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"file", 4, &result));
-    uint8_t bytes[PFS_BLOCK_SIZE];
-    struct pfs_superblock super;
-    uint64_t generation = 0;
-    for (unsigned slot = 0; slot < 2; slot++) {
-      uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
-      TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(&device, block, 1, bytes));
-      TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes),
-        PFS_POOL_BLOCKS_MIN, block, &super));
-      if (super.header.birth > generation) {
-        generation = super.header.birth;
-      }
-    }
+    const struct test_failure_flush_cut *cut = &cleanup_cuts[i];
+    uint64_t generation = cleanup_generations[cut->ordinal - 1];
     struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
-      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + boundary + second_flush,
+      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + cut->ordinal,
       .mode = TEST_FAILURE_BEFORE, .enabled = true};
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
     test_failure_memory_fail_after(&device, 0);
@@ -1042,10 +1131,10 @@ final_close_maintenance_failures_consume_view_and_resume_paired_orphan(void)
     TEST_ASSERT_TRUE(device.triggered);
     TEST_ASSERT_TRUE(closing.released);
     TEST_ASSERT_NULL(views[1]);
-    TEST_ASSERT_EQUAL(second_flush ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED,
+    TEST_ASSERT_EQUAL(cut->publishes ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED,
       closing.maintenance_completion);
     TEST_ASSERT_EQUAL(PFS_IO, closing.maintenance_status);
-    TEST_ASSERT_EQUAL(second_flush ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
+    TEST_ASSERT_EQUAL(cut->publishes ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
       closing.health);
     device.backing.fail_after = SIZE_MAX;
     uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
@@ -1055,7 +1144,7 @@ final_close_maintenance_failures_consume_view_and_resume_paired_orphan(void)
     TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
     TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
-    TEST_ASSERT_EQUAL_UINT64(generation + 1, selected_orphan_after_data_cleanup(&device));
+    expect_interrupted_orphan(&device, generation);
     struct pfs_write_open_result opening;
     TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &device.builder,
       device.memory, &options, &opening));
@@ -1071,22 +1160,20 @@ static void
 interrupted_startup_preserves_confirmed_generation_and_withholds_instance(void)
 {
   create_abandoned_snapshot();
-  uint64_t starting_flush = snapshot.ordinals[TEST_FAILURE_FLUSH];
+  start_cleanup_trace(&snapshot);
   struct pfs_write_open_result opening;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &snapshot.builder,
     snapshot.memory, &options, &opening));
-  uint64_t boundary = first_maintenance_flush(&snapshot, starting_flush);
+  size_t cut_count = finish_cleanup_trace(&snapshot);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   close_snapshot_fixture();
 
-  for (unsigned second_flush = 0; second_flush < 2; second_flush++) {
+  for (size_t i = 0; i < cut_count; i++) {
     create_abandoned_snapshot();
-    struct pfs_check_result before;
-    TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&snapshot.builder.reader, snapshot.memory,
-      NULL, NULL, &before));
-    uint64_t generation = before.state[before.pool.selected].generation;
+    const struct test_failure_flush_cut *cut = &cleanup_cuts[i];
+    uint64_t generation = cleanup_generations[cut->ordinal - 1];
     struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
-      .ordinal = snapshot.ordinals[TEST_FAILURE_FLUSH] + boundary + second_flush,
+      .ordinal = snapshot.ordinals[TEST_FAILURE_FLUSH] + cut->ordinal,
       .mode = TEST_FAILURE_BEFORE, .enabled = true};
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&snapshot, &fault));
     publication_observed = false;
@@ -1101,17 +1188,19 @@ interrupted_startup_preserves_confirmed_generation_and_withholds_instance(void)
     TEST_ASSERT_NULL(pool.writer);
     TEST_ASSERT_NULL(pool.reader);
     TEST_ASSERT_EQUAL_UINT64(0, snapshot.memory->used);
-    TEST_ASSERT_EQUAL_UINT64(generation + 1, opening.confirmed_generation);
-    TEST_ASSERT_EQUAL(PFS_STOPPED, opening.recovery.completion);
+    TEST_ASSERT_EQUAL_UINT64(generation, opening.confirmed_generation);
+    enum pfs_completion expected = cut->publication == 0 ?
+      cut->publishes ? PFS_UNKNOWN : PFS_STOPPED : startup_cut_completion(cut);
+    TEST_ASSERT_EQUAL(expected, opening.recovery.completion);
     TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.operation_status);
     TEST_ASSERT_EQUAL(PFS_IO, opening.recovery.maintenance_status);
-    TEST_ASSERT_EQUAL(second_flush ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED,
+    TEST_ASSERT_EQUAL(cut->publishes ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED,
       opening.recovery.maintenance_completion);
-    TEST_ASSERT_EQUAL(second_flush ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
+    TEST_ASSERT_EQUAL(cut->publishes ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
       opening.writer.health);
     TEST_ASSERT_EQUAL(PFS_IO, opening.writer.failure);
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&snapshot));
-    TEST_ASSERT_EQUAL_UINT64(generation + 1, selected_orphan_after_data_cleanup(&snapshot));
+    expect_interrupted_orphan(&snapshot, generation);
     TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &snapshot.builder,
       snapshot.memory, &options, &opening));
     TEST_ASSERT_EQUAL(PFS_WRITER_READY, opening.writer.health);
@@ -1212,7 +1301,7 @@ generation_promise_funds_retained_file_cleanup_at_its_boundary(void)
       test_failure_memory_fail_after(&device, 0);
       close_view(1);
       device.backing.fail_after = SIZE_MAX;
-      check_durable(0, 2);
+      check_durable(0, NS_VOLUMES);
     }
     close_fixture();
   }

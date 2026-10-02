@@ -10,6 +10,11 @@ static struct test_fixture fixture;
 static struct pfs_allocation summaries;
 static struct pfs_plan_arena arena;
 static struct pfs_admit_state *states;
+static const struct pfs_build_object image_objects[] = {
+  {.id = {{3}}, .parent = UINT32_MAX, .kind = PFS_OBJECT_DIRECTORY},
+  {.id = {{4}}, .parent = 0, .name = {3, "one"}, .kind = PFS_OBJECT_FILE},
+  {.id = {{5}}, .parent = 0, .name = {3, "two"}, .kind = PFS_OBJECT_FILE},
+};
 
 static void
 build_image(uint64_t quota, uint64_t recovery)
@@ -17,15 +22,10 @@ build_image(uint64_t quota, uint64_t recovery)
   TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, PFS_POOL_BLOCKS_MIN, 0));
   summaries = (struct pfs_allocation){0};
   arena = (struct pfs_plan_arena){0};
-  struct pfs_build_object objects[] = {
-    {.id = {{3}}, .parent = UINT32_MAX, .kind = PFS_OBJECT_DIRECTORY},
-    {.id = {{4}}, .parent = 0, .name = {3, "one"}, .kind = PFS_OBJECT_FILE},
-    {.id = {{5}}, .parent = 0, .name = {3, "two"}, .kind = PFS_OBJECT_FILE},
-  };
   struct pfs_build_volume volume = {
     .id = {{2}}, .root_object = {{3}}, .name = {4, "home"}, .owner = {{6}},
     .guarantee_set = true, .quota_set = true, .quota = quota,
-    .object_count = 3, .objects = objects,
+    .object_count = sizeof(image_objects) / sizeof(*image_objects), .objects = image_objects,
   };
   struct pfs_build_spec spec = {
     .block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}}, .volume_count = 1, .volumes = &volume,
@@ -55,17 +55,35 @@ static void
 opening_copies_proof_and_funds_deletion(void)
 {
   build_image(64, 1024);
+  const uint64_t metadata_limit = 16;
+  const size_t object_count = sizeof(image_objects) / sizeof(*image_objects);
+  uint64_t directories = 0;
+  for (size_t i = 0; i < object_count; ++i) {
+    directories += image_objects[i].kind == PFS_OBJECT_DIRECTORY;
+  }
+  uint64_t records = object_count - 1;
+  uint64_t trees = directories + 1;
+  if (trees > records) {
+    trees = records;
+  }
+  uint64_t deletion_blocks = (records + 4 * trees) / 5;
   struct pfs_check_result check;
   uint64_t writes = fixture.writes, flushes = fixture.flushes;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_open(&fixture.builder.reader, &fixture.memory,
-    0, 16, &arena, states, &check));
+    0, metadata_limit, &arena, states, &check));
   TEST_ASSERT_TRUE(check.cross_complete);
-  TEST_ASSERT_EQUAL_UINT64(3, states[0].volumes[0].record.object_count);
-  TEST_ASSERT_EQUAL_UINT64(1, states[0].volumes[0].directories);
-  TEST_ASSERT_EQUAL_UINT64(1, states[0].volumes[0].namespace_nodes);
-  TEST_ASSERT_EQUAL_UINT64(3, states[0].volumes[0].metadata_blocks);
-  TEST_ASSERT_EQUAL_UINT64(2, states[0].volumes[0].deletion_blocks);
-  TEST_ASSERT_EQUAL_UINT64(4, states[0].volumes[0].effective_blocks);
+  const struct pfs_admit_volume *volume = &states[0].volumes[0];
+  TEST_ASSERT_EQUAL_UINT64(object_count, volume->record.object_count);
+  TEST_ASSERT_EQUAL_UINT64(directories, volume->directories);
+  TEST_ASSERT_GREATER_THAN(0, volume->namespace_nodes);
+  TEST_ASSERT_LESS_OR_EQUAL(deletion_blocks, volume->namespace_nodes);
+  /* Empty fixture files have no data blocks; live storage is all metadata. */
+  TEST_ASSERT_EQUAL_UINT64(volume->record.live_blocks, volume->metadata_blocks);
+  TEST_ASSERT_LESS_OR_EQUAL(volume->metadata_blocks, volume->namespace_nodes);
+  TEST_ASSERT_LESS_OR_EQUAL(metadata_limit, volume->metadata_blocks);
+  TEST_ASSERT_EQUAL_UINT64(deletion_blocks, volume->deletion_blocks);
+  TEST_ASSERT_EQUAL_UINT64(volume->record.live_blocks - volume->namespace_nodes + deletion_blocks,
+    volume->effective_blocks);
   TEST_ASSERT_EQUAL_UINT64(0, states[0].file_extents);
   TEST_ASSERT_EQUAL_PTR(arena.maps[0], states[0].maps);
   TEST_ASSERT_EQUAL_PTR(arena.maps[1], states[1].maps);

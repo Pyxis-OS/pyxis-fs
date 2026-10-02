@@ -471,16 +471,139 @@ quota_and_extent_refusal_leave_a_healthy_usable_writer(void)
   close_fixture();
 }
 
+static bool
+durable_file_object(struct test_failure *adapter, size_t slot,
+                    struct pfs_superblock *super, struct pfs_object_record *object)
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+  if (test_failure_durable_read(adapter, block, 1, bytes) != PFS_OK ||
+      pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN, block, super) != PFS_OK) {
+    return false;
+  }
+  struct pfs_block_context context = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = super->header.birth, .referring_birth = super->header.birth,
+    .pool = super->header.pool, .features = super->features, .reference = super->root};
+  struct pfs_pool_root root;
+  if (test_failure_durable_read(adapter, super->root.block, 1, bytes) != PFS_OK ||
+      pfs_pool_root_decode(bytes, sizeof(bytes), &context, &root) != PFS_OK) {
+    return false;
+  }
+  struct pfs_tree tree;
+  struct pfs_tree_context tree_context = {.block = context, .kind = PFS_INDEX_VOLUMES};
+  tree_context.block.reference = root.volumes;
+  if (test_failure_durable_read(adapter, root.volumes.block, 1, bytes) != PFS_OK ||
+      pfs_tree_decode(bytes, sizeof(bytes), &tree_context, &tree) != PFS_OK || tree.level || tree.count != 1) {
+    return false;
+  }
+  struct pfs_record_context records = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = super->header.birth, .containing_birth = tree.header.birth,
+    .features = super->features};
+  struct pfs_volume_record v;
+  if (pfs_volume_record_decode(bytes + tree.slots[0].offset, tree.slots[0].length, &records, &v) != PFS_OK) {
+    return false;
+  }
+  tree_context.kind = PFS_INDEX_OBJECTS;
+  tree_context.volume = v.id;
+  tree_context.block.reference = v.object_root;
+  if (test_failure_durable_read(adapter, v.object_root.block, 1, bytes) != PFS_OK ||
+      pfs_tree_decode(bytes, sizeof(bytes), &tree_context, &tree) != PFS_OK || tree.level) {
+    return false;
+  }
+  records.containing_birth = tree.header.birth;
+  bool found = false;
+  for (size_t i = 0; i < tree.count; i++) {
+    if (pfs_object_record_decode(bytes + tree.slots[i].offset, tree.slots[i].length,
+        &records, object) != PFS_OK) {
+      return false;
+    }
+    if (!memcmp(&object->id, &file_id, sizeof(file_id))) {
+      found = true;
+      break;
+    }
+  }
+  return found;
+}
+
+struct file_progress_trace {
+  uint64_t flush_base;
+  uint64_t initial_length;
+  uint64_t length;
+  uint64_t cut;
+  uint64_t confirmed_length;
+  size_t slot;
+  bool slot_pending;
+  bool violation;
+};
+
+static void
+observe_file_progress(struct test_failure *adapter, const struct test_failure_event *event,
+                      bool before, void *context)
+{
+  struct file_progress_trace *trace = context;
+  if (before || event->status != PFS_OK) {
+    return;
+  }
+  if (event->kind == TEST_FAILURE_WRITE &&
+      (event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1)) {
+    trace->slot = event->first != 0;
+    trace->slot_pending = true;
+  } else if (event->kind == TEST_FAILURE_FLUSH && trace->slot_pending) {
+    struct pfs_superblock super;
+    struct pfs_object_record object;
+    if (!durable_file_object(adapter, trace->slot, &super, &object)) {
+      trace->violation = true;
+    } else {
+      /* Length changes identify user publications independently of how many
+       * maintenance publications each partial operation currently needs. */
+      if (!trace->cut && object.file_length != trace->length &&
+          trace->length != trace->initial_length) {
+        trace->cut = event->ordinal - trace->flush_base;
+        trace->confirmed_length = trace->length;
+      }
+      trace->length = object.file_length;
+    }
+    trace->slot_pending = false;
+  }
+}
+
+static struct file_progress_trace
+trace_partial_operation(bool shrink)
+{
+  open_device();
+  struct file_progress_trace trace = {.flush_base = device.ordinals[TEST_FAILURE_FLUSH],
+    .initial_length = expected_length, .length = expected_length};
+  device.observer = observe_file_progress;
+  device.observer_context = &trace;
+  struct pfs_write_result result;
+  if (shrink) {
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_resize(file_view, 37, &result));
+  } else {
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(file_view, 0, payload, sizeof(payload), &result));
+  }
+  expect_complete(&result);
+  device.observer = NULL;
+  device.observer_context = NULL;
+  TEST_ASSERT_FALSE(trace.violation);
+  TEST_ASSERT_GREATER_THAN_UINT64(0, trace.cut);
+  close_handles();
+  TEST_ASSERT_FALSE(device.infrastructure_failure);
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  return trace;
+}
+
 static void
 large_write_and_shrink_report_confirmed_progress(void)
 {
   build_seed(0, 1024, 64);
-  open_device();
   for (size_t i = 0; i < sizeof(payload); i++) {
     payload[i] = (uint8_t)(i * 13u + 19u);
   }
+  struct file_progress_trace trace = trace_partial_operation(false);
+  open_device();
   struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
-    .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + 8, .mode = TEST_FAILURE_BEFORE, .enabled = true};
+    .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + trace.cut,
+    .mode = TEST_FAILURE_BEFORE, .enabled = true};
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
   struct pfs_write_result result;
   TEST_ASSERT_EQUAL(PFS_IO, pfs_view_write(file_view, 0, payload, sizeof(payload), &result));
@@ -491,13 +614,15 @@ large_write_and_shrink_report_confirmed_progress(void)
   TEST_ASSERT_EQUAL(PFS_WRITER_ACCESS_STOPPED, result.health);
   /* This selected final-flush failure leaves only the earlier complete chunk
    * durable. Cold reconstruction is an explicit simulator recovery boundary. */
-  expected_length = (size_t)result.confirmed_bytes;
+  TEST_ASSERT_EQUAL_UINT64(trace.confirmed_length, result.confirmed_bytes);
+  expected_length = (size_t)trace.confirmed_length;
   memcpy(expected, payload, expected_length);
   cold_reopen_expected();
   close_fixture();
   build_seed(sizeof(expected), 1024, 64);
+  trace = trace_partial_operation(true);
   open_device();
-  fault.ordinal = device.ordinals[TEST_FAILURE_FLUSH] + 8;
+  fault.ordinal = device.ordinals[TEST_FAILURE_FLUSH] + trace.cut;
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
   TEST_ASSERT_EQUAL(PFS_IO, pfs_view_resize(file_view, 37, &result));
   TEST_ASSERT_TRUE(device.triggered);
@@ -505,7 +630,8 @@ large_write_and_shrink_report_confirmed_progress(void)
   TEST_ASSERT_TRUE(result.confirmed_length_valid);
   TEST_ASSERT_GREATER_THAN_UINT64(37, result.confirmed_length);
   TEST_ASSERT_LESS_THAN_UINT64(sizeof(expected), result.confirmed_length);
-  expected_length = (size_t)result.confirmed_length;
+  TEST_ASSERT_EQUAL_UINT64(trace.confirmed_length, result.confirmed_length);
+  expected_length = (size_t)trace.confirmed_length;
   cold_reopen_expected();
   close_fixture();
 }
@@ -513,29 +639,43 @@ large_write_and_shrink_report_confirmed_progress(void)
 static void
 public_write_flush_failures_preserve_progress_and_stop_without_retry(void)
 {
-  for (uint64_t boundary = 1; boundary <= 6; boundary++) {
-    build_seed(PFS_BLOCK_SIZE, 1024, 64);
+  build_seed(PFS_BLOCK_SIZE, 1024, 64);
+  memset(payload, 'B', PFS_BLOCK_SIZE);
+  open_device();
+  uint64_t flush_base = device.ordinals[TEST_FAILURE_FLUSH];
+  test_failure_trace_reset(&device);
+  struct pfs_write_result healthy;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(file_view, 0, payload, PFS_BLOCK_SIZE, &healthy));
+  expect_complete(&healthy);
+  struct test_failure_flush_cut cuts[TEST_FAILURE_EVENTS_MAX];
+  size_t count;
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(&device, flush_base, cuts,
+    TEST_FAILURE_EVENTS_MAX, &count));
+  TEST_ASSERT_GREATER_THAN_UINT(0, count);
+  close_handles();
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  for (size_t i = 0; i < count; i++) {
     open_device();
-    memset(payload, 'B', PFS_BLOCK_SIZE);
+    bool user_confirmed = cuts[i].publication != 0;
+    bool uncertain = cuts[i].publishes;
     struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
-      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + boundary,
+      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + cuts[i].ordinal,
       .mode = TEST_FAILURE_BEFORE, .enabled = true};
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
     struct pfs_write_result result;
     TEST_ASSERT_EQUAL(PFS_IO, pfs_view_write(file_view, 0, payload, PFS_BLOCK_SIZE, &result));
     TEST_ASSERT_TRUE(device.triggered);
-    TEST_ASSERT_EQUAL_UINT64(boundary > 2 ? PFS_BLOCK_SIZE : 0, result.confirmed_bytes);
-    TEST_ASSERT_EQUAL(boundary == 1 ? PFS_STOPPED : boundary == 2 ? PFS_UNKNOWN : PFS_COMPLETE,
+    TEST_ASSERT_EQUAL_UINT64(user_confirmed ? PFS_BLOCK_SIZE : 0, result.confirmed_bytes);
+    TEST_ASSERT_EQUAL(user_confirmed ? PFS_COMPLETE : uncertain ? PFS_UNKNOWN : PFS_STOPPED,
       result.completion);
-    TEST_ASSERT_EQUAL(boundary > 2 ? PFS_OK : PFS_IO, result.operation_status);
-    TEST_ASSERT_EQUAL(boundary % 2 ? PFS_WRITER_READABLE_STOPPED : PFS_WRITER_ACCESS_STOPPED,
+    TEST_ASSERT_EQUAL(user_confirmed ? PFS_OK : PFS_IO, result.operation_status);
+    TEST_ASSERT_EQUAL(uncertain ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
       result.health);
-    if (boundary > 2) {
+    if (user_confirmed) {
       TEST_ASSERT_EQUAL(PFS_IO, result.maintenance_status);
-      memcpy(expected, payload, PFS_BLOCK_SIZE);
     }
-    if (boundary % 2) {
-      expect_bytes(file_view, expected, expected_length);
+    if (!uncertain) {
+      expect_bytes(file_view, user_confirmed ? payload : expected, expected_length);
     }
     uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
     uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
@@ -547,8 +687,8 @@ public_write_flush_failures_preserve_progress_and_stop_without_retry(void)
     TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
     TEST_ASSERT_FALSE(device.infrastructure_failure);
     TEST_ASSERT_TRUE(test_failure_close(&device));
-    TEST_ASSERT_TRUE(test_fixture_close(&seed));
   }
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
 }
 
 static void
@@ -578,14 +718,33 @@ planning_read_and_replacement_write_failures_keep_distinct_health(void)
 static void
 creation_failures_publish_a_view_only_after_confirmed_namespace_commit(void)
 {
-  for (uint64_t boundary = 1; boundary <= 6; boundary++) {
-    build_seed(37, 1024, 64);
+  build_seed(37, 1024, 64);
+  open_device();
+  const struct pfs_rights rights = {.file = file_rights.file,
+    .directory = PFS_DIR_CREATE | PFS_DIR_LOOKUP};
+  acquire_parent(PFS_SCOPE_SUBTREE, &rights);
+  uint64_t flush_base = device.ordinals[TEST_FAILURE_FLUSH];
+  test_failure_trace_reset(&device);
+  struct pfs_write_result healthy;
+  struct pfs_view_identity healthy_identity;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(parent_view, (const uint8_t *)"new", 3,
+    &file_rights, &other_view, &healthy_identity, &healthy));
+  expect_complete(&healthy);
+  struct test_failure_flush_cut cuts[TEST_FAILURE_EVENTS_MAX];
+  size_t count;
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(&device, flush_base, cuts,
+    TEST_FAILURE_EVENTS_MAX, &count));
+  TEST_ASSERT_GREATER_THAN_UINT(0, count);
+  close_handles();
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  for (size_t i = 0; i < count; i++) {
+    random_sequence = 0;
     open_device();
-    const struct pfs_rights rights = {.file = file_rights.file,
-      .directory = PFS_DIR_CREATE | PFS_DIR_LOOKUP};
     acquire_parent(PFS_SCOPE_SUBTREE, &rights);
+    bool user_confirmed = cuts[i].publication != 0;
+    bool uncertain = cuts[i].publishes;
     struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
-      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + boundary,
+      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + cuts[i].ordinal,
       .mode = TEST_FAILURE_BEFORE, .enabled = true};
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
     struct pfs_write_result result;
@@ -595,16 +754,16 @@ creation_failures_publish_a_view_only_after_confirmed_namespace_commit(void)
     TEST_ASSERT_EQUAL(PFS_IO, pfs_view_create_file(parent_view, (const uint8_t *)"new", 3,
       &file_rights, &other_view, &identity, &result));
     TEST_ASSERT_TRUE(device.triggered);
-    TEST_ASSERT_EQUAL(boundary > 2, result.namespace_confirmed);
+    TEST_ASSERT_EQUAL(user_confirmed, result.namespace_confirmed);
     TEST_ASSERT_EQUAL_UINT64(0, result.confirmed_bytes);
-    TEST_ASSERT_EQUAL(boundary == 1 ? PFS_STOPPED : boundary == 2 ? PFS_UNKNOWN : PFS_COMPLETE,
+    TEST_ASSERT_EQUAL(user_confirmed ? PFS_COMPLETE : uncertain ? PFS_UNKNOWN : PFS_STOPPED,
       result.completion);
-    if (boundary > 2) {
+    if (user_confirmed) {
       TEST_ASSERT_NOT_NULL(other_view);
       TEST_ASSERT_EQUAL(PFS_OBJECT_FILE, identity.kind);
       TEST_ASSERT_EQUAL(PFS_OK, result.operation_status);
       TEST_ASSERT_EQUAL(PFS_IO, result.maintenance_status);
-      if (boundary % 2) {
+      if (!uncertain) {
         expect_bytes(other_view, expected, 0);
       }
     } else {
@@ -618,8 +777,8 @@ creation_failures_publish_a_view_only_after_confirmed_namespace_commit(void)
     TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
     TEST_ASSERT_FALSE(device.infrastructure_failure);
     TEST_ASSERT_TRUE(test_failure_close(&device));
-    TEST_ASSERT_TRUE(test_fixture_close(&seed));
   }
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
 }
 
 static void
@@ -874,58 +1033,15 @@ static bool retained_violation;
 static bool
 retained_payload_matches(struct test_failure *adapter, size_t slot)
 {
-  uint8_t bytes[PFS_BLOCK_SIZE];
-  uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
   struct pfs_superblock super;
-  if (test_failure_durable_read(adapter, block, 1, bytes) != PFS_OK ||
-      pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN, block, &super) != PFS_OK) {
-    return false;
-  }
-  struct pfs_block_context context = {.block_count = PFS_POOL_BLOCKS_MIN,
-    .selected_generation = super.header.birth, .referring_birth = super.header.birth,
-    .pool = super.header.pool, .features = super.features, .reference = super.root};
-  struct pfs_pool_root root;
-  if (test_failure_durable_read(adapter, super.root.block, 1, bytes) != PFS_OK ||
-      pfs_pool_root_decode(bytes, sizeof(bytes), &context, &root) != PFS_OK) {
-    return false;
-  }
-  struct pfs_tree tree;
-  struct pfs_tree_context tree_context = {.block = context, .kind = PFS_INDEX_VOLUMES};
-  tree_context.block.reference = root.volumes;
-  if (test_failure_durable_read(adapter, root.volumes.block, 1, bytes) != PFS_OK ||
-      pfs_tree_decode(bytes, sizeof(bytes), &tree_context, &tree) != PFS_OK || tree.level || tree.count != 1) {
-    return false;
-  }
-  struct pfs_record_context records = {.block_count = PFS_POOL_BLOCKS_MIN,
-    .selected_generation = super.header.birth, .containing_birth = tree.header.birth,
-    .features = super.features};
-  struct pfs_volume_record v;
-  if (pfs_volume_record_decode(bytes + tree.slots[0].offset, tree.slots[0].length, &records, &v) != PFS_OK) {
-    return false;
-  }
-  tree_context.kind = PFS_INDEX_OBJECTS;
-  tree_context.volume = v.id;
-  tree_context.block.reference = v.object_root;
-  if (test_failure_durable_read(adapter, v.object_root.block, 1, bytes) != PFS_OK ||
-      pfs_tree_decode(bytes, sizeof(bytes), &tree_context, &tree) != PFS_OK || tree.level) {
-    return false;
-  }
-  records.containing_birth = tree.header.birth;
   struct pfs_object_record object;
-  bool found = false;
-  for (size_t i = 0; i < tree.count; i++) {
-    if (pfs_object_record_decode(bytes + tree.slots[i].offset, tree.slots[i].length,
-        &records, &object) != PFS_OK) {
-      return false;
-    }
-    if (!memcmp(&object.id, &file_id, sizeof(file_id))) {
-      found = true;
-      break;
-    }
+  if (!durable_file_object(adapter, slot, &super, &object)) {
+    return false;
   }
+  uint8_t bytes[PFS_BLOCK_SIZE];
   const uint8_t *wanted = super.header.birth <= retained_generation ? retained_before : retained_after;
   size_t length = super.header.birth <= retained_generation ? retained_before_length : retained_after_length;
-  if (!found || object.file_length != length || object.inline_extent.count != 1 ||
+  if (object.file_length != length || object.inline_extent.count != 1 ||
       test_failure_durable_read(adapter, object.inline_extent.physical_first, 1, bytes) != PFS_OK) {
     return false;
   }
@@ -963,9 +1079,26 @@ prepare_retained_comparison(size_t new_length, uint8_t new_byte)
       retained_generation = super.header.birth;
     }
   }
+  test_failure_trace_reset(&device);
   retained_checks = 0;
   retained_violation = false;
   device.observer = observe_retained_payloads;
+}
+
+static void
+expect_retained_slot_coverage(void)
+{
+  unsigned slot_writes = 0;
+  for (size_t i = 0; i < device.event_count; i++) {
+    const struct test_failure_event *event = &device.events[i];
+    if (event->kind == TEST_FAILURE_WRITE &&
+        (event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1)) {
+      ++slot_writes;
+    }
+  }
+  TEST_ASSERT_GREATER_THAN_UINT(0, slot_writes);
+  TEST_ASSERT_EQUAL_UINT(slot_writes, retained_checks);
+  TEST_ASSERT_FALSE(retained_violation);
 }
 
 static void
@@ -978,13 +1111,11 @@ public_overwrite_reuse_and_shrink_preserve_both_payloads_through_maintenance(voi
     prepare_retained_comparison(PFS_BLOCK_SIZE, byte);
     memset(payload, byte, PFS_BLOCK_SIZE);
     write_expected(0, payload, PFS_BLOCK_SIZE);
-    TEST_ASSERT_FALSE(retained_violation);
-    TEST_ASSERT_EQUAL_UINT(3, retained_checks);
+    expect_retained_slot_coverage();
   }
   prepare_retained_comparison(37, 'D');
   resize_expected(37);
-  TEST_ASSERT_FALSE(retained_violation);
-  TEST_ASSERT_EQUAL_UINT(3, retained_checks);
+  expect_retained_slot_coverage();
   device.observer = NULL;
   cold_reopen_expected();
   close_fixture();

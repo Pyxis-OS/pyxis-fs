@@ -49,6 +49,14 @@ struct test_failure_event {
   size_t prefix;
 };
 
+/* Cuts discovered from a healthy callback trace. Publication numbers are local
+ * to that trace, not expected batch counts. Ordinals are relative to flush_base. */
+struct test_failure_flush_cut {
+  uint64_t ordinal;
+  size_t publication;
+  bool publishes;
+};
+
 struct test_failure;
 /* Called before/after an ordinary callback, never through a Unity assertion.
  * Observers may inspect/clone durable bytes; they must not reenter core handles
@@ -99,6 +107,11 @@ enum pfs_status test_failure_set_fault(struct test_failure *adapter,
 void test_failure_memory_fail_after(struct test_failure *adapter, size_t successes);
 /* Clearing trace storage retains monotonic event/operation ordinals. */
 void test_failure_trace_reset(struct test_failure *adapter);
+/* Verify replacement-write/flush/slot-write/flush ordering while collecting cuts.
+ * Standalone validation flushes are not publication cuts. No core/private state
+ * is consulted, and an incomplete/malformed healthy trace is rejected. */
+enum pfs_status test_failure_flush_cuts(const struct test_failure *adapter,
+  uint64_t flush_base, struct test_failure_flush_cut *cuts, size_t capacity, size_t *count);
 enum pfs_status test_failure_durable_read(const struct test_failure *adapter,
   uint64_t first, uint32_t count, void *buffer);
 /* Explicit early whole-block promotion for a selected pre-flush cut. All actual

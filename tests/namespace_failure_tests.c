@@ -11,6 +11,7 @@ void run_namespace_failure_tests(void);
 
 static struct test_fixture seed;
 static struct test_failure device;
+static struct test_failure_flush_cut rename_cuts[TEST_FAILURE_EVENTS_MAX];
 static struct pfs_pool pool;
 static struct pfs_volume volume;
 static struct pfs_view *source_parent, *destination_parent, *victim;
@@ -162,31 +163,52 @@ expect_namespace(bool moved, bool cleaned)
 static void
 rename_flush_failures_preserve_atomic_namespace_and_confirmed_progress(void)
 {
-  for (uint64_t boundary = 1; boundary <= 7; boundary++) {
+  open_fixture();
+  uint64_t first_flush = device.ordinals[TEST_FAILURE_FLUSH];
+  struct pfs_write_result result;
+  TEST_ASSERT_EQUAL(PFS_OK, rename_file(&result));
+  size_t cut_count;
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(&device, first_flush,
+    rename_cuts, TEST_FAILURE_EVENTS_MAX, &cut_count));
+  TEST_ASSERT_GREATER_THAN_UINT(0, cut_count);
+  size_t user_slot_flush = SIZE_MAX;
+  for (size_t i = 0; i < cut_count; i++) {
+    if (!rename_cuts[i].publication && rename_cuts[i].publishes) {
+      user_slot_flush = i;
+      break;
+    }
+  }
+  TEST_ASSERT_NOT_EQUAL(SIZE_MAX, user_slot_flush);
+  close_handles();
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
+
+  for (size_t i = 0; i <= cut_count; i++) {
     open_fixture();
-    uint64_t cut = boundary == 7 ? 2 : boundary;
+    bool durable_unknown = i == cut_count;
+    const struct test_failure_flush_cut *cut = &rename_cuts[durable_unknown ? user_slot_flush : i];
+    bool confirmed = cut->publication != 0;
     struct test_failure_fault fault = {.kind = TEST_FAILURE_FLUSH,
-      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + cut,
-      .mode = boundary == 7 ? TEST_FAILURE_FLUSH_PREFIX : TEST_FAILURE_BEFORE,
+      .ordinal = device.ordinals[TEST_FAILURE_FLUSH] + cut->ordinal,
+      .mode = durable_unknown ? TEST_FAILURE_FLUSH_PREFIX : TEST_FAILURE_BEFORE,
       .prefix = SIZE_MAX, .enabled = true};
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
-    struct pfs_write_result result;
     TEST_ASSERT_EQUAL(PFS_IO, rename_file(&result));
     TEST_ASSERT_TRUE(device.triggered);
-    TEST_ASSERT_EQUAL(cut > 2, result.namespace_confirmed);
-    TEST_ASSERT_EQUAL(cut == 1 ? PFS_STOPPED : cut == 2 ? PFS_UNKNOWN : PFS_COMPLETE,
+    TEST_ASSERT_EQUAL(confirmed, result.namespace_confirmed);
+    TEST_ASSERT_EQUAL(confirmed ? PFS_COMPLETE : cut->publishes ? PFS_UNKNOWN : PFS_STOPPED,
       result.completion);
-    TEST_ASSERT_EQUAL(cut % 2 ? PFS_WRITER_READABLE_STOPPED : PFS_WRITER_ACCESS_STOPPED,
+    TEST_ASSERT_EQUAL(cut->publishes ? PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED,
       result.health);
-    TEST_ASSERT_EQUAL(cut > 2 ? PFS_OK : PFS_IO, result.operation_status);
-    if (cut > 2) {
+    TEST_ASSERT_EQUAL(confirmed ? PFS_OK : PFS_IO, result.operation_status);
+    if (confirmed) {
       TEST_ASSERT_EQUAL(PFS_IO, result.maintenance_status);
     }
     uint8_t byte = 0;
     size_t count = 0;
-    TEST_ASSERT_EQUAL(cut % 2 ? PFS_OK : PFS_RECOVERY_REQUIRED,
+    TEST_ASSERT_EQUAL(cut->publishes ? PFS_RECOVERY_REQUIRED : PFS_OK,
       pfs_view_read(victim, 0, &byte, 1, &count));
-    if (cut % 2) {
+    if (!cut->publishes) {
       TEST_ASSERT_EQUAL_UINT8(191, byte);
     }
     uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
@@ -196,7 +218,7 @@ rename_flush_failures_preserve_atomic_namespace_and_confirmed_progress(void)
     TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
     TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
-    bool moved = cut > 2 || boundary == 7;
+    bool moved = confirmed || durable_unknown;
     expect_namespace(moved, false);
     struct pfs_write_open_result opening;
     TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &device.builder,
@@ -218,10 +240,21 @@ rename_planning_and_maintenance_reads_stop_access_without_erasing_commit(void)
   uint64_t first_flush = device.ordinals[TEST_FAILURE_FLUSH];
   struct pfs_write_result result;
   TEST_ASSERT_EQUAL(PFS_OK, rename_file(&result));
+  size_t cut_count;
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(&device, first_flush,
+    rename_cuts, TEST_FAILURE_EVENTS_MAX, &cut_count));
+  uint64_t user_confirmed_flush = 0;
+  for (size_t i = 0; i < cut_count; i++) {
+    if (!rename_cuts[i].publication && rename_cuts[i].publishes) {
+      user_confirmed_flush = first_flush + rename_cuts[i].ordinal;
+      break;
+    }
+  }
+  TEST_ASSERT_GREATER_THAN_UINT64(first_flush, user_confirmed_flush);
   uint64_t maintenance_read = 0;
   for (size_t i = 0; i < device.event_count; i++) {
     const struct test_failure_event *event = &device.events[i];
-    if (event->kind == TEST_FAILURE_READ && event->flush_ordinal >= first_flush + 2) {
+    if (event->kind == TEST_FAILURE_READ && event->flush_ordinal >= user_confirmed_flush) {
       maintenance_read = event->ordinal - first_read;
       break;
     }

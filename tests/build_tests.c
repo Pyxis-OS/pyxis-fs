@@ -202,15 +202,17 @@ build_case(enum name_profile profile, size_t children, size_t expected_nodes,
     .block_count = PFS_POOL_BLOCKS_MIN,
     .volumes = &volume,
     .volume_count = 1,
+    .reserve_set = PFS_RESERVE_COW | PFS_RESERVE_MIGRATION | PFS_RESERVE_RECOVERY,
+    .cow_reserve = 1536, .migration_reserve = 2048, .recovery_reserve = 512,
   };
   struct pfs_build_plan plan = {0};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_build_plan_create(&fixture.memory, &spec, &plan));
   TEST_ASSERT_EQUAL_UINT64(0, fixture.writes);
   TEST_ASSERT_EQUAL_UINT64(0, fixture.reads);
   TEST_ASSERT_EQUAL_UINT64(4, plan.pool_root.live_pool);
-  TEST_ASSERT_EQUAL_UINT64(1024, plan.pool_root.cow.capacity);
-  TEST_ASSERT_EQUAL_UINT64(1024, plan.pool_root.migration.capacity);
-  TEST_ASSERT_EQUAL_UINT64(256, plan.pool_root.recovery.capacity);
+  TEST_ASSERT_EQUAL_UINT64(spec.cow_reserve, plan.pool_root.cow.capacity);
+  TEST_ASSERT_EQUAL_UINT64(spec.migration_reserve, plan.pool_root.migration.capacity);
+  TEST_ASSERT_EQUAL_UINT64(spec.recovery_reserve, plan.pool_root.recovery.capacity);
   TEST_ASSERT_EQUAL_UINT64(spec.block_count - 2, plan.pool_root.live_pool +
     plan.pool_root.live_volume + plan.pool_root.free);
   size_t source_reads = 0;

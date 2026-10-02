@@ -346,6 +346,50 @@ trace_observers_memory_failures_and_bounds(void)
 }
 
 static void
+healthy_trace_cuts_require_the_publication_protocol(void)
+{
+  open_adapter(8);
+  uint64_t base = adapter.ordinals[TEST_FAILURE_FLUSH];
+  test_failure_trace_reset(&adapter);
+  /* An opening validation flush is not a publication. The following writes
+   * deliberately construct the format's replacement/flush/slot/flush protocol. */
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_flush(&adapter.builder));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&adapter.builder, 100, 3,
+    new_bytes, sizeof(new_bytes)));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_flush(&adapter.builder));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&adapter.builder, 0, 1,
+    new_bytes, PFS_BLOCK_SIZE));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_flush(&adapter.builder));
+  struct test_failure_flush_cut cuts[2];
+  size_t count = 99;
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(&adapter, base, cuts, 2, &count));
+  TEST_ASSERT_EQUAL_size_t(2, count);
+  TEST_ASSERT_EQUAL_UINT64(2, cuts[0].ordinal);
+  TEST_ASSERT_EQUAL_UINT64(3, cuts[1].ordinal);
+  TEST_ASSERT_EQUAL_size_t(0, cuts[0].publication);
+  TEST_ASSERT_EQUAL_size_t(0, cuts[1].publication);
+  TEST_ASSERT_FALSE(cuts[0].publishes);
+  TEST_ASSERT_TRUE(cuts[1].publishes);
+  TEST_ASSERT_EQUAL(PFS_LIMIT, test_failure_flush_cuts(&adapter, base, cuts, 1, &count));
+  adapter.event_count--;
+  TEST_ASSERT_EQUAL(PFS_INVALID, test_failure_flush_cuts(&adapter, base, cuts, 2, &count));
+  adapter.event_count++;
+  struct test_failure_event original = adapter.events[2];
+  adapter.events[2].kind = TEST_FAILURE_READ; /* Missing pre-slot flush. */
+  TEST_ASSERT_EQUAL(PFS_INVALID, test_failure_flush_cuts(&adapter, base, cuts, 2, &count));
+  adapter.events[2] = original;
+  adapter.events[2].status = PFS_IO;
+  TEST_ASSERT_EQUAL(PFS_INVALID, test_failure_flush_cuts(&adapter, base, cuts, 2, &count));
+  adapter.events[2] = original;
+  adapter.events[0].kind = TEST_FAILURE_CUT;
+  TEST_ASSERT_EQUAL(PFS_INVALID, test_failure_flush_cuts(&adapter, base, cuts, 2, &count));
+  adapter.events[0].kind = TEST_FAILURE_FLUSH;
+  adapter.events[1].first = PFS_POOL_BLOCKS_MIN - 2; /* Range crosses the final slot. */
+  TEST_ASSERT_EQUAL(PFS_INVALID, test_failure_flush_cuts(&adapter, base, cuts, 2, &count));
+  close_adapter();
+}
+
+static void
 existing_fixture_and_direct_builder_use_real_core(void)
 {
   TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&seed, PFS_POOL_BLOCKS_MIN, 0));
@@ -394,5 +438,6 @@ run_failure_tests(void)
   RUN_TEST(cache_only_slot_survives_successful_backend_flush);
   RUN_TEST(early_promotion_and_newer_writes_preserve_order);
   RUN_TEST(trace_observers_memory_failures_and_bounds);
+  RUN_TEST(healthy_trace_cuts_require_the_publication_protocol);
   RUN_TEST(existing_fixture_and_direct_builder_use_real_core);
 }
