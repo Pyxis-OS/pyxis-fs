@@ -58,7 +58,7 @@ F(S(H)) + C + 1 <= H
 ```
 
 H/S are computed profile ceilings, not blocks to allocate as padding.
-The whole-map publisher accounts for every replacement and retirement, including
+The shared publisher accounts for every replacement and retirement, including
 its own storage. Combining the deletion still removes the intermediate empty
 object; carryover separately defers reclamation, never durability acknowledgment.
 

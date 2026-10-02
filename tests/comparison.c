@@ -67,6 +67,20 @@ struct phase_stats {
   struct callback_stats user, orphan, drain;
 };
 
+/* Bounded aggregates over preparation and measurement publications. Timing is
+ * the observed first publisher read through first replacement-write interval;
+ * it includes adapter reads and optional reference counting, not an NVMe model. */
+struct map_stats {
+  uint64_t publications, local, bulk, source_sum, source_max, closure_sum, closure_max;
+  uint64_t passes, largest_addition, redistribution, emitted, bulk_reference;
+  uint64_t fallback[4], local_cost[3], failed_leaves, failed_records;
+  int64_t local_node_difference;
+  double planning_seconds, planning_max;
+};
+static struct map_stats map_stats;
+static double planning_started;
+static uint64_t planning_generation, observed_generation;
+
 static struct test_failure device;
 static struct pfs_pool pool;
 static struct pfs_volume volume;
@@ -170,12 +184,68 @@ reset_trace(void)
 }
 
 static void
+observe_plan(const struct test_failure_event *event)
+{
+  const struct pfs_writer *writer = pool.writer;
+  const struct pfs_map_metrics *metrics = &writer->map_metrics;
+  if (event->kind == TEST_FAILURE_READ && writer->map_planning &&
+      planning_generation != metrics->generation) {
+    planning_generation = metrics->generation;
+    planning_started = now();
+  }
+  if (event->kind != TEST_FAILURE_WRITE || observed_generation == metrics->generation) {
+    return;
+  }
+  require(!writer->map_planning && planning_generation == metrics->generation,
+    "publication timing boundary missing");
+  observed_generation = metrics->generation;
+  double elapsed = now() - planning_started;
+  map_stats.publications++;
+  map_stats.local += metrics->local;
+  map_stats.bulk += !metrics->local;
+  map_stats.source_sum += metrics->source_nodes;
+  map_stats.closure_sum += metrics->closure_nodes;
+  if (metrics->source_nodes > map_stats.source_max) {
+    map_stats.source_max = metrics->source_nodes;
+  }
+  if (metrics->closure_nodes > map_stats.closure_max) {
+    map_stats.closure_max = metrics->closure_nodes;
+  }
+  map_stats.passes += metrics->growth_passes;
+  if (metrics->largest_addition > map_stats.largest_addition) {
+    map_stats.largest_addition = metrics->largest_addition;
+  }
+  map_stats.redistribution += metrics->redistribution_additions;
+  map_stats.emitted += metrics->replacement_nodes;
+  map_stats.bulk_reference += metrics->bulk_reference_nodes;
+  for (size_t i = 0; i < 4; i++) {
+    map_stats.fallback[i] += (metrics->fallback & (1u << i)) != 0;
+  }
+  if (metrics->failed_run_leaves) {
+    map_stats.failed_leaves = metrics->failed_run_leaves;
+    map_stats.failed_records = metrics->failed_run_records;
+  }
+  if (metrics->local) {
+    size_t cost = metrics->replacement_nodes < metrics->bulk_reference_nodes ? 0 :
+      metrics->replacement_nodes == metrics->bulk_reference_nodes ? 1 : 2;
+    map_stats.local_cost[cost]++;
+    map_stats.local_node_difference += (int64_t)metrics->bulk_reference_nodes -
+                                      (int64_t)metrics->replacement_nodes;
+  }
+  map_stats.planning_seconds += elapsed;
+  if (elapsed > map_stats.planning_max) {
+    map_stats.planning_max = elapsed;
+  }
+}
+
+static void
 observe(struct test_failure *adapter, const struct test_failure_event *event,
         bool before, void *context)
 {
   (void)adapter;
   (void)context;
   if (before) {
+    observe_plan(event);
     const struct pfs_batch *active = pool.writer->active_batch;
     callback_phase = !active ? &phase->drain :
       active->orphan_cleanup ? &phase->orphan : &phase->user;
@@ -553,6 +623,7 @@ open_backend(void)
   reset_trace();
   require_status(pfs_view_acquire(&volume, &authority, &authority.root,
     PFS_SCOPE_SUBTREE, &rights, &parent), "acquire root");
+  pool.writer->collect_map_metrics = true;
   device.observer = observe;
 }
 
@@ -790,6 +861,29 @@ print_phase(const char *name, const struct phase_stats *stats)
   printf("}");
 }
 
+static void
+print_map_stats(void)
+{
+  printf(",\"map_plans\":{\"publications\":%" PRIu64
+    ",\"local\":%" PRIu64 ",\"bulk\":%" PRIu64
+    ",\"source_sum\":%" PRIu64 ",\"source_max\":%" PRIu64
+    ",\"closure_sum\":%" PRIu64 ",\"closure_max\":%" PRIu64
+    ",\"growth_passes\":%" PRIu64 ",\"largest_addition\":%" PRIu64
+    ",\"redistribution_additions\":%" PRIu64 ",\"emitted_nodes\":%" PRIu64
+    ",\"bulk_reference_nodes\":%" PRIu64 ",\"fallback_counts\":[%" PRIu64
+    ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "],\"last_failed_run\":[%" PRIu64
+    ",%" PRIu64 "],\"local_cost_counts\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64
+    "],\"local_node_difference\":%" PRId64 ",\"planning_seconds\":%.9f"
+    ",\"planning_max_seconds\":%.9f}", map_stats.publications, map_stats.local,
+    map_stats.bulk, map_stats.source_sum, map_stats.source_max, map_stats.closure_sum,
+    map_stats.closure_max, map_stats.passes, map_stats.largest_addition,
+    map_stats.redistribution, map_stats.emitted, map_stats.bulk_reference,
+    map_stats.fallback[0], map_stats.fallback[1], map_stats.fallback[2], map_stats.fallback[3],
+    map_stats.failed_leaves, map_stats.failed_records, map_stats.local_cost[0],
+    map_stats.local_cost[1], map_stats.local_cost[2], map_stats.local_node_difference,
+    map_stats.planning_seconds, map_stats.planning_max);
+}
+
 static int
 parse_descriptor(const char *text)
 {
@@ -909,6 +1003,9 @@ main(int argc, char **argv)
   if (!native) {
     printf(",\"selected_state\":{\"extents\":%" PRIu64 ",\"metadata_blocks\":%" PRIu64
       ",\"map_records\":%zu}", extents, metadata, map_records);
+  }
+  if (!native) {
+    print_map_stats();
   }
   printf(",\"verification\":{\"oracle\":\"seed1-operation-ledger\",\"contents_verified\":true,"
     "\"files\":%" PRIu64 ",\"bytes\":%" PRIu64 "}}\n", verified_files, verified_bytes);

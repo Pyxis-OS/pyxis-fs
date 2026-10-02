@@ -703,15 +703,14 @@ recovery tests. The ordinary Linux host adapter has no qualified post-error or
 unknown-history interrupted-session recovery route, no registry and no force
 clear. See [healthy host operation](host-tools.md#healthy-writer-sessions).
 
-Whole-map rebuilding is the initial correctness implementation. Each publication
-rewrites the complete planned allocation map, even for a small useful update;
-each uses the two-flush publication protocol. Later user/orphan publications
-can absorb retirement stages, while an explicit fence can add at most two tail
-maps and four flushes. These are calculated protocol costs, not measured savings.
-Record metadata bytes per useful data
-byte, latency and throughput on populated images with write history before
-selecting the later incremental strategy. Current bounded measurements and test
-limits are in [testing](testing.md). Private writer/planner/encoder stack use
+The writer attempts [topology-preserving incremental map publication](incremental-map.md)
+with monotone self-accounting, seam closure and neighbouring-leaf redistribution.
+An explicit funded bulk fallback handles global closure and exhausted packing;
+source reads, flat summaries and admission remain population-sized. The two-flush
+publication protocol and carryover/fence guarantees are unchanged. Local hits
+can equal or exceed bulk replacement cost, so write traffic and planning are
+measured through all maintenance and final checkpoints. This intermediate step
+does not qualify writable deployment. Private writer/planner/encoder stack use
 still needs resolution before native writable integration; the kernel links only
 the read-only core and its small mode/health bridge, not the publisher.
 
@@ -767,8 +766,8 @@ file length or replace the separately admitted E/M profile.
 Mutation staging uses the final 2 MiB of the already reserved 8 MiB scratch arena;
 compile-time bounds separate it from admission and publication storage. Changed
 claims, blocks and volume counts feed the existing publisher. Publication and
-funded retirement fences need no further heap allocation. The whole-map rebuild
-and kernel-stack prerequisite remain limitations; this code is not linked into Caelum.
+funded retirement fences need no further heap allocation. Global closure/bulk fallback
+and the kernel-stack prerequisite remain limitations; this code is not linked into Caelum.
 
 Results preserve the confirmed write prefix or resize length independently of
 retirement maintenance and health. A fully confirmed request remains `COMPLETE`
