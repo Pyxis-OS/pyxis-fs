@@ -948,6 +948,7 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
     pool->writer->pool = pool;
     pool->writer->backing = backing;
     pool->writer->cleanup = pfs_orphan_cleanup;
+    pool->writer->fence = pfs_writer_fence;
     pool->writer->random = options->random;
     pool->writer->random_context = options->random_context;
     status = pfs_admit_open(&backing->reader, memory, options->extent_limit, options->metadata_limit,

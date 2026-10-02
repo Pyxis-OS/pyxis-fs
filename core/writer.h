@@ -52,6 +52,8 @@ struct pfs_writer {
   struct pfs_runtime_object *runtime_objects;
   enum pfs_status (*cleanup)(struct pfs_volume *volume,
     const struct pfs_object_id *id, struct pfs_write_result *result);
+  /* Mode bridge remains linkable without the writable publisher. */
+  enum pfs_status (*fence)(struct pfs_pool *pool, struct pfs_write_result *result);
   struct pfs_batch batch;
   /* Borrowed only during the active user/orphan publication; NULL for fences. */
   const struct pfs_batch *active_batch;
