@@ -252,6 +252,28 @@ close_candidate(void)
 }
 
 static void
+check_first_neighbour(size_t chosen, size_t shared)
+{
+  size_t repairs = incremental.redistribution_leaves;
+  size_t previous = incremental.marked_count;
+  do {
+    renew_candidate(true);
+    bool again;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_incremental_map_close(&incremental,
+      arena.maps[2], candidate_count, &again));
+    TEST_ASSERT_TRUE(again);
+    TEST_ASSERT_TRUE(incremental.marked_count > previous);
+    TEST_ASSERT_TRUE(incremental.marked_count <= incremental.source_count);
+    previous = incremental.marked_count;
+  } while (incremental.redistribution_leaves == repairs);
+  /* Later accounting or repair can legitimately expand the closure again. */
+  TEST_ASSERT_TRUE(pfs_incremental_map_retired(&incremental,
+    source_reference(chosen).block));
+  TEST_ASSERT_FALSE(pfs_incremental_map_retired(&incremental,
+    source_reference(shared).block));
+}
+
+static void
 walk_result(struct pfs_reference ref, uint64_t referring_birth,
             uint16_t parent_level, size_t depth)
 {
@@ -515,6 +537,98 @@ first_leaf_overflow_uses_successor_slack(void)
 }
 
 static void
+overflow_prefers_fitting_right_neighbour(void)
+{
+  const size_t counts[] = {3, 6, 46, 46, 6, 6, 6, 6, 6};
+  start_case(counts);
+  change_range(leaf_first[3] + 20, 1, 2, false);
+  load_source();
+  check_first_neighbour(4, 2);
+  close_candidate();
+  check_local_result();
+  finish_case();
+}
+
+static void
+underflow_prefers_fitting_right_neighbour(void)
+{
+  const size_t counts[] = {3, 6, 1, 1, 1, 1, 4, 6, 6};
+  start_case(counts);
+  for (size_t leaf = 3; leaf <= 5; leaf++) {
+    change_range(leaf_first[leaf], 0, source[leaf_first[leaf]].count, true);
+  }
+  load_source();
+  check_first_neighbour(6, 2);
+  close_candidate();
+  check_local_result();
+  finish_case();
+}
+
+static void
+nonfitting_neighbours_choose_smaller_remaining_deficit(void)
+{
+  const size_t counts[] = {3, 6, 1, 1, 1, 1, 2, 6, 6};
+  start_case(counts);
+  for (size_t leaf = 3; leaf <= 5; leaf++) {
+    change_range(leaf_first[leaf], 0, source[leaf_first[leaf]].count, true);
+  }
+  load_source();
+  check_first_neighbour(6, 2);
+  close_candidate();
+  check_local_result();
+  finish_case();
+}
+
+static void
+both_fitting_neighbours_preserve_left_tie_preference(void)
+{
+  const size_t counts[] = {3, 6, 44, 46, 6, 6, 6, 6, 6};
+  start_case(counts);
+  change_range(leaf_first[3] + 20, 1, 2, false);
+  load_source();
+  /* Both expanded runs fit; extra right-hand slack is not a preference. */
+  check_first_neighbour(2, 4);
+  close_candidate();
+  check_local_result();
+  finish_case();
+}
+
+static void
+underflow_choice_counts_bridged_left_run(void)
+{
+  const size_t counts[] = {3, 10, 1, 1, 1, 1, 2, 6, 6};
+  start_case(counts);
+  size_t changed = leaf_first[1] + 2;
+  change_range(changed, 0, source[changed].count, false);
+  for (size_t leaf = 3; leaf <= 5; leaf++) {
+    change_range(leaf_first[leaf], 0, source[leaf_first[leaf]].count, true);
+  }
+  load_source();
+  /* The single-record left neighbour brings in a healthy marked run.
+   * Scoring just that leaf would prefer the two-record right neighbour. */
+  check_first_neighbour(2, 6);
+  close_candidate();
+  check_local_result();
+  finish_case();
+}
+
+static void
+overflow_choice_counts_bridged_right_run(void)
+{
+  const size_t counts[] = {3, 6, 46, 46, 44, 46, 6, 6, 6};
+  start_case(counts);
+  change_range(leaf_first[3] + 20, 1, 2, false);
+  change_range(leaf_first[5] + 20, 1, 2, false);
+  load_source();
+  /* The right leaf alone fits, but bridging the other overflowing run leaves
+   * the same deficit as the left expansion, so the tie belongs to the left. */
+  check_first_neighbour(2, 4);
+  close_candidate();
+  check_local_result();
+  finish_case();
+}
+
+static void
 canonical_straddling_repairs_both_run_endpoints(void)
 {
   const size_t counts[] = {3, 6, 6, 1, 6, 6, 6, 6, 6};
@@ -661,6 +775,12 @@ run_incremental_tests(void)
   RUN_TEST(overflow_redistributes_across_parent_boundary);
   RUN_TEST(underflow_redistributes_across_parent_boundary);
   RUN_TEST(first_leaf_overflow_uses_successor_slack);
+  RUN_TEST(overflow_prefers_fitting_right_neighbour);
+  RUN_TEST(underflow_prefers_fitting_right_neighbour);
+  RUN_TEST(nonfitting_neighbours_choose_smaller_remaining_deficit);
+  RUN_TEST(both_fitting_neighbours_preserve_left_tie_preference);
+  RUN_TEST(underflow_choice_counts_bridged_left_run);
+  RUN_TEST(overflow_choice_counts_bridged_right_run);
   RUN_TEST(canonical_straddling_repairs_both_run_endpoints);
   RUN_TEST(global_change_requests_bulk_without_encoding_local_padding);
   RUN_TEST(exhausted_overflow_requests_bulk);
