@@ -1793,15 +1793,16 @@ expect_small_durable(struct test_failure *adapter, uint64_t generation, bool cle
     enum pfs_status status = small_durable_object(adapter, slot, &object);
     TEST_ASSERT_TRUE(status == PFS_OK || status == PFS_NOT_FOUND);
     bool present = status == PFS_OK;
+    const struct pfs_object_id no_parent = {{0}};
+    bool orphan = present && !memcmp(&object.parent, &no_parent, sizeof(no_parent));
     TEST_ASSERT_TRUE(check.state[slot].complete);
-    TEST_ASSERT_EQUAL_UINT64(present, check.state[slot].orphans);
+    TEST_ASSERT_EQUAL_UINT64(orphan, check.state[slot].orphans);
     TEST_ASSERT_EQUAL_UINT64((sizeof(original) + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE + present,
       check.state[slot].file_blocks);
     TEST_ASSERT_EQUAL_UINT64(NS_GRANTS, check.state[slot].grants);
     TEST_ASSERT_TRUE(small_payload_matches(adapter, slot));
-    if (present) {
-      const struct pfs_object_id parent = {{0}};
-      TEST_ASSERT_EQUAL_MEMORY(&parent, &object.parent, sizeof(parent));
+    if (present && !orphan) {
+      TEST_ASSERT_EQUAL_MEMORY(&root_id, &object.parent, sizeof(root_id));
     }
     if (cleaned) {
       TEST_ASSERT_FALSE(present);
