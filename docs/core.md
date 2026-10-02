@@ -9,9 +9,9 @@ standalone sparse images from source directories and provide diagnostic `info`,
 partition selection belongs to the host adapter. See [host-tool usage](host-tools.md).
 Private canonical validators, COW tree editors and allocation-map planners are
 also implemented. Explicit writable open adds retained-state validation, bounded
-admission, ordered publication and synchronous reclamation. File and namespace
-mutation APIs remain unimplemented; a private editor interface exercises real
-content replacement in the maintained host suite.
+admission, individually durable publication and bounded retirement carryover.
+Held-authority file and namespace mutation APIs use the private COW editor and
+publisher; checkpoints settle pool-wide volume retirement.
 
 ## Build
 
@@ -723,17 +723,18 @@ backing; an actual backing-read failure retains the pool-wide access-stop policy
 The optional child-handle request requires parent subtree scope, lookup and every
 requested right within the held masks. Creation validates these requirements and
 reserves the view before publication. No returned view implies no added authority.
-A confirmed creation returns its reserved view even when cleanup fails; an unknown
-creation returns none. Identity output does not require separate metadata rights.
+A confirmed creation returns its reserved view; an unknown creation returns none.
+Identity output does not require separate metadata rights.
 
 Writes edit only affected mappings and object paths, preserving untouched storage.
 Within a call, compatible logical/physical runs born in the same transaction
 coalesce. A separately committed append has a new birth and cannot merge with
 an older run merely because it is adjacent. The planner adds slices until the
-actual staged edit reaches its fixed transaction bounds, then publishes and
-funds the drain before starting another batch. No delayed acknowledgement or
-batching across completed calls is introduced. Extent lookup uses the admitted
-claim summary with a bounded private overlay rather than a whole-file rewrite.
+actual staged edit reaches its fixed transaction bounds, then publishes an
+individually durable batch. Funded retirement can carry into later batches or an
+explicit checkpoint. No delayed acknowledgement or batching across completed calls
+is introduced. Extent lookup uses the admitted claim summary with a bounded
+private overlay rather than a whole-file rewrite.
 
 Sparse growth exposes zeros. Partial-block writes preserve bytes outside their
 range; extending writes and growth clear any previously hidden partial-EOF suffix
@@ -751,15 +752,16 @@ file length or replace the separately admitted E/M profile.
 
 Mutation staging uses the final 2 MiB of the already reserved 8 MiB scratch arena;
 compile-time bounds separate it from admission and publication storage. Changed
-claims, blocks and volume counts feed the existing publisher. No allocation is
-needed by the subsequent funded drain. The whole-map rebuild and kernel-stack
-prerequisite remain limitations; this code is not linked into Caelum.
+claims, blocks and volume counts feed the existing publisher. Publication and
+funded retirement fences need no further heap allocation. The whole-map rebuild
+and kernel-stack prerequisite remain limitations; this code is not linked into Caelum.
 
 Results preserve the confirmed write prefix or resize length independently of
-cleanup and health. An uncertain batch may have committed additional bytes or a
-shorter length; it is not automatically retryable. A fully confirmed request
-remains `COMPLETE` on cleanup failure. If more batches remain, cleanup failure
-stops the request with its confirmed prefix/length and maintenance error intact.
+retirement maintenance and health. A fully confirmed request remains `COMPLETE`
+with healthy `PENDING` retirement. If a later user batch fails, the request retains
+its confirmed prefix/length and reports that batch's operation error or uncertainty;
+it does not invent a maintenance failure. An uncertain batch may have committed
+additional bytes or a shorter length and is not automatically retryable.
 Creation sets `namespace_confirmed` only after both user-publication flushes.
 
 ### Live directory tokens
