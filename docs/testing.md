@@ -1,11 +1,35 @@
 # Maintained host contract tests
 
-Run the deterministic PR suite from this repository:
+Run the deterministic PR suite in the [bounded RAM setup](ram-validation.md):
 
 ```sh
-make -j16
-make check
+sudo python3 tests/ram_run.py --suite check
 ```
+
+Historical commands and observations below do not waive that storage boundary.
+Bare `make check` now refuses unless its actual scratch/cgroup/core limits pass
+the same guard and the process has a nonzero UID. Scratch and job capacity are
+provisioned inputs; the guard requires finite positive limits rather than the
+local launcher's particular defaults. The larger recovery workload is not
+currently authorized. The [initial small RAM baseline](ram-baseline.md) records
+the initial scoped validation
+and the Pyxis/ext4/Btrfs comparison; historical disk-backed timings below remain
+historical evidence.
+
+The launcher gives RAM temporary/build directories to its selected non-root
+worker, clears supplementary groups, permanently drops UIDs/GIDs and sets
+`no_new_privs` before quick, extended or preflight work and result reporting.
+Compilation and comparison children also run unprivileged in the native safety
+suite and baseline; their supervisor retains the loop, mount and trace duties. The
+[launcher contract](ram-validation.md#local-execution) describes identity selection
+and result-socket authentication, and the
+[comparison contract](ram-validation.md#small-comparison-contract) describes the
+held descriptors that independently verify native RAM backing.
+
+Run `sudo python3 tests/ram_run.py --suite safety` for the bounded native launch
+check: one 32-file compiler operation case each on ext4 and Btrfs, plus five
+descriptor/backing refusal cases. This checks the launch boundary without a full
+comparative matrix; it adds no timing evidence to the initial baseline report.
 
 `make check` builds `build/pyxis-fs-tests` and runs `--suite pr`. It links the same
 freestanding `libpyxis-fs.a` as the ordinary tools, with no alternate core or
@@ -20,6 +44,23 @@ properties so implementation refactors and harmless layout changes do not requir
 broad test rewrites. Exact bytes/offsets are appropriate where the disk format
 specifies them. Expected results must be independently defined: agreement between
 our encoder, reader and checker is not sufficient evidence.
+
+Configuration, authored or draft data, benchmark parameters, machine properties
+and convenient fixtures do not become contracts by appearing in tests or
+validators. Before adding an assertion, identify the deliberate contract that
+changing the value would violate. A setting has one authority: configure a chosen
+input and verify its propagation or behavior, rather than asserting the current
+default independently in multiple layers. A synthetic fixture may deliberately
+choose exact inputs and independent expected results for its scenario; its current
+contents do not define which other inputs the filesystem accepts.
+
+The same rule applies to structure and ownership. Investigate duplicate mutable
+authorities instead of adding copies and consistency assertions around them.
+When replacing an implementation, reassess which old expectations remain real
+contracts. Passing tests and matching documentation do not establish that the
+underlying architecture is appropriate. Execution-profile checks belong to the
+[launcher boundary](ram-validation.md#contracts-and-execution-profiles), separate
+from filesystem correctness.
 
 ## Current coverage
 
@@ -123,8 +164,8 @@ throughput.
 
 ## CI and scope limits
 
-The `Filesystem` workflow runs the ordinary build and `make check` on each PR and
-push to main, using the existing Pyxis builder image. The `host-contract` job has a
+The `Filesystem` workflow builds and runs the quick suite on each PR and push
+to main in the verified RAM boundary, using the existing Pyxis builder image. The `host-contract` job has a
 five-minute timeout; the quick suite is intended to stay comfortably below one
 minute on the normal runner. The emitted status is `Filesystem / host-contract (pull_request)`; the repository
 owner must add that exact pattern to required status checks in branch protection. This repository owns the check; the parent

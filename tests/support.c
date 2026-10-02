@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #define _POSIX_C_SOURCE 200809L
 #include "support.h"
+#include "ram_guard.h"
 #include "unity.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -94,33 +96,36 @@ flush_blocks(void *context)
 FILE *
 test_temporary_file(void)
 {
-  const char *directory = getenv("TMPDIR");
-  if (!directory || !*directory) {
-    return tmpfile();
+  int directory = pfs_test_ram_directory_fd();
+  static uint64_t sequence;
+  int fd = -1;
+  char name[80];
+  for (unsigned attempt = 0; attempt < 128; attempt++) {
+    if (sequence == UINT64_MAX) {
+      errno = EOVERFLOW;
+      return NULL;
+    }
+    snprintf(name, sizeof(name), "pyxis-fs-test-%ld-%llu", (long)getpid(),
+      (unsigned long long)sequence++);
+    fd = openat(directory, name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd >= 0 || errno != EEXIST) {
+      break;
+    }
   }
-  const char suffix[] = "/pyxis-fs-test-XXXXXX";
-  size_t length = strlen(directory);
-  if (length > SIZE_MAX - sizeof(suffix)) {
-    return NULL;
-  }
-  char *path = malloc(length + sizeof(suffix));
-  if (!path) {
-    return NULL;
-  }
-  memcpy(path, directory, length);
-  memcpy(path + length, suffix, sizeof(suffix));
-  int fd = mkstemp(path);
-  if (fd >= 0 && unlink(path) != 0) {
-    close(fd);
-    fd = -1;
-  }
-  free(path);
   if (fd < 0) {
+    return NULL;
+  }
+  if (unlinkat(directory, name, 0) != 0) {
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
     return NULL;
   }
   FILE *file = fdopen(fd, "w+b");
   if (!file) {
+    int saved_errno = errno;
     close(fd);
+    errno = saved_errno;
   }
   return file;
 }

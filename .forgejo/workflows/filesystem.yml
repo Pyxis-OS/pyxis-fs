@@ -8,7 +8,7 @@ on:
 jobs:
   host-contract:
     name: host-contract
-    runs-on: pyxis
+    runs-on: pyxis-fs-ram
     timeout-minutes: 5
     container:
       image: git.internal/pyxisos/pyxis-builder:pyxis-gcc16.2-binutils2.47
@@ -16,7 +16,5 @@ jobs:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Build core and host tools
-        run: make -j16
-      - name: Filesystem contract tests
-        run: make check
+      - name: Verify RAM boundary, build and test
+        run: python3 tests/ram_run.py --inside --suite check --ci-quick

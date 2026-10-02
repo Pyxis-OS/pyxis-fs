@@ -22,7 +22,7 @@ struct test_fixture {
   uint64_t flushes;
 };
 
-/* Unlinked temporary storage; honors explicit TMPDIR, otherwise uses tmpfile. */
+/* Unlinked temporary storage in the verified, pinned RAM directory; no fallback. */
 FILE *test_temporary_file(void);
 
 enum pfs_status test_fixture_open(struct test_fixture *fixture, uint64_t blocks,
