@@ -803,7 +803,7 @@ rolling_volume_record(struct test_failure *adapter, struct pfs_tree_context cont
 
 static bool
 rolling_payloads_match(struct test_failure *adapter, unsigned slot,
-                       uint64_t leaves[ROLLING_VOLUMES], uint64_t *retired)
+                       uint64_t leaves[ROLLING_VOLUMES], uint64_t *volume_debt)
 {
   uint8_t bytes[PFS_BLOCK_SIZE];
   struct pfs_superblock super;
@@ -825,8 +825,8 @@ rolling_payloads_match(struct test_failure *adapter, unsigned slot,
          rolling_history[history + 1].generation <= super.header.birth) {
     history++;
   }
-  if (retired) {
-    *retired = 0;
+  if (volume_debt) {
+    *volume_debt = 0;
   }
   for (size_t v = 0; v < ROLLING_VOLUMES; v++) {
     struct pfs_tree_context catalog = {.block = context, .kind = PFS_INDEX_VOLUMES};
@@ -837,8 +837,8 @@ rolling_payloads_match(struct test_failure *adapter, unsigned slot,
       return false;
     }
     leaves[v] = leaf;
-    if (retired) {
-      *retired += record.retired_blocks;
+    if (volume_debt) {
+      *volume_debt += record.retired_blocks;
     }
     struct pfs_tree_context objects = {.block = context, .kind = PFS_INDEX_OBJECTS,
       .volume = record.id};
@@ -1090,15 +1090,15 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
   TEST_ASSERT_FALSE(opening.writer.drain_pending);
   TEST_ASSERT_FALSE(rolling_violation);
   for (unsigned slot = 0; slot < 2; slot++) {
-    uint64_t retired;
-    TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, slot, leaves, &retired));
+    uint64_t volume_debt;
+    TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, slot, leaves, &volume_debt));
     uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
     struct pfs_superblock super;
     TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(&recovered, block, 1, encoded));
     TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(encoded, sizeof(encoded),
       PFS_POOL_BLOCKS_MIN, block, &super));
     if (super.header.birth == opening.confirmed_generation) {
-      TEST_ASSERT_EQUAL_UINT64(0, retired);
+      TEST_ASSERT_EQUAL_UINT64(0, volume_debt);
     }
   }
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
