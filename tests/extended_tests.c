@@ -42,7 +42,7 @@ static const struct pfs_rights file_rights = {
   .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE | PFS_FILE_CHECKPOINT,
 };
 static const struct pfs_rights parent_rights = {
-  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE,
+  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE | PFS_FILE_CHECKPOINT,
   .directory = PFS_DIR_LIST | PFS_DIR_LOOKUP | PFS_DIR_METADATA | PFS_DIR_CREATE |
     PFS_DIR_REMOVE | PFS_DIR_REPLACE,
 };
