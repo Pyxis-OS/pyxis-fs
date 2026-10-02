@@ -11,6 +11,15 @@
 #define DELTA_SLOT 128u
 #define SOURCE_SLOT 128u
 #define NODE_SLOT 128u
+#define SPLIT_SLOT 128u
+#define SEED_SLOT 256u
+
+struct pfs_incremental_seed {
+  size_t marked_count, growth_passes, largest_addition;
+  size_t redistribution_additions, redistribution_leaves;
+  size_t failed_run_leaves, failed_run_records;
+  struct pfs_incremental_repair_metrics repair;
+};
 
 _Static_assert(sizeof(struct pfs_map_change) <= DELTA_SLOT, "raw delta slot");
 _Static_assert(sizeof(struct pfs_incremental_source) <= SOURCE_SLOT, "source slot");
@@ -18,6 +27,8 @@ _Static_assert(sizeof(struct pfs_incremental_run) <= 32u, "run slot");
 _Static_assert(sizeof(struct pfs_map_node) <= NODE_SLOT, "node slot");
 _Static_assert(sizeof(size_t) <= 8u, "source work slot");
 _Static_assert(sizeof(struct pfs_reusable_range) <= 16u, "range slot");
+_Static_assert(sizeof(struct pfs_incremental_split) <= SPLIT_SLOT, "split slot");
+_Static_assert(sizeof(struct pfs_incremental_seed) <= SEED_SLOT, "seed slot");
 
 static bool
 same_state(const struct pfs_allocation_record *a,
@@ -122,9 +133,22 @@ pfs_incremental_map_init(struct pfs_plan_arena *arena, struct pfs_incremental_ma
   if (!region(capacity, &offset, h, 16u)) {
     return PFS_LIMIT;
   }
-  /* With m <= H, raw deltas, 176m source/work bytes and 152H output bytes
-   * total at most 840H + 384D + 128V, within 1024(H + D + V). The block
-   * index sorts in place with constant extra storage. */
+  layout.seed_marks = (size_t *)(arena->deltas + offset);
+  if (!region(capacity, &offset, m, 8u)) {
+    return PFS_LIMIT;
+  }
+  layout.split = (struct pfs_incremental_split *)(arena->deltas + offset);
+  if (!region(capacity, &offset, 1, SPLIT_SLOT)) {
+    return PFS_LIMIT;
+  }
+  layout.seed = (struct pfs_incremental_seed *)(arena->deltas + offset);
+  if (!region(capacity, &offset, 1, SEED_SLOT)) {
+    return PFS_LIMIT;
+  }
+  *layout.split = (struct pfs_incremental_split){.anchor = SIZE_MAX, .parent = SIZE_MAX};
+  *layout.seed = (struct pfs_incremental_seed){0};
+  /* 664H + 184m + 384D + 128V + 384 fits 1024(H + D + V) for computed
+   * profiles (m <= H, H >= 4). Bulk reuses the dead front, never IDs/ranges. */
   *map = layout;
   return PFS_OK;
 }
@@ -413,6 +437,109 @@ growth(struct pfs_incremental_map *map, size_t before)
   }
 }
 
+size_t
+pfs_incremental_map_emitted(const struct pfs_incremental_map *map)
+{
+  return map->marked_count + map->split->active;
+}
+
+static void
+save_seed(struct pfs_incremental_map *map)
+{
+  for (size_t i = 0; i < map->source_count; i++) {
+    map->seed_marks[i] = map->source[i].marked;
+  }
+  *map->seed = (struct pfs_incremental_seed){
+    .marked_count = map->marked_count, .growth_passes = map->growth_passes,
+    .largest_addition = map->largest_addition,
+    .redistribution_additions = map->redistribution_additions,
+    .redistribution_leaves = map->redistribution_leaves,
+    .failed_run_leaves = map->failed_run_leaves, .failed_run_records = map->failed_run_records,
+    .repair = map->repair,
+  };
+}
+
+bool
+pfs_incremental_map_restore(struct pfs_incremental_map *map, unsigned reason)
+{
+  if (!map || !map->loaded || !map->split->active) {
+    return false;
+  }
+  struct pfs_incremental_split *split = map->split;
+  const struct pfs_incremental_seed *seed = map->seed;
+  split->metrics.misses |= reason;
+  split->metrics.discarded_nodes += map->marked_count;
+  split->metrics.discarded_growth += map->growth_passes - seed->growth_passes;
+  for (size_t i = 0; i < map->source_count; i++) {
+    map->source[i].marked = map->seed_marks[i] != 0;
+    map->source[i].replacement = SIZE_MAX;
+  }
+  map->marked_count = seed->marked_count;
+  map->growth_passes = seed->growth_passes;
+  map->largest_addition = seed->largest_addition;
+  map->redistribution_additions = seed->redistribution_additions;
+  map->redistribution_leaves = seed->redistribution_leaves;
+  map->failed_run_leaves = seed->failed_run_leaves;
+  map->failed_run_records = seed->failed_run_records;
+  map->repair = seed->repair;
+  map->run_count = 0;
+  map->stable = false;
+  map->fallback = 0;
+  split->active = false;
+  split->disabled = true;
+  return true;
+}
+
+static size_t
+split_position(const struct pfs_incremental_map *map, const struct pfs_incremental_run *run)
+{
+  if (map->split->active) {
+    for (size_t i = 0; i < run->leaf_count; i++) {
+      if (map->leaves[run->first_leaf + i] == map->split->anchor) {
+        return i + 1;
+      }
+    }
+  }
+  return SIZE_MAX;
+}
+
+static bool
+offer_split(struct pfs_incremental_map *map, const struct pfs_incremental_run *run)
+{
+  struct pfs_incremental_split *split = map->split;
+  split->disabled = true;
+  if (run->record_count <= PFS_INCREMENTAL_LEAF_RECORDS * run->leaf_count) {
+    return false;
+  }
+  split->metrics.opportunities++;
+  if (!map->source[0].level) {
+    split->metrics.skips |= PFS_INCREMENTAL_SPLIT_ROOT;
+  }
+  if (map->marked_count == map->source_count) {
+    split->metrics.skips |= PFS_INCREMENTAL_SPLIT_GLOBAL;
+  }
+  if (map->source_count >= map->source_capacity) {
+    split->metrics.skips |= PFS_INCREMENTAL_SPLIT_LIVE_CAP;
+  }
+  if (split->metrics.skips) {
+    return false;
+  }
+  for (size_t i = 0; i < run->leaf_count; i++) {
+    size_t anchor = map->leaves[run->first_leaf + i];
+    size_t parent = map->source[anchor].parent;
+    if (parent != SIZE_MAX && map->source[parent].child_count < MAP_INTERNAL_CHILDREN) {
+      save_seed(map);
+      split->anchor = anchor;
+      split->parent = parent;
+      split->active = true;
+      split->metrics.trials++;
+      return true;
+    }
+  }
+  split->metrics.skips |= PFS_INCREMENTAL_SPLIT_PARENT;
+  return false;
+}
+
 static enum pfs_status
 make_runs(struct pfs_incremental_map *map,
           const struct pfs_allocation_record *candidate, size_t count)
@@ -499,6 +626,7 @@ pfs_incremental_map_close(struct pfs_incremental_map *map,
   }
   *again = false;
   map->stable = false;
+  map->split->metrics.closure_evaluations++;
   struct pfs_record_context context = {
     .block_count = map->source_context.block_count,
     .selected_generation = map->source_context.selected_generation + 1,
@@ -541,11 +669,43 @@ pfs_incremental_map_close(struct pfs_incremental_map *map,
     return status;
   }
   map->fallback = map->marked_count == map->source_count ? PFS_INCREMENTAL_GLOBAL : 0;
+  if (map->split->active) {
+    unsigned miss = map->fallback ? PFS_INCREMENTAL_SPLIT_GLOBAL : 0;
+    bool anchor_found = false;
+    for (size_t i = 0; i < map->run_count; i++) {
+      const struct pfs_incremental_run *run = &map->runs[i];
+      size_t capacity = PFS_INCREMENTAL_LEAF_RECORDS * run->leaf_count;
+      if (split_position(map, run) != SIZE_MAX) {
+        anchor_found = true;
+        if (run->record_count <= capacity) {
+          miss |= PFS_INCREMENTAL_SPLIT_UNNEEDED;
+        } else if (run->record_count > capacity + PFS_INCREMENTAL_LEAF_RECORDS) {
+          miss |= PFS_INCREMENTAL_SPLIT_INSUFFICIENT;
+        }
+      } else if (run->record_count < run->leaf_count || run->record_count > capacity) {
+        miss |= PFS_INCREMENTAL_SPLIT_OTHER_RUN;
+      }
+    }
+    if (!anchor_found) {
+      return PFS_INVALID;
+    }
+    if (miss) {
+      pfs_incremental_map_restore(map, miss);
+      *again = true;
+      return PFS_OK;
+    }
+    map->stable = true;
+    return PFS_OK;
+  }
   for (size_t i = 0; i < map->run_count; i++) {
     const struct pfs_incremental_run *run = &map->runs[i];
     if (run->record_count >= run->leaf_count &&
         run->record_count <= PFS_INCREMENTAL_LEAF_RECORDS * run->leaf_count) {
       continue;
+    }
+    if (!map->split->disabled && !map->redistribution_leaves && offer_split(map, run)) {
+      *again = true;
+      return PFS_OK;
     }
     struct neighbour_score left = score_neighbour(map, i, false);
     struct neighbour_score right = score_neighbour(map, i, true);
@@ -624,6 +784,75 @@ validate_prefix(const struct pfs_incremental_map *map,
   return next == total ? PFS_OK : PFS_INVALID;
 }
 
+static enum pfs_status
+encode_node(struct pfs_incremental_map *map, size_t index,
+            const struct pfs_incremental_source *source,
+            const struct pfs_block_context *context,
+            const struct pfs_allocation_record *candidate,
+            struct pfs_edit_workspace *workspace, uint8_t record[PFS_BLOCK_SIZE])
+{
+  struct pfs_map_node *node = &map->nodes[index];
+  struct pfs_record_context record_context = {
+    .block_count = context->block_count,
+    .selected_generation = context->selected_generation,
+    .containing_birth = context->selected_generation, .features = context->features,
+  };
+  size_t insertion = SIZE_MAX;
+  if (map->split->active && source == &map->source[map->split->parent]) {
+    insertion = map->split->anchor - source->first_child + 1;
+  }
+  struct pfs_encoded_record *encoded = workspace->records[0];
+  size_t offset = 0;
+  for (size_t j = 0; j < node->count; j++) {
+    size_t length;
+    enum pfs_status status;
+    if (node->level) {
+      struct pfs_internal_record internal = {.minimum = {.length = 8}};
+      uint64_t minimum;
+      if (j == insertion) {
+        const struct pfs_map_node *extra = &map->nodes[map->marked_count];
+        internal.child = new_reference(extra->block, context->selected_generation);
+        minimum = extra->minimum;
+      } else {
+        const struct pfs_incremental_source *child =
+          &map->source[source->first_child + j - (j > insertion)];
+        internal.child = child->reference;
+        minimum = child->minimum;
+        if (child->marked) {
+          const struct pfs_map_node *replacement = &map->nodes[child->replacement];
+          internal.child = new_reference(replacement->block, context->selected_generation);
+          minimum = replacement->minimum;
+        }
+      }
+      if (!j) {
+        node->minimum = minimum;
+      }
+      pfs_put_u64(internal.minimum.bytes, minimum);
+      status = pfs_internal_record_encode(record + offset, PFS_BLOCK_SIZE - offset,
+        PFS_INDEX_ALLOCATION, &record_context, &internal, &length);
+    } else {
+      status = pfs_allocation_record_encode(record + offset, PFS_BLOCK_SIZE - offset,
+        &record_context, &candidate[node->first + j], &length);
+    }
+    if (status != PFS_OK) {
+      return status;
+    }
+    encoded[j] = (struct pfs_encoded_record){record + offset, length};
+    offset += length;
+  }
+  struct pfs_tree *tree = &workspace->path[0].tree;
+  *tree = (struct pfs_tree){
+    .header = {.type = PFS_BLOCK_TREE, .version = PFS_FORMAT_VERSION,
+      .pool = context->pool, .block = node->block, .birth = context->selected_generation},
+    .kind = PFS_INDEX_ALLOCATION, .level = node->level, .count = node->count,
+  };
+  struct pfs_tree_context tree_context = {.block = *context, .kind = PFS_INDEX_ALLOCATION};
+  tree_context.block.reference = new_reference(node->block, context->selected_generation);
+  tree_context.block.referring_birth = context->selected_generation;
+  return pfs_tree_encode(map->arena->blocks + index * PFS_BLOCK_SIZE,
+    PFS_BLOCK_SIZE, &tree_context, tree, encoded);
+}
+
 enum pfs_status
 pfs_incremental_map_encode(struct pfs_incremental_map *map,
   const struct pfs_block_context *context,
@@ -645,7 +874,8 @@ pfs_incremental_map_encode(struct pfs_incremental_map *map,
       context->selected_generation != map->source_context.selected_generation + 1) {
     return PFS_INVALID;
   }
-  size_t total = map->marked_count + catalog_count + 1;
+  size_t emitted = pfs_incremental_map_emitted(map);
+  size_t total = emitted + catalog_count + 1;
   if (total > map->arena->limits.pool_blocks) {
     return PFS_LIMIT;
   }
@@ -668,23 +898,35 @@ pfs_incremental_map_encode(struct pfs_incremental_map *map,
     if (source->marked) {
       source->replacement = replaced;
       map->nodes[replaced] = (struct pfs_map_node){
-        .block = map->ids[replaced], .count = source->child_count, .level = source->level,
+        .block = map->ids[replaced], .level = source->level,
+        .count = source->child_count + (map->split->active && i == map->split->parent),
       };
       replaced++;
     }
   }
+  if (map->split->active) {
+    map->nodes[map->marked_count] = (struct pfs_map_node){.block = map->ids[map->marked_count]};
+  }
   for (size_t i = 0; i < map->run_count; i++) {
     const struct pfs_incremental_run *run = &map->runs[i];
-    if (run->record_count < run->leaf_count ||
-        run->record_count > PFS_INCREMENTAL_LEAF_RECORDS * run->leaf_count) {
+    size_t insertion = split_position(map, run);
+    size_t positions = run->leaf_count + (insertion != SIZE_MAX);
+    if (run->record_count < positions ||
+        run->record_count > PFS_INCREMENTAL_LEAF_RECORDS * positions ||
+        (insertion != SIZE_MAX &&
+         run->record_count <= PFS_INCREMENTAL_LEAF_RECORDS * run->leaf_count)) {
       return PFS_INVALID;
     }
     size_t remaining = run->record_count, first = run->first_record;
-    for (size_t j = 0; j < run->leaf_count; j++) {
-      size_t left = run->leaf_count - j;
+    for (size_t j = 0; j < positions; j++) {
+      size_t left = positions - j;
       size_t take = remaining / left + (remaining % left != 0);
-      const struct pfs_incremental_source *source = &map->source[map->leaves[run->first_leaf + j]];
-      struct pfs_map_node *node = &map->nodes[source->replacement];
+      size_t index = map->marked_count;
+      if (j != insertion) {
+        size_t leaf = map->leaves[run->first_leaf + j - (j > insertion)];
+        index = map->source[leaf].replacement;
+      }
+      struct pfs_map_node *node = &map->nodes[index];
       node->first = first;
       node->count = (uint16_t)take;
       node->minimum = candidate[first].first;
@@ -692,65 +934,32 @@ pfs_incremental_map_encode(struct pfs_incremental_map *map,
       remaining -= take;
     }
   }
-  struct pfs_encoded_record *encoded = workspace->records[0];
-  struct pfs_tree *tree = &workspace->path[0].tree;
-  for (size_t i = map->source_count; i; i--) {
-    const struct pfs_incremental_source *source = &map->source[i - 1];
-    if (!source->marked) {
-      continue;
-    }
-    struct pfs_map_node *node = &map->nodes[source->replacement];
-    size_t offset = 0;
-    for (size_t j = 0; j < node->count; j++) {
-      size_t length;
-      if (source->level) {
-        const struct pfs_incremental_source *child = &map->source[source->first_child + j];
-        struct pfs_internal_record internal = {.child = child->reference, .minimum = {.length = 8}};
-        uint64_t minimum = child->minimum;
-        if (child->marked) {
-          const struct pfs_map_node *replacement = &map->nodes[child->replacement];
-          internal.child = new_reference(replacement->block, context->selected_generation);
-          minimum = replacement->minimum;
-        }
-        if (!j) {
-          node->minimum = minimum;
-        }
-        pfs_put_u64(internal.minimum.bytes, minimum);
-        status = pfs_internal_record_encode(record + offset, PFS_BLOCK_SIZE - offset,
-          PFS_INDEX_ALLOCATION, &record_context, &internal, &length);
-      } else {
-        status = pfs_allocation_record_encode(record + offset, PFS_BLOCK_SIZE - offset,
-          &record_context, &candidate[node->first + j], &length);
-      }
-      if (status != PFS_OK) {
-        return status;
-      }
-      encoded[j] = (struct pfs_encoded_record){record + offset, length};
-      offset += length;
-    }
-    *tree = (struct pfs_tree){
-      .header = {.type = PFS_BLOCK_TREE, .version = PFS_FORMAT_VERSION,
-        .pool = context->pool, .block = node->block, .birth = context->selected_generation},
-      .kind = PFS_INDEX_ALLOCATION, .level = source->level, .count = node->count,
-    };
-    struct pfs_tree_context tree_context = {.block = *context, .kind = PFS_INDEX_ALLOCATION};
-    tree_context.block.reference = new_reference(node->block, context->selected_generation);
-    tree_context.block.referring_birth = context->selected_generation;
-    status = pfs_tree_encode(map->arena->blocks + source->replacement * PFS_BLOCK_SIZE,
-      PFS_BLOCK_SIZE, &tree_context, tree, encoded);
+  /* The virtual leaf has no source descriptor; encode it before the source
+   * reverse traversal reaches its parent. */
+  if (map->split->active) {
+    status = encode_node(map, map->marked_count, NULL, context, candidate, workspace, record);
     if (status != PFS_OK) {
       return status;
     }
   }
+  for (size_t i = map->source_count; i; i--) {
+    const struct pfs_incremental_source *source = &map->source[i - 1];
+    if (source->marked) {
+      status = encode_node(map, source->replacement, source, context, candidate, workspace, record);
+      if (status != PFS_OK) {
+        return status;
+      }
+    }
+  }
   struct pfs_map_plan plan = {
     .root = new_reference(map->nodes[map->source[0].replacement].block, context->selected_generation),
-    .pool_root_block = map->ids[map->marked_count + catalog_count],
+    .pool_root_block = map->ids[emitted + catalog_count],
     .catalog_count = catalog_count, .record_count = count,
-    .node_count = map->marked_count, .allocation_count = total,
+    .node_count = emitted, .allocation_count = total,
     .records = candidate, .nodes = map->nodes, .blocks = map->arena->blocks,
   };
   for (size_t i = 0; i < catalog_count; i++) {
-    plan.catalog_blocks[i] = map->ids[map->marked_count + i];
+    plan.catalog_blocks[i] = map->ids[emitted + i];
   }
   *out = plan;
   return PFS_OK;
