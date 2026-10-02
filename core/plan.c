@@ -55,16 +55,19 @@ pfs_plan_limits(uint64_t blocks, uint64_t extents, uint64_t metadata,
     .extents = extents, .metadata = metadata, .catalog_blocks = 4u * volumes - 2,
   };
   /* Input maxima bound all arithmetic below to less than 2^48. */
-  uint64_t k = 1 + 2 * (extents + metadata + PFS_PLAN_VOLUME_RETIRED);
-  uint64_t upper = ceil_div(k + 2 * limits.catalog_blocks + 231, 15);
-  for (uint64_t h = 10; h <= upper; h++) {
-    uint64_t s = ceil_div(23 * (k + 2 * limits.catalog_blocks + 6 * h + 20), 21);
+  limits.catalog_union = limits.catalog_blocks < PFS_PLAN_CATALOG_UNION ?
+                         limits.catalog_blocks : PFS_PLAN_CATALOG_UNION;
+  uint64_t k = 1 + 2 * (extents + metadata + 2 * PFS_PLAN_VOLUME_RETIRED);
+  uint64_t upper = ceil_div(k + 2 * limits.catalog_blocks + 23 * limits.catalog_union + 47, 15);
+  for (uint64_t h = limits.catalog_union + 2; h <= upper; h++) {
+    uint64_t s = ceil_div(23 * (k + 2 * limits.catalog_blocks + 6 * h +
+                              2 * limits.catalog_union + 4), 21);
     uint64_t levels[PFS_TREE_DEPTH_MAX], nodes;
     size_t depth;
     if (map_shape(s, levels, &depth, &nodes) != PFS_OK) {
       return PFS_LIMIT;
     }
-    if (nodes + 9 <= h) {
+    if (nodes + limits.catalog_union + 1 <= h) {
       limits.pool_blocks = h;
       limits.records = s;
       break;
@@ -74,7 +77,8 @@ pfs_plan_limits(uint64_t blocks, uint64_t extents, uint64_t metadata,
     return PFS_LIMIT;
   }
   limits.permanent_pool = limits.catalog_blocks + limits.pool_blocks;
-  limits.recovery_blocks = 3 * limits.pool_blocks + PFS_PLAN_VOLUME_NEW + PFS_PLAN_VOLUME_RETIRED;
+  limits.recovery_blocks = 3 * limits.pool_blocks + PFS_PLAN_VOLUME_NEW +
+                           2 * PFS_PLAN_VOLUME_RETIRED;
   limits.claims = extents + metadata + limits.permanent_pool;
   limits.objects = metadata > PFS_RECORD_COUNT_MAX / 29 ? PFS_RECORD_COUNT_MAX : 29 * metadata;
   limits.deltas = 8 * (limits.pool_blocks + PFS_PLAN_VOLUME_NEW + PFS_PLAN_VOLUME_RETIRED);
@@ -377,7 +381,8 @@ pfs_plan_map_build(struct pfs_plan_arena *arena, const struct pfs_block_context 
   }
   *out = (struct pfs_map_plan){0};
   if (!arena || !arena->allocation.data || !context || !reusable || !reusable_count ||
-      !context->selected_generation || catalog_count > PFS_PLAN_CATALOG_PATH ||
+      !context->selected_generation || catalog_count > arena->limits.catalog_union ||
+      catalog_count > PFS_PLAN_CATALOG_UNION ||
       base_count > arena->limits.records) {
     return PFS_INVALID;
   }

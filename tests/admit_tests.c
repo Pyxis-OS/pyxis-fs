@@ -139,13 +139,63 @@ opening_profile_includes_namespace_headroom(void)
 static void
 opening_requires_computed_recovery_reserve(void)
 {
-  build_image(64, 256);
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 1, &limits));
+  build_image(64, limits.recovery_blocks - 1);
   struct pfs_check_result check;
   TEST_ASSERT_EQUAL(PFS_NO_SPACE, pfs_admit_open(&fixture.builder.reader, &fixture.memory,
     0, 16, &arena, states, &check));
   TEST_ASSERT_TRUE(check.cross_complete);
   TEST_ASSERT_NULL(arena.allocation.data);
   TEST_ASSERT_EQUAL_UINT64(summaries.size, fixture.memory.used);
+  release_opening();
+}
+
+static void
+opening_accepts_computed_reserve_and_funds_next_batch(void)
+{
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 1, &limits));
+  build_image(64, limits.recovery_blocks);
+  struct pfs_check_result check;
+  uint64_t writes = fixture.writes, flushes = fixture.flushes;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_open(&fixture.builder.reader, &fixture.memory,
+    0, 16, &arena, states, &check));
+  TEST_ASSERT_TRUE(check.cross_complete);
+  TEST_ASSERT_EQUAL_UINT64(limits.recovery_blocks, states[0].candidate.root.recovery.capacity);
+  TEST_ASSERT_TRUE(states[0].reusable_blocks >= limits.pool_blocks + 128);
+  TEST_ASSERT_TRUE(states[1].reusable_blocks >= limits.pool_blocks + 128);
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_EQUAL_UINT64(flushes, fixture.flushes);
+  release_opening();
+}
+
+static void
+opening_accepts_checked_nonadjacent_generations(void)
+{
+  build_image(64, 1024);
+  const uint64_t generations[] = {5, 2};
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  for (size_t i = 0; i < 2; i++) {
+    uint64_t slot = i ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock superblock;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(&fixture.builder.reader, slot, 1, bytes, sizeof(bytes)));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes),
+      PFS_POOL_BLOCKS_MIN, slot, &superblock));
+    superblock.header.birth = generations[i];
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_encode(bytes, sizeof(bytes), &superblock));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, slot, 1, bytes, sizeof(bytes)));
+  }
+  struct pfs_check_result check;
+  uint64_t writes = fixture.writes, flushes = fixture.flushes;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_open(&fixture.builder.reader, &fixture.memory,
+    0, 16, &arena, states, &check));
+  TEST_ASSERT_TRUE(check.cross_complete);
+  for (size_t i = 0; i < 2; i++) {
+    TEST_ASSERT_EQUAL_UINT64(generations[i], states[i].candidate.superblock.header.birth);
+  }
+  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
+  TEST_ASSERT_EQUAL_UINT64(flushes, fixture.flushes);
   release_opening();
 }
 
@@ -454,6 +504,8 @@ run_admit_tests(void)
   RUN_TEST(opening_refuses_unfunded_promises_without_writes);
   RUN_TEST(opening_profile_includes_namespace_headroom);
   RUN_TEST(opening_requires_computed_recovery_reserve);
+  RUN_TEST(opening_accepts_computed_reserve_and_funds_next_batch);
+  RUN_TEST(opening_accepts_checked_nonadjacent_generations);
   RUN_TEST(opening_refuses_noncanonical_retained_bytes);
   RUN_TEST(opening_memory_refusal_releases_temporary_proof);
   RUN_TEST(candidate_admission_is_private_and_reserves_exact_generations);

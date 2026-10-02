@@ -73,15 +73,52 @@ allocation_deltas_sort_without_changing_contents(void)
 }
 
 static void
+check_limit_closure(uint64_t extents, uint64_t metadata, uint16_t volumes,
+                    const struct pfs_plan_limits *limits)
+{
+  uint64_t catalog = 4u * volumes - 2;
+  uint64_t catalog_union = catalog < 16 ? catalog : 16;
+  TEST_ASSERT_EQUAL_UINT64(catalog, limits->catalog_blocks);
+  TEST_ASSERT_EQUAL_UINT64(catalog_union, limits->catalog_union);
+  TEST_ASSERT_EQUAL_UINT64(catalog + limits->pool_blocks, limits->permanent_pool);
+  TEST_ASSERT_EQUAL_UINT64(3 * limits->pool_blocks + 2 * 256 + 128, limits->recovery_blocks);
+  uint64_t base = 1 + 2 * (extents + metadata + 2 * 256) + 2 * catalog;
+  uint64_t numerator = 23 * (base + 6 * limits->pool_blocks + 2 * catalog_union + 4);
+  uint64_t records = numerator / 21 + (numerator % 21 != 0);
+  TEST_ASSERT_EQUAL_UINT64(records, limits->records);
+  uint64_t nodes = 0;
+  uint64_t level = records / 46 + (records % 46 != 0);
+  for (;;) {
+    nodes += level;
+    if (level == 1) {
+      break;
+    }
+    level = level / 65 + (level % 65 != 0);
+  }
+  TEST_ASSERT_TRUE(nodes + catalog_union + 1 <= limits->pool_blocks);
+  /* The accepted closure selects the first sufficient H. Its predecessor must
+   * fail, rather than freezing the incidental output for a profile example. */
+  numerator = 23 * (base + 6 * (limits->pool_blocks - 1) + 2 * catalog_union + 4);
+  records = numerator / 21 + (numerator % 21 != 0);
+  nodes = 0;
+  level = records / 46 + (records % 46 != 0);
+  for (;;) {
+    nodes += level;
+    if (level == 1) {
+      break;
+    }
+    level = level / 65 + (level % 65 != 0);
+  }
+  TEST_ASSERT_TRUE(nodes + catalog_union + 1 > limits->pool_blocks - 1);
+}
+
+static void
 limits_and_arena(void)
 {
   struct pfs_plan_limits limits;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(UINT64_C(4) * 1024 * 1024 / 4,
     8192, 4096, 16, &limits));
-  TEST_ASSERT_EQUAL_UINT64(726, limits.pool_blocks);
-  TEST_ASSERT_EQUAL_UINT64(32407, limits.records);
-  TEST_ASSERT_EQUAL_UINT64(2562, limits.recovery_blocks);
-  TEST_ASSERT_EQUAL_UINT64(788, limits.permanent_pool);
+  check_limit_closure(8192, 4096, 16, &limits);
   TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, PFS_POOL_BLOCKS_MIN, limits.arena_bytes - 1));
   arena = (struct pfs_plan_arena){0};
   TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_plan_arena_create(&fixture.memory, &limits, &arena));
@@ -101,18 +138,18 @@ limits_and_arena(void)
   TEST_ASSERT_EQUAL_UINT64(0, fixture.memory.used);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(UINT64_C(64) * 1024 * 1024 / 4,
     262144, 65536, 16, &limits));
-  TEST_ASSERT_EQUAL_UINT64(18570, limits.pool_blocks);
-  TEST_ASSERT_EQUAL_UINT64(840527, limits.records);
-  TEST_ASSERT_EQUAL_UINT64(56094, limits.recovery_blocks);
+  check_limit_closure(262144, 65536, 16, &limits);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(UINT64_C(256) * 1024 * 1024 / 4,
     524288, 131072, 16, &limits));
-  TEST_ASSERT_EQUAL_UINT64(37105, limits.pool_blocks);
-  TEST_ASSERT_EQUAL_UINT64(1680103, limits.records);
-  TEST_ASSERT_EQUAL_UINT64(111699, limits.recovery_blocks);
+  check_limit_closure(524288, 131072, 16, &limits);
   struct pfs_plan_limits saved = limits;
   TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_plan_limits(PFS_POOL_BLOCKS_MAX,
     PFS_RECORD_COUNT_MAX, PFS_POOL_BLOCKS_MAX - 2, 16, &limits));
   TEST_ASSERT_EQUAL_MEMORY(&saved, &limits, sizeof(limits));
+  for (uint16_t volumes = 1; volumes <= 5; volumes++) {
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, volumes, &limits));
+    check_limit_closure(0, 16, volumes, &limits);
+  }
 }
 
 static void
@@ -360,9 +397,9 @@ fragmented_map_accounts_for_itself(void)
   uint64_t reads = fixture.reads, writes = fixture.writes;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, base, 4096,
     ranges, 2048, 8, &plan));
-  TEST_ASSERT_EQUAL_UINT(110, plan.allocation_count);
-  TEST_ASSERT_EQUAL_UINT(101, plan.node_count);
-  TEST_ASSERT_EQUAL_UINT(4316, plan.record_count);
+  TEST_ASSERT_EQUAL_UINT(plan.node_count + 8 + 1, plan.allocation_count);
+  TEST_ASSERT_TRUE(plan.allocation_count <= limits.pool_blocks);
+  TEST_ASSERT_TRUE(plan.record_count <= limits.records);
   check_map(&plan, &context, base, 4096);
   TEST_ASSERT_EQUAL_UINT64(allocation_calls, fixture.allocation_calls);
   TEST_ASSERT_EQUAL_UINT64(reads, fixture.reads);
@@ -375,8 +412,7 @@ fragmented_map_accounts_for_itself(void)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, arena.maps[2], 4096,
     ranges, 2048, 8, &plan));
   TEST_ASSERT_EQUAL_PTR(arena.maps[2], plan.records);
-  TEST_ASSERT_EQUAL_UINT(110, plan.allocation_count);
-  TEST_ASSERT_EQUAL_UINT(101, plan.node_count);
+  TEST_ASSERT_EQUAL_UINT(plan.node_count + 8 + 1, plan.allocation_count);
   check_exact_map(&plan, arena.maps[1], record_count);
   check_map(&plan, &context, base, 4096);
   TEST_ASSERT_EQUAL_UINT64(allocation_calls, fixture.allocation_calls);
@@ -444,7 +480,8 @@ in_place_map_preserves_fragmented_intervals(void)
 {
   TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, PFS_POOL_BLOCKS_MIN, 0));
   struct pfs_plan_limits limits;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 1, &limits));
+  /* Three volumes permit eight nodes in a two-path catalog union. */
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 3, &limits));
   arena = (struct pfs_plan_arena){0};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_create(&fixture.memory, &limits, &arena));
   const struct pfs_allocation_record base[] = {
@@ -503,7 +540,7 @@ single_leaf_map_and_reserved_blocks(void)
 {
   TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&fixture, PFS_POOL_BLOCKS_MIN, 0));
   struct pfs_plan_limits limits;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 1, &limits));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 5, &limits));
   arena = (struct pfs_plan_arena){0};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_create(&fixture.memory, &limits, &arena));
   struct pfs_allocation_record base = {.first = 1, .count = PFS_POOL_BLOCKS_MIN - 2};
@@ -516,12 +553,31 @@ single_leaf_map_and_reserved_blocks(void)
   check_map(&plan, &context, &base, 1);
   TEST_ASSERT_NOT_EQUAL(plan.root.block, plan.pool_root_block);
   TEST_ASSERT_TRUE(selected(&plan, plan.pool_root_block));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, &base, 1, &range, 1, 8, &plan));
-  TEST_ASSERT_EQUAL_UINT(10, plan.allocation_count);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, &base, 1, &range, 1, 16, &plan));
+  TEST_ASSERT_EQUAL_UINT(16, plan.catalog_count);
+  TEST_ASSERT_EQUAL_UINT(18, plan.allocation_count);
   TEST_ASSERT_EQUAL_UINT(1, plan.node_count);
   check_map(&plan, &context, &base, 1);
+  for (size_t i = 0; i < plan.catalog_count; i++) {
+    TEST_ASSERT_TRUE(selected(&plan, plan.catalog_blocks[i]));
+    TEST_ASSERT_NOT_EQUAL(plan.pool_root_block, plan.catalog_blocks[i]);
+    TEST_ASSERT_NOT_EQUAL(plan.root.block, plan.catalog_blocks[i]);
+    for (size_t j = 0; j < i; j++) {
+      TEST_ASSERT_NOT_EQUAL(plan.catalog_blocks[j], plan.catalog_blocks[i]);
+    }
+  }
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_plan_map_build(&arena, &context, &base, 1,
+    &range, 1, 17, &plan));
+  TEST_ASSERT_NULL(plan.records);
   TEST_ASSERT_EQUAL_UINT64(1, base.first);
   TEST_ASSERT_EQUAL_UINT64(PFS_POOL_BLOCKS_MIN - 2, base.count);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_destroy(&arena));
+  /* Physical capacity for more IDs cannot override the computed catalog bound. */
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 0, 16, 1, &limits));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_create(&fixture.memory, &limits, &arena));
+  TEST_ASSERT_EQUAL(PFS_INVALID, pfs_plan_map_build(&arena, &context, &base, 1,
+    &range, 1, 3, &plan));
+  TEST_ASSERT_NULL(plan.records);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_destroy(&arena));
 }
 

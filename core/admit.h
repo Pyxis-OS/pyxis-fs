@@ -54,11 +54,14 @@ enum pfs_status pfs_admit_open(const struct pfs_block_reader *reader,
  * namespace/object/grant deltas through the private editors; this does not walk
  * unchanged trees or manufacture semantic proof from aggregate counts.
  * older is the previous selected state, retained alongside this candidate.
- * Generation advances exactly once. A user candidate reserves its two remaining
- * drain generations; maintenance/opening reserve remaining drains. */
+ * Generation advances exactly once. normal_batch is true for volume mutation and
+ * orphan batches: volume debt must be two D-bounded owner/charge cohorts at this
+ * generation and its predecessor, with at most D protected, and two terminal
+ * generations remain funded. Pure fences use the opening profile (2D blocks,
+ * at most two owners, any checked age) and fund the remaining fences. */
 enum pfs_status pfs_admit_candidate(struct pfs_plan_arena *arena,
   struct pfs_admit_state *state, const struct pfs_admit_state *older,
-  bool user_batch);
+  bool normal_batch);
 
 /* Enumerates ranges free in the selected map and free or historically retired
  * in the older map, without either state's live claims. Both summaries must

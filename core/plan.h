@@ -9,6 +9,7 @@
 #define PFS_PLAN_VOLUME_NEW 128u
 #define PFS_PLAN_VOLUME_RETIRED 256u
 #define PFS_PLAN_CATALOG_PATH 8u
+#define PFS_PLAN_CATALOG_UNION (2u * PFS_PLAN_CATALOG_PATH)
 #define PFS_PLAN_SCRATCH_BYTES (8u * 1024u * 1024u)
 
 struct pfs_plan_limits {
@@ -17,6 +18,7 @@ struct pfs_plan_limits {
   uint64_t pool_blocks;
   uint64_t records;
   uint64_t catalog_blocks;
+  uint64_t catalog_union;
   uint64_t permanent_pool;
   uint64_t recovery_blocks;
   uint64_t arena_bytes;
@@ -91,7 +93,7 @@ struct pfs_map_node {
 struct pfs_map_plan {
   struct pfs_reference root;
   uint64_t pool_root_block;
-  uint64_t catalog_blocks[PFS_PLAN_CATALOG_PATH];
+  uint64_t catalog_blocks[PFS_PLAN_CATALOG_UNION];
   size_t catalog_count;
   size_t record_count;
   size_t node_count;
@@ -116,7 +118,8 @@ struct pfs_map_plan {
  * invalidates a prior plan in this arena. Base may be exactly maps[2] (expanded
  * in place); other inputs must not alias those regions.
  * Output is empty on failure and owned by arena until next plan/destroy.
- * Catalog count is 0..8. Geometry and generation come from validated context. */
+ * Catalog count must fit the profile's computed catalog_union ceiling.
+ * Geometry and generation come from validated context. */
 enum pfs_status pfs_plan_map_build(struct pfs_plan_arena *arena,
   const struct pfs_block_context *context,
   const struct pfs_allocation_record *base, size_t base_count,
