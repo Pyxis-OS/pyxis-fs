@@ -2003,10 +2003,578 @@ publication_callbacks_cannot_abort_or_commit_recursively(void)
   close_device();
 }
 
+/* A bounded configured population grows canonical allocation boundaries through
+ * real writes. Its manifest describes application bytes independently of COW
+ * claims, map descriptors and physical allocation. */
+#define SPLIT_FILES 96u
+#define SPLIT_WRITES (2u * SPLIT_FILES)
+struct split_expectation {
+  uint64_t generation;
+  uint8_t bytes[SPLIT_FILES];
+};
+static struct split_expectation split_history[SPLIT_WRITES + 1];
+static size_t split_history_count;
+static bool split_payload_violation;
+static size_t split_payload_checks;
+static uint64_t split_read_cut, split_write_cut;
+static bool observe_split_resource;
+static uint64_t split_catalog_read_cut;
+
+static enum pfs_status
+split_source_read(void *context, size_t v, size_t object, uint64_t offset,
+                  void *buffer, size_t length)
+{
+  (void)context;
+  if (v || !object || object > SPLIT_FILES || offset > PFS_BLOCK_SIZE ||
+      length > PFS_BLOCK_SIZE - offset) {
+    return PFS_INVALID;
+  }
+  memset(buffer, 1 + (object - 1) % 64, length);
+  return PFS_OK;
+}
+
+static void
+build_split_seed(void)
+{
+  static struct pfs_build_object objects[SPLIT_FILES + 1];
+  static char names[SPLIT_FILES][8];
+  memset(objects, 0, sizeof(objects));
+  objects[0] = (struct pfs_build_object){.id = {{3}}, .parent = UINT32_MAX,
+    .kind = PFS_OBJECT_DIRECTORY};
+  for (size_t i = 0; i < SPLIT_FILES; i++) {
+    int length = snprintf(names[i], sizeof(names[i]), "f%03zu", i);
+    TEST_ASSERT_TRUE(length > 0 && (size_t)length < sizeof(names[i]));
+    objects[i + 1] = (struct pfs_build_object){.id = {{(uint8_t)(10 + i)}}, .parent = 0,
+      .name = {.length = (size_t)length}, .kind = PFS_OBJECT_FILE,
+      .file_length = PFS_BLOCK_SIZE};
+    memcpy(objects[i + 1].name.bytes, names[i], (size_t)length);
+  }
+  TEST_ASSERT_EQUAL(PFS_OK, test_fixture_open(&seed, PFS_POOL_BLOCKS_MIN, 0));
+  struct pfs_build_volume v = {.id = {{2}}, .root_object = {{3}}, .name = {4, "home"},
+    .owner = {{5}}, .quota_set = true, .quota = 4096, .guarantee_set = true,
+    .object_count = SPLIT_FILES + 1, .objects = objects};
+  struct pfs_build_spec spec = {.block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}},
+    .volume_count = 1, .volumes = &v,
+    .reserve_set = PFS_RESERVE_COW | PFS_RESERVE_MIGRATION | PFS_RESERVE_RECOVERY,
+    .cow_reserve = 2048, .migration_reserve = 2048, .recovery_reserve = 2048};
+  struct pfs_build_source source = {.read = split_source_read, .validate = source_validate};
+  struct pfs_build_plan plan = {0};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_build_plan_create(&seed.memory, &spec, &plan));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_build(&plan, &seed.builder, &source));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_build_plan_destroy(&plan));
+  options = (struct pfs_write_options){.extent_limit = 512, .metadata_limit = 256,
+    .random = test_random};
+}
+
+static void
+reset_split_history(void)
+{
+  split_history_count = 1;
+  split_history[0].generation = 1;
+  for (size_t i = 0; i < SPLIT_FILES; i++) {
+    split_history[0].bytes[i] = (uint8_t)(1 + i % 64);
+  }
+  split_payload_checks = 0;
+  split_payload_violation = false;
+}
+
+/* The configured file length requires one mapped block; either supported
+ * object representation may name it. Decode its mapping before inspecting bytes. */
+static bool
+split_file_mapping(struct test_failure *adapter, const struct pfs_tree_context *objects,
+                   uint64_t containing_birth, const struct pfs_object_record *object,
+                   uint64_t *physical)
+{
+  struct pfs_extent_mapping mapping;
+  if (object->storage_kind == PFS_STORAGE_INLINE) {
+    mapping = object->inline_extent;
+  } else if (object->storage_kind == PFS_STORAGE_TREE) {
+    struct pfs_tree_context context = {.block = objects->block, .kind = PFS_INDEX_EXTENTS,
+      .volume = objects->volume, .object = object->id};
+    context.block.reference = object->tree_root;
+    context.block.referring_birth = containing_birth;
+    uint8_t bytes[PFS_BLOCK_SIZE];
+    struct pfs_tree tree;
+    if (test_failure_durable_read(adapter, object->tree_root.block, 1, bytes) != PFS_OK ||
+        pfs_tree_decode(bytes, sizeof(bytes), &context, &tree) != PFS_OK || tree.level || tree.count != 1) {
+      return false;
+    }
+    struct pfs_record_context records = {.block_count = PFS_POOL_BLOCKS_MIN,
+      .selected_generation = context.block.selected_generation,
+      .containing_birth = tree.header.birth, .features = context.block.features};
+    struct pfs_extent_record extent;
+    if (pfs_extent_record_decode(bytes + tree.slots[0].offset, tree.slots[0].length,
+        &records, &extent) != PFS_OK) {
+      return false;
+    }
+    mapping = extent.mapping;
+  } else {
+    return false;
+  }
+  if (mapping.logical_first || mapping.count != 1) {
+    return false;
+  }
+  *physical = mapping.physical_first;
+  return true;
+}
+
+static bool
+split_objects_match(struct test_failure *adapter, struct pfs_tree_context context,
+                    const uint8_t expected[SPLIT_FILES], bool seen[SPLIT_FILES])
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  struct pfs_tree tree;
+  if (test_failure_durable_read(adapter, context.block.reference.block, 1, bytes) != PFS_OK ||
+      pfs_tree_decode(bytes, sizeof(bytes), &context, &tree) != PFS_OK) {
+    return false;
+  }
+  struct pfs_record_context records = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = context.block.selected_generation,
+    .containing_birth = tree.header.birth, .features = context.block.features};
+  for (size_t i = 0; i < tree.count; i++) {
+    if (tree.level) {
+      struct pfs_internal_record internal;
+      if (pfs_internal_record_decode(bytes + tree.slots[i].offset, tree.slots[i].length,
+          PFS_INDEX_OBJECTS, &records, &internal) != PFS_OK) {
+        return false;
+      }
+      struct pfs_tree_context child = context;
+      child.block.reference = internal.child;
+      child.block.referring_birth = tree.header.birth;
+      child.parent_level = tree.level;
+      if (!split_objects_match(adapter, child, expected, seen)) {
+        return false;
+      }
+    } else {
+      struct pfs_object_record object;
+      if (pfs_object_record_decode(bytes + tree.slots[i].offset, tree.slots[i].length,
+          &records, &object) != PFS_OK) {
+        return false;
+      }
+      if (object.kind == PFS_OBJECT_DIRECTORY) {
+        if (object.id.bytes[0] != 3) {
+          return false;
+        }
+        continue;
+      }
+      size_t file = object.id.bytes[0] - 10u;
+      uint64_t physical;
+      if (file >= SPLIT_FILES || seen[file] || object.file_length != PFS_BLOCK_SIZE ||
+          !split_file_mapping(adapter, &context, tree.header.birth, &object, &physical)) {
+        return false;
+      }
+      uint8_t payload[PFS_BLOCK_SIZE];
+      if (test_failure_durable_read(adapter, physical, 1, payload) != PFS_OK) {
+        return false;
+      }
+      for (size_t j = 0; j < sizeof(payload); j++) {
+        if (payload[j] != expected[file]) {
+          return false;
+        }
+      }
+      seen[file] = true;
+    }
+  }
+  return true;
+}
+
+static bool
+split_payloads_match(struct test_failure *adapter, unsigned slot)
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+  struct pfs_superblock super;
+  if (test_failure_durable_read(adapter, block, 1, bytes) != PFS_OK ||
+      pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN, block, &super) != PFS_OK) {
+    return false;
+  }
+  struct pfs_block_context context = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = super.header.birth, .referring_birth = super.header.birth,
+    .pool = super.header.pool, .features = super.features, .reference = super.root};
+  struct pfs_pool_root root;
+  if (test_failure_durable_read(adapter, super.root.block, 1, bytes) != PFS_OK ||
+      pfs_pool_root_decode(bytes, sizeof(bytes), &context, &root) != PFS_OK) {
+    return false;
+  }
+  struct pfs_tree_context catalog = {.block = context, .kind = PFS_INDEX_VOLUMES};
+  catalog.block.reference = root.volumes;
+  struct pfs_tree tree;
+  if (test_failure_durable_read(adapter, root.volumes.block, 1, bytes) != PFS_OK ||
+      pfs_tree_decode(bytes, sizeof(bytes), &catalog, &tree) != PFS_OK || tree.level || tree.count != 1) {
+    return false;
+  }
+  struct pfs_record_context records = {.block_count = PFS_POOL_BLOCKS_MIN,
+    .selected_generation = super.header.birth, .containing_birth = tree.header.birth,
+    .features = super.features};
+  struct pfs_volume_record v;
+  if (pfs_volume_record_decode(bytes + tree.slots[0].offset, tree.slots[0].length, &records, &v) != PFS_OK) {
+    return false;
+  }
+  size_t history = 0;
+  while (history + 1 < split_history_count &&
+         split_history[history + 1].generation <= super.header.birth) {
+    history++;
+  }
+  struct pfs_tree_context objects = {.block = context, .kind = PFS_INDEX_OBJECTS, .volume = v.id};
+  objects.block.reference = v.object_root;
+  bool seen[SPLIT_FILES] = {0};
+  if (!split_objects_match(adapter, objects, split_history[history].bytes, seen)) {
+    return false;
+  }
+  for (size_t i = 0; i < SPLIT_FILES; i++) {
+    if (!seen[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static void
+observe_split_payloads(struct test_failure *adapter, const struct test_failure_event *event,
+                       bool before, void *context)
+{
+  (void)context;
+  bool slot = event->kind == TEST_FAILURE_WRITE &&
+    (event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1);
+  if (before && event->kind == TEST_FAILURE_WRITE && pool.writer &&
+      pool.writer->active_batch && !pool.writer->active_batch->orphan_cleanup &&
+      split_history[split_history_count - 1].generation == UINT64_MAX) {
+    split_history[split_history_count - 1].generation = pool.writer->map_metrics.generation;
+  }
+  if ((before && slot) || (!before && event->kind == TEST_FAILURE_WRITE && !slot)) {
+    split_payload_checks++;
+    split_payload_violation |= !split_payloads_match(adapter, 0) || !split_payloads_match(adapter, 1);
+  }
+  if (!before || !pool.writer) {
+    return;
+  }
+  if (event->kind == TEST_FAILURE_READ && pool.writer->map_planning) {
+    split_read_cut = event->ordinal;
+  }
+  if (observe_split_resource && !split_catalog_read_cut &&
+      event->kind == TEST_FAILURE_READ && pool.writer->map_planning &&
+      !pool.writer->map_metrics.fallback) {
+    const struct pfs_admit_state *source = &pool.writer->states[pool.writer->selected];
+    const struct pfs_pool_root *candidate = &pool.writer->states[2].candidate.root;
+    /* Fixed-length catalog replacement preserves its inventory. A trial's
+     * single extra map leaf is the sole surplus live pool block before reads. */
+    if (candidate->header.birth == pool.writer->map_metrics.generation &&
+        candidate->live_pool == source->candidate.root.live_pool + 1) {
+      for (size_t i = 0; i < source->claim_count; i++) {
+        const struct check_claim *claim = &source->claims[i];
+        if (claim->first == event->first && claim->kind == PFS_INDEX_VOLUMES) {
+          split_catalog_read_cut = event->ordinal;
+        }
+      }
+    }
+  }
+
+  if (event->kind == TEST_FAILURE_WRITE && pool.writer->map_metrics.split_selected && !split_write_cut) {
+    const struct pfs_admit_state *candidate = &pool.writer->states[2];
+    for (size_t i = 0; i < candidate->claim_count; i++) {
+      const struct check_claim *claim = &candidate->claims[i];
+      if (claim->first == event->first && claim->kind == PFS_INDEX_ALLOCATION) {
+        split_write_cut = event->ordinal;
+      }
+    }
+  }
+}
+
+static void
+open_split_device(void)
+{
+  struct pfs_plan_limits limits;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN,
+    options.extent_limit, options.metadata_limit, 1, &limits));
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_open(&device, PFS_POOL_BLOCKS_MIN,
+    (size_t)limits.pool_blocks + PFS_PLAN_VOLUME_NEW + 1, 0, &seed.builder.reader));
+  struct pfs_write_open_result opening;
+  pool = (struct pfs_pool){0};
+  volume = (struct pfs_volume){0};
+  view = NULL;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &device.builder, device.memory, &options, &opening));
+  const struct pfs_volume_id id = {{2}};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &id, &volume));
+  reset_split_history();
+  pool.writer->collect_map_metrics = true;
+  device.observer = observe_split_payloads;
+}
+
+static void
+acquire_split_file(size_t step)
+{
+  const struct pfs_rights rights = {.file = PFS_FILE_READ | PFS_FILE_WRITE |
+    PFS_FILE_CHECKPOINT | PFS_FILE_RESIZE};
+  const struct pfs_trusted_context authority = {.principal = {{5}}, .root = {{3}},
+    .scope = PFS_SCOPE_SUBTREE, .ceiling = {rights.file, PFS_DIR_LOOKUP, 0}};
+  const struct pfs_object_id id = {{(uint8_t)(10 + (37 * step) % SPLIT_FILES)}};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &authority, &id, PFS_SCOPE_OBJECT, &rights, &view));
+}
+
+static enum pfs_status
+write_split_file(size_t step, struct pfs_write_result *result)
+{
+  struct split_expectation *next = &split_history[split_history_count];
+  *next = split_history[split_history_count - 1];
+  next->generation = UINT64_MAX;
+  uint8_t byte = (uint8_t)(128 + step % 64);
+  next->bytes[(37 * step) % SPLIT_FILES] = byte;
+  split_history_count++;
+  memset(data, byte, sizeof(data));
+  enum pfs_status status = pfs_view_write(view, 0, data, sizeof(data), result);
+  if (status == PFS_OK) {
+    TEST_ASSERT_NOT_EQUAL(UINT64_MAX, next->generation);
+    TEST_ASSERT_EQUAL_UINT64(sizeof(data), result->confirmed_bytes);
+  }
+  return status;
+}
+
+static void
+replay_split_prefix(size_t stop)
+{
+  open_split_device();
+  for (size_t step = 0; step < stop; step++) {
+    acquire_split_file(step);
+    struct pfs_write_result result;
+    TEST_ASSERT_EQUAL(PFS_OK, write_split_file(step, &result));
+    TEST_ASSERT_EQUAL(PFS_COMPLETE, result.completion);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view, &(struct pfs_view_close_result){0}));
+    test_failure_trace_reset(&device);
+  }
+  acquire_split_file(stop);
+}
+
+static void
+selected_overflow_publication_preserves_payloads_through_failure_and_recovery(void)
+{
+  build_split_seed();
+  open_split_device();
+  size_t selected = SIZE_MAX;
+  struct test_failure_fault cuts[4] = {0};
+  struct pfs_write_result result;
+  for (size_t step = 0; step < SPLIT_WRITES; step++) {
+    acquire_split_file(step);
+    uint64_t bases[3] = {device.ordinals[TEST_FAILURE_READ],
+      device.ordinals[TEST_FAILURE_WRITE], device.ordinals[TEST_FAILURE_FLUSH]};
+    split_read_cut = split_write_cut = 0;
+    test_failure_trace_reset(&device);
+    TEST_ASSERT_EQUAL(PFS_OK, write_split_file(step, &result));
+    TEST_ASSERT_EQUAL(PFS_COMPLETE, result.completion);
+    if (pool.writer->map_metrics.split_selected) {
+      selected = step;
+      TEST_ASSERT_GREATER_THAN_UINT64(bases[0], split_read_cut);
+      TEST_ASSERT_GREATER_THAN_UINT64(bases[1], split_write_cut);
+      cuts[0] = (struct test_failure_fault){.enabled = true, .kind = TEST_FAILURE_READ,
+        .ordinal = split_read_cut - bases[0], .mode = TEST_FAILURE_BEFORE};
+      cuts[1] = (struct test_failure_fault){.enabled = true, .kind = TEST_FAILURE_WRITE,
+        .ordinal = split_write_cut - bases[1], .mode = TEST_FAILURE_DURABLE_PREFIX, .prefix = 1};
+      size_t count;
+      TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(&device, bases[2], commit_cuts,
+        TEST_FAILURE_EVENTS_MAX, &count));
+      TEST_ASSERT_GREATER_OR_EQUAL_UINT(2, count);
+      cuts[2] = (struct test_failure_fault){.enabled = true, .kind = TEST_FAILURE_FLUSH,
+        .ordinal = commit_cuts[0].ordinal, .mode = TEST_FAILURE_FLUSH_PREFIX};
+      cuts[3] = (struct test_failure_fault){.enabled = true, .kind = TEST_FAILURE_FLUSH,
+        .ordinal = commit_cuts[1].ordinal, .mode = TEST_FAILURE_FLUSH_PREFIX, .prefix = SIZE_MAX};
+      break;
+    }
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view, &(struct pfs_view_close_result){0}));
+  }
+  TEST_ASSERT_NOT_EQUAL(SIZE_MAX, selected);
+  TEST_ASSERT_FALSE(split_payload_violation);
+  TEST_ASSERT_GREATER_THAN_UINT(0, split_payload_checks);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(view, &result));
+  TEST_ASSERT_FALSE(split_payload_violation);
+  close_device();
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+
+  for (size_t i = 0; i < sizeof(cuts) / sizeof(cuts[0]); i++) {
+    replay_split_prefix(selected);
+    struct test_failure_fault fault = cuts[i];
+    fault.ordinal += device.ordinals[fault.kind];
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
+    TEST_ASSERT_EQUAL(PFS_IO, write_split_file(selected, &result));
+    TEST_ASSERT_TRUE(device.triggered);
+    TEST_ASSERT_FALSE(device.infrastructure_failure);
+    bool uncertain = i == 3;
+    enum pfs_writer_health health = i == 0 || uncertain ?
+      PFS_WRITER_ACCESS_STOPPED : PFS_WRITER_READABLE_STOPPED;
+    TEST_ASSERT_EQUAL(health, result.health);
+    TEST_ASSERT_EQUAL(uncertain ? PFS_UNKNOWN : PFS_STOPPED, result.completion);
+    TEST_ASSERT_EQUAL(PFS_IO, result.operation_status);
+    TEST_ASSERT_EQUAL_UINT64(0, result.confirmed_bytes);
+    TEST_ASSERT_EQUAL(PFS_MAINTENANCE_NONE, result.maintenance_completion);
+    TEST_ASSERT_EQUAL(PFS_OK, result.maintenance_status);
+    struct pfs_writer_status stopped = writer_status();
+    TEST_ASSERT_EQUAL(health, stopped.health);
+    TEST_ASSERT_EQUAL(PFS_IO, stopped.failure);
+    TEST_ASSERT_FALSE(stopped.invariant_failure);
+    TEST_ASSERT_FALSE(split_payload_violation);
+    TEST_ASSERT_TRUE(split_payloads_match(&device, 0));
+    TEST_ASSERT_TRUE(split_payloads_match(&device, 1));
+    uint64_t reads = device.ordinals[TEST_FAILURE_READ];
+    uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+    uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+    struct pfs_batch *batch = NULL;
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_writer_prepare(&pool, &batch));
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_checkpoint(view, &result));
+    TEST_ASSERT_EQUAL_UINT64(reads, device.ordinals[TEST_FAILURE_READ]);
+    TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    /* An uncommitted logical update must not become the expectation for a
+     * later startup fence merely because that fence reaches its generation. */
+    if (durable_generation(&device) < split_history[split_history_count - 1].generation) {
+      split_history_count--;
+    }
+    close_device();
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_clone_durable(&recovered, &device, 0));
+    recovered.observer = observe_split_payloads;
+    pool = (struct pfs_pool){0};
+    struct pfs_write_open_result opening;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &recovered.builder,
+      recovered.memory, &options, &opening));
+    TEST_ASSERT_FALSE(opening.writer.drain_pending);
+    TEST_ASSERT_FALSE(split_payload_violation);
+    TEST_ASSERT_TRUE(split_payloads_match(&recovered, 0));
+    TEST_ASSERT_TRUE(split_payloads_match(&recovered, 1));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+    struct pfs_check_result check;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&recovered.builder.reader, recovered.memory, NULL, NULL, &check));
+    TEST_ASSERT_TRUE(check.cross_complete);
+    TEST_ASSERT_TRUE(test_failure_close(&recovered));
+    TEST_ASSERT_TRUE(test_failure_close(&device));
+  }
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
+}
+
+static void
+discarded_overflow_catalog_read_failure_stops_without_fallback(void)
+{
+  build_split_seed();
+  open_split_device();
+  size_t prefix = SIZE_MAX;
+  uint64_t metadata_limit = 0;
+  struct pfs_write_result result;
+  /* Discover a configured overflow boundary through the same bounded healthy
+   * history. Its metadata shape supplies a valid tight profile for the replay. */
+  for (size_t step = 0; step < SPLIT_WRITES; step++) {
+    acquire_split_file(step);
+    TEST_ASSERT_EQUAL(PFS_OK, write_split_file(step, &result));
+    if (pool.writer->map_metrics.split_selected) {
+      prefix = step;
+      const struct pfs_admit_volume *source =
+        &pool.writer->states[pool.writer->selected].volumes[0];
+      metadata_limit = source->metadata_blocks - source->namespace_nodes + source->deletion_blocks;
+      TEST_ASSERT_GREATER_THAN_UINT64(source->metadata_blocks, metadata_limit);
+      break;
+    }
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view, &(struct pfs_view_close_result){0}));
+    test_failure_trace_reset(&device);
+  }
+  TEST_ASSERT_NOT_EQUAL(SIZE_MAX, prefix);
+  TEST_ASSERT_FALSE(split_payload_violation);
+  close_device();
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  options.metadata_limit = metadata_limit;
+  replay_split_prefix(prefix);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view, &(struct pfs_view_close_result){0}));
+  uint64_t read_cut = 0;
+  size_t target = SIZE_MAX;
+  observe_split_resource = true;
+  memset(data, 0xe7, sizeof(data));
+  for (size_t candidate = 0; candidate < SPLIT_FILES; candidate++) {
+    acquire_split_file(candidate);
+    uint64_t reads = device.ordinals[TEST_FAILURE_READ];
+    uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+    uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+    split_catalog_read_cut = 0;
+    test_failure_trace_reset(&device);
+    /* No manifest row is added: a refused append leaves every configured file
+     * at its original length and previously confirmed expected bytes. */
+    TEST_ASSERT_EQUAL(PFS_LIMIT, pfs_view_write(view, PFS_BLOCK_SIZE, data, sizeof(data), &result));
+    TEST_ASSERT_EQUAL(PFS_STOPPED, result.completion);
+    TEST_ASSERT_EQUAL_UINT64(0, result.confirmed_bytes);
+    TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+    TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    if (pool.writer->map_metrics.split.misses & PFS_INCREMENTAL_SPLIT_RESOURCE) {
+      target = candidate;
+      TEST_ASSERT_GREATER_THAN_UINT64(reads, split_catalog_read_cut);
+      read_cut = split_catalog_read_cut - reads;
+      break;
+    }
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view, &(struct pfs_view_close_result){0}));
+  }
+  TEST_ASSERT_NOT_EQUAL(SIZE_MAX, target);
+  TEST_ASSERT_TRUE(split_payloads_match(&device, 0));
+  TEST_ASSERT_TRUE(split_payloads_match(&device, 1));
+  observe_split_resource = false;
+  /* Refusal must leave this instance usable, with no sealed-candidate state
+   * leaking into a compatible overwrite or its funded checkpoint. */
+  TEST_ASSERT_EQUAL(PFS_OK, write_split_file(target, &result));
+  TEST_ASSERT_EQUAL(PFS_COMPLETE, result.completion);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(view, &result));
+  TEST_ASSERT_FALSE(split_payload_violation);
+  TEST_ASSERT_TRUE(split_payloads_match(&device, 0));
+  TEST_ASSERT_TRUE(split_payloads_match(&device, 1));
+  close_device();
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+
+  replay_split_prefix(prefix);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&view, &(struct pfs_view_close_result){0}));
+  acquire_split_file(target);
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+  struct test_failure_fault fault = {.enabled = true, .kind = TEST_FAILURE_READ,
+    .ordinal = device.ordinals[TEST_FAILURE_READ] + read_cut, .mode = TEST_FAILURE_BEFORE};
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
+  memset(data, 0xe7, sizeof(data));
+  TEST_ASSERT_EQUAL(PFS_IO, pfs_view_write(view, PFS_BLOCK_SIZE, data, sizeof(data), &result));
+  TEST_ASSERT_TRUE(device.triggered);
+  TEST_ASSERT_FALSE(device.infrastructure_failure);
+  TEST_ASSERT_EQUAL(PFS_WRITER_ACCESS_STOPPED, result.health);
+  TEST_ASSERT_EQUAL(PFS_STOPPED, result.completion);
+  TEST_ASSERT_EQUAL(PFS_IO, result.operation_status);
+  TEST_ASSERT_EQUAL_UINT64(0, result.confirmed_bytes);
+  struct pfs_writer_status stopped = writer_status();
+  TEST_ASSERT_EQUAL(PFS_IO, stopped.failure);
+  TEST_ASSERT_FALSE(stopped.invariant_failure);
+  TEST_ASSERT_FALSE(split_payload_violation);
+  TEST_ASSERT_TRUE(split_payloads_match(&device, 0));
+  TEST_ASSERT_TRUE(split_payloads_match(&device, 1));
+  uint64_t reads = device.ordinals[TEST_FAILURE_READ];
+  struct pfs_batch *batch = NULL;
+  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_writer_prepare(&pool, &batch));
+  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_checkpoint(view, &result));
+  TEST_ASSERT_EQUAL_UINT64(reads, device.ordinals[TEST_FAILURE_READ]);
+  TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+  close_device();
+  TEST_ASSERT_EQUAL(PFS_OK, test_failure_clone_durable(&recovered, &device, 0));
+  recovered.observer = observe_split_payloads;
+  pool = (struct pfs_pool){0};
+  struct pfs_write_open_result opening;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &recovered.builder,
+    recovered.memory, &options, &opening));
+  TEST_ASSERT_FALSE(opening.writer.drain_pending);
+  TEST_ASSERT_FALSE(split_payload_violation);
+  TEST_ASSERT_TRUE(split_payloads_match(&recovered, 0));
+  TEST_ASSERT_TRUE(split_payloads_match(&recovered, 1));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+  struct pfs_check_result check;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&recovered.builder.reader, recovered.memory, NULL, NULL, &check));
+  TEST_ASSERT_TRUE(check.cross_complete);
+  TEST_ASSERT_TRUE(test_failure_close(&recovered));
+  TEST_ASSERT_TRUE(test_failure_close(&device));
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
+}
+
 void
 run_publication_tests(void)
 {
   Unity.TestFile = __FILE__;
+  RUN_TEST(selected_overflow_publication_preserves_payloads_through_failure_and_recovery);
+  RUN_TEST(discarded_overflow_catalog_read_failure_stops_without_fallback);
   RUN_TEST(real_publications_carry_debt_and_preserve_retained_payloads);
   RUN_TEST(cross_volume_rolling_histories_share_and_separate_catalog_paths);
   RUN_TEST(startup_fences_two_owners_protected_by_nonadjacent_seed_root);

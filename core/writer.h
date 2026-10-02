@@ -49,15 +49,20 @@ enum pfs_map_fallback {
 };
 
 /* Private, bounded plan diagnostics. No clock or public policy depends on them.
- * The optional bulk reference counts the unchanged builder's preclaim shape. */
+ * closure_nodes counts the final local closure p; a local path retires p map
+ * nodes and bulk retires source_nodes. replacement_nodes counts emitted nodes n,
+ * including a selected virtual leaf. The optional bulk reference counts
+ * the unchanged builder's preclaim shape. */
 struct pfs_map_metrics {
   uint64_t generation;
   size_t source_nodes, closure_nodes, replacement_nodes, bulk_reference_nodes;
   size_t growth_passes, largest_addition, redistribution_additions;
   struct pfs_incremental_repair_metrics repair;
+  struct pfs_incremental_split_metrics split;
   size_t failed_run_leaves, failed_run_records;
   unsigned fallback;
   bool local;
+  bool split_selected;
 };
 
 struct pfs_writer {

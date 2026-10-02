@@ -509,7 +509,8 @@ gather_changes(struct pfs_writer *writer, const struct pfs_batch *batch,
     }
   }
   if (allocate) {
-    size_t total = publication->incremental.marked_count + publication->path_count + 1;
+    size_t total = pfs_incremental_map_emitted(&publication->incremental) +
+                   publication->path_count + 1;
     if (total > writer->arena.limits.pool_blocks) {
       return PFS_LIMIT;
     }
@@ -683,6 +684,39 @@ seal_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
   return status;
 }
 
+/* Restore mutable candidate accounting from the retained input. The catalog
+ * union and source traversal belong to publication and remain unchanged. */
+static void
+reset_candidate(struct pfs_writer *writer, const struct pfs_batch *batch,
+                const struct publication *publication)
+{
+  const struct pfs_admit_state *source = &writer->states[writer->selected];
+  struct pfs_admit_state *candidate = &writer->states[2];
+  struct pfs_allocation_record *maps = candidate->maps;
+  struct check_claim *claims = candidate->claims;
+  *candidate = *source;
+  candidate->maps = maps;
+  candidate->claims = claims;
+  if (batch) {
+    candidate->volumes[publication->volume_indices[0]] = batch->volume;
+  }
+}
+
+static void
+record_map_metrics(struct pfs_writer *writer, const struct pfs_incremental_map *incremental)
+{
+  writer->map_metrics.source_nodes = incremental->source_count;
+  writer->map_metrics.closure_nodes = incremental->marked_count;
+  writer->map_metrics.growth_passes = incremental->growth_passes;
+  writer->map_metrics.largest_addition = incremental->largest_addition;
+  writer->map_metrics.redistribution_additions = incremental->redistribution_additions;
+  writer->map_metrics.repair = incremental->repair;
+  writer->map_metrics.failed_run_leaves = incremental->failed_run_leaves;
+  writer->map_metrics.failed_run_records = incremental->failed_run_records;
+  writer->map_metrics.fallback = incremental->fallback;
+  writer->map_metrics.split = incremental->split->metrics;
+}
+
 static enum pfs_status
 build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
                   struct publication *publication)
@@ -779,6 +813,7 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
   struct pfs_record_context record_context = {.block_count = context.block_count,
     .selected_generation = generation, .containing_birth = generation, .features = context.features};
   bool again;
+regenerate_candidate:
   do {
     size_t count;
     status = gather_changes(writer, batch, publication, true, &count);
@@ -802,17 +837,9 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
       return status;
     }
   } while (again);
-  writer->map_metrics.source_nodes = incremental->source_count;
-  writer->map_metrics.closure_nodes = incremental->marked_count;
-  writer->map_metrics.growth_passes = incremental->growth_passes;
-  writer->map_metrics.largest_addition = incremental->largest_addition;
-  writer->map_metrics.redistribution_additions = incremental->redistribution_additions;
-  writer->map_metrics.repair = incremental->repair;
-  writer->map_metrics.failed_run_leaves = incremental->failed_run_leaves;
-  writer->map_metrics.failed_run_records = incremental->failed_run_records;
-  writer->map_metrics.fallback |= incremental->fallback;
   bool resource_miss;
-  if (!writer->map_metrics.fallback) {
+  unsigned fallback = incremental->fallback;
+  if (!fallback) {
     status = pfs_incremental_map_encode(incremental, &context, candidate->maps, candidate->map_count,
       publication->path_count, &publication->editor, publication->record, &publication->map);
     if (status != PFS_OK) {
@@ -821,7 +848,9 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
     }
     status = seal_publication(writer, batch, publication, context, &resource_miss);
     if (status == PFS_OK) {
+      record_map_metrics(writer, incremental);
       writer->map_metrics.local = true;
+      writer->map_metrics.split_selected = incremental->split->active;
       writer->map_metrics.replacement_nodes = publication->map.node_count;
       if (!writer->collect_map_metrics) {
         return PFS_OK;
@@ -847,8 +876,16 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
     if (!resource_miss) {
       return status;
     }
-    writer->map_metrics.fallback |= PFS_MAP_FALLBACK_RESOURCE;
+    if (pfs_incremental_map_restore(incremental, PFS_INCREMENTAL_SPLIT_RESOURCE)) {
+      reset_candidate(writer, batch, publication);
+      publication->map = (struct pfs_map_plan){0};
+      pfs_bytes_zero(publication->catalog, sizeof(publication->catalog));
+      goto regenerate_candidate;
+    }
+    fallback |= PFS_MAP_FALLBACK_RESOURCE;
   }
+  record_map_metrics(writer, incremental);
+  writer->map_metrics.fallback = fallback;
   /* A scratch miss discards all provisional accounting. The funded legacy
    * builder consumes the same fixed eligible prefix, at this generation. */
   publication->bulk = true;

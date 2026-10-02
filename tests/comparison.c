@@ -57,8 +57,11 @@ struct callback_stats {
  * it includes adapter reads and optional reference counting, not an NVMe model. */
 struct map_stats {
   uint64_t publications, local, bulk, source_sum, source_max, closure_sum, closure_max;
-  uint64_t passes, largest_addition, redistribution, emitted, bulk_reference;
+  uint64_t passes, largest_addition, redistribution, retired, emitted, bulk_reference;
   struct pfs_incremental_repair_metrics repair;
+  uint64_t split_opportunities, split_trials, split_selected, closure_evaluations;
+  uint64_t split_discarded_nodes, split_discarded_growth;
+  uint64_t split_skips[4], split_misses[8];
   uint64_t local_emitted, bulk_emitted;
   uint64_t fallback[4], local_cost[3], failed_leaves, failed_records;
   int64_t local_node_difference;
@@ -287,7 +290,20 @@ observe_plan(const struct test_failure_event *event)
   stats->repair.left_deficit_sum += metrics->repair.left_deficit_sum;
   stats->repair.right_deficit_sum += metrics->repair.right_deficit_sum;
   stats->repair.chosen_deficit_sum += metrics->repair.chosen_deficit_sum;
+  stats->split_opportunities += metrics->split.opportunities;
+  stats->split_trials += metrics->split.trials;
+  stats->split_selected += metrics->split_selected;
+  stats->closure_evaluations += metrics->split.closure_evaluations;
+  stats->split_discarded_nodes += metrics->split.discarded_nodes;
+  stats->split_discarded_growth += metrics->split.discarded_growth;
+  for (size_t i = 0; i < 4; i++) {
+    stats->split_skips[i] += (metrics->split.skips & (1u << i)) != 0;
+  }
+  for (size_t i = 0; i < 8; i++) {
+    stats->split_misses[i] += (metrics->split.misses & (1u << i)) != 0;
+  }
   stats->emitted += metrics->replacement_nodes;
+  stats->retired += metrics->local ? metrics->closure_nodes : metrics->source_nodes;
   if (metrics->local) {
     stats->local_emitted += metrics->replacement_nodes;
     stats->local_planning_seconds += elapsed;
@@ -1134,6 +1150,7 @@ print_map_stats(void)
   MAP_FIELD("source_sum", source_sum, "%" PRIu64);
   MAP_FIELD("source_max", source_max, "%" PRIu64);
   MAP_FIELD("closure_sum", closure_sum, "%" PRIu64);
+  MAP_FIELD("retired_sum", retired, "%" PRIu64);
   MAP_FIELD("closure_max", closure_max, "%" PRIu64);
   MAP_FIELD("growth_passes", passes, "%" PRIu64);
   MAP_FIELD("largest_addition", largest_addition, "%" PRIu64);
@@ -1149,6 +1166,21 @@ print_map_stats(void)
   MAP_FIELD("repair_left_deficit_sum", repair.left_deficit_sum, "%" PRIu64);
   MAP_FIELD("repair_right_deficit_sum", repair.right_deficit_sum, "%" PRIu64);
   MAP_FIELD("repair_chosen_deficit_sum", repair.chosen_deficit_sum, "%" PRIu64);
+  MAP_FIELD("split_opportunities", split_opportunities, "%" PRIu64);
+  MAP_FIELD("split_trials", split_trials, "%" PRIu64);
+  MAP_FIELD("split_selected", split_selected, "%" PRIu64);
+  MAP_FIELD("closure_evaluations", closure_evaluations, "%" PRIu64);
+  MAP_FIELD("split_discarded_nodes", split_discarded_nodes, "%" PRIu64);
+  MAP_FIELD("split_discarded_growth", split_discarded_growth, "%" PRIu64);
+  MAP_FIELD("split_skip_root", split_skips[0], "%" PRIu64);
+  MAP_FIELD("split_skip_parent", split_skips[1], "%" PRIu64);
+  MAP_FIELD("split_skip_live_cap", split_skips[2], "%" PRIu64);
+  MAP_FIELD("split_skip_global", split_skips[3], "%" PRIu64);
+  MAP_FIELD("split_miss_global", split_misses[3], "%" PRIu64);
+  MAP_FIELD("split_miss_unneeded", split_misses[4], "%" PRIu64);
+  MAP_FIELD("split_miss_insufficient", split_misses[5], "%" PRIu64);
+  MAP_FIELD("split_miss_other_run", split_misses[6], "%" PRIu64);
+  MAP_FIELD("split_miss_resource", split_misses[7], "%" PRIu64);
   MAP_FIELD("emitted_nodes", emitted, "%" PRIu64);
   MAP_FIELD("bulk_reference_nodes", bulk_reference, "%" PRIu64);
   MAP_FIELD("local_node_difference", local_node_difference, "%" PRId64);

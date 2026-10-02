@@ -44,6 +44,31 @@ struct pfs_incremental_repair_metrics {
   uint64_t left_deficit_sum, right_deficit_sum, chosen_deficit_sum;
 };
 
+enum pfs_incremental_split_reason {
+  PFS_INCREMENTAL_SPLIT_ROOT = 1u,
+  PFS_INCREMENTAL_SPLIT_PARENT = 2u,
+  PFS_INCREMENTAL_SPLIT_LIVE_CAP = 4u,
+  PFS_INCREMENTAL_SPLIT_GLOBAL = 8u,
+  PFS_INCREMENTAL_SPLIT_UNNEEDED = 16u,
+  PFS_INCREMENTAL_SPLIT_INSUFFICIENT = 32u,
+  PFS_INCREMENTAL_SPLIT_OTHER_RUN = 64u,
+  PFS_INCREMENTAL_SPLIT_RESOURCE = 128u,
+};
+
+struct pfs_incremental_split_metrics {
+  uint64_t opportunities, trials, closure_evaluations;
+  uint64_t discarded_nodes, discarded_growth;
+  unsigned skips, misses;
+};
+
+struct pfs_incremental_split {
+  size_t anchor, parent;
+  struct pfs_incremental_split_metrics metrics;
+  bool active, disabled;
+};
+
+struct pfs_incremental_seed;
+
 struct pfs_incremental_map {
   struct pfs_plan_arena *arena;
   struct pfs_map_change *changes;
@@ -61,6 +86,9 @@ struct pfs_incremental_map {
   struct pfs_map_node *nodes;
   uint64_t *ids;
   struct pfs_reusable_range *ranges;
+  size_t *seed_marks;
+  struct pfs_incremental_seed *seed;
+  struct pfs_incremental_split *split;
   const struct pfs_allocation_record *source_records;
   size_t source_record_count;
   struct pfs_block_context source_context;
@@ -96,16 +124,27 @@ enum pfs_status pfs_incremental_map_load(struct pfs_incremental_map *map,
 bool pfs_incremental_map_retired(const struct pfs_incremental_map *map,
   uint64_t block);
 
+/* Source retirements and emitted nodes differ only for the active one-leaf trial. */
+size_t pfs_incremental_map_emitted(const struct pfs_incremental_map *map);
+
+/* Abandons only an active, unwritten trial; disables further trials and restores
+ * seed marks/accounting. Caller must regenerate the entire flat candidate and
+ * mutable volume/claim/catalog accounting from retained inputs, never resume
+ * from sealed trial bytes. Not a retry after I/O/integrity failure. */
+bool pfs_incremental_map_restore(struct pfs_incremental_map *map, unsigned reason);
+
 /* Candidate is a complete canonical map applied afresh from immutable source,
- * including exactly the CURRENT marked-node retirements and q+c+1 pool claims.
- * A growth result requires that accounting to be regenerated before calling
- * again. Marks never shrink. Final stable runs align with canonical boundaries.
+ * including CURRENT marked-node retirements and emitted()+c+1 pool claims.
+ * again requires complete regeneration: marks grow, a one-leaf trial begins,
+ * or that trial restores its seed. Marks are monotone within each phase, with
+ * one permitted seed restoration. Stable runs align with canonical boundaries.
  * Fallback reasons are inspected only after final renewed accounting. */
 enum pfs_status pfs_incremental_map_close(struct pfs_incremental_map *map,
   const struct pfs_allocation_record *candidate, size_t count, bool *again);
 
 /* Requires a stable local decision and its unchanged candidate. Uses the fixed
- * ascending ID prefix, encoding exactly q marked source positions. Unmarked
+ * ascending ID prefix, encoding every marked source position plus one virtual
+ * leaf when active. Catalog/root offsets use emitted(), not retired count. Unmarked
  * subtree references retain their birth. No I/O, allocation or publication.
  * Borrows workspace.path[0].tree and records[0], plus the caller's disjoint
  * one-block record buffer. Output is empty on failure. Internal node.first is
