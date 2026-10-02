@@ -124,6 +124,13 @@ strict launcher and were not repeated for this provisioning verification.
 
 ## Proposed next assignment, not implementation approval
 
+Subsequent assignment: the narrow one-inline-block, grant-free regular-orphan
+cleanup was approved and implemented with the
+[complete transaction proof](small-orphan-cleanup.md) and
+[matched before/after results](small-orphan-measurements.md). The proposal below
+records the original opportunity; the measured follow-up still leaves task 7
+and writable deployment open.
+
 Investigate combining the final small orphan data cleanup with its paired
 object/orphan-record deletion when the complete private edit fits existing
 funded limits. The compiler cases perform 32 orphan publications for 16 one-block
