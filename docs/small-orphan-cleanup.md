@@ -7,9 +7,12 @@ delete the object and orphan marker in one private candidate, without publishing
 an intermediate empty object. Other shapes keep the existing bounded cleanup.
 Grant lookup errors are funded failures, not permission to fall back.
 
-This proof was reviewed against `87d2f20` before implementation. It applies the
-existing editor, publisher and admission bounds; it changes none of their limits,
-allocator design, reserve policy, memory ceiling or durability semantics.
+The 29/30 volume-edit proof was reviewed against `87d2f20` before implementation.
+Those editor limits remain unchanged. The accepted retirement-carryover correction
+updates the sequence/accounting envelope below to allow incoming debt and a
+two-record catalog union; allocator design, memory ceiling and durability remain
+unchanged. The [shared-core contract](core.md) describes the
+computed funding profile.
 
 ## Complete transaction envelope
 
@@ -26,35 +29,38 @@ node counts. They edit independent indexes using the same reserved workspace.
 | Total volume retirements | 30 | D = 256 |
 | New pool/map/catalog/root blocks per publication | H | H |
 | Retired pool/map/catalog/root blocks per publication | H | H |
-| Combined-publication interval deltas | `3H + 59` | `8(H + 384)` slots of 128 bytes |
-| Each drain's interval deltas | `3H + 30` | Same delta storage |
+| Combined-publication interval deltas | `3H + 2D + 59` | `8(H + 384)` slots of 128 bytes |
+| Each drain's interval deltas | `3H + 2D` | Same delta storage |
 | Candidate live claims | `E − 1 + M + Pmax` | `E + M + Pmax` |
 
-Preparation requires no pending volume drain. The combined publication can free
-at most `2H` eligible pool retirements, retire `H` old pool nodes, retire 30 volume
-blocks and allocate 29 replacements: at most `3H+59` interval deltas without
-assuming adjacent changes merge. Each drain allocates/retires no volume blocks
-and can free at most 30 volume retirements. Catalog replacement is at most eight
-nodes, already included with the map and pool root in H.
+Preparation may carry two funded volume cohorts. Conservatively the combined
+publication can free at most `2H` eligible pool and `2D` volume retirements, retire
+H old pool nodes and 30 volume blocks, and allocate 29 replacements. This gives
+at most `3H+2D+59` interval deltas without assuming adjacent changes merge.
+Each pure fence introduces no volume allocations/retirements and can free at most
+2D volume debt. The actual source catalog-path union for at most two changed
+volume records is bounded by `C=min(4N−2,16)`; shared nodes are replaced once and
+all map/catalog/root replacements and retirements remain within H.
 
 The candidate removes old live claims before adding replacements. The entire
 single data claim disappears; it produces no surviving fragments. E decreases
-by one and actual metadata does not increase. Thus the unchanged canonical map
-closure covers the combined publication and both drains:
+by one and actual metadata does not increase. Canonical map closure covers the
+combined publication, subsequent rolling batches and terminal fences:
 
 ```
 Pcat = 4N − 2
+C = min(Pcat,16)
 Pmax = Pcat + H
-K = 1 + 2(E + M + 256)
+K = 1 + 2(E + M + 2D)
 Rbase(H) = K + 2Pcat + 6H
-S(H) = ceil(23(Rbase(H) + 20) / 21)
-F(S(H)) + 9 <= H
+S(H) = ceil(23(Rbase(H) + 2C + 4) / 21)
+F(S(H)) + C + 1 <= H
 ```
 
-H/S are the existing computed profile ceilings, not blocks to allocate as padding.
-The whole-map publisher still accounts for every replacement and retirement,
-including its own storage. The optimization removes a publication; it does not
-replace that allocation strategy or defer its costs elsewhere.
+H/S are computed profile ceilings, not blocks to allocate as padding.
+The whole-map publisher accounts for every replacement and retirement, including
+its own storage. Combining the deletion still removes the intermediate empty
+object; carryover separately defers reclamation, never durability acknowledgment.
 
 ## Accounting and funded resources
 
@@ -71,17 +77,18 @@ and data cannot increase. Therefore `Aeff = A − Z + B`, effective M and quota
 requirements cannot increase. This does not spend deletion headroom or borrow
 migration reservations.
 
-Preparation still selects 128 volume IDs and requires H+128 already-reusable
-blocks; its policy is unchanged. Recovery reservation `3H+384` covers the overlap
-of `2H` old pool debt, H new pool metadata, 29 replacement volume nodes and 30
-volume retirements. Later selected recovery retirement occupancy is bounded by
-`2H+30`. No allocation uses same-publication frees or blocks protected by either
-retained state.
+Preparation selects V=128 volume IDs and requires H+V already-reusable input
+blocks. Recovery reservation `3H+2D+V` covers accumulated two-cohort orphan debt;
+selected recovery occupancy is at most `2H+2D`, leaving H+V. The combined batch
+retires at most 30 volume blocks within its D envelope and adds at most 29 volume
+nodes within V. No allocation uses same-publication frees or storage protected
+by either retained state.
 
-The combined publication and at most two drains consume three generations while
-reducing T by two. Existing admission funds `g+3T`; the remaining requirement
-`g+3+3(T−2)` is three generations smaller. Startup's initial retirement allowance
-and intermediate-crash debt retain their existing funding.
+The combined publication reduces T by two. Admission reserves `g+a+3T`; the
+candidate requires at most `g+1+2+3(T−2)`. This preserves terminal fencing and
+intermediate-crash funding even if no later application mutation follows.
+Final release durably deletes the object and marker, but can report healthy
+PENDING retirement; startup finishes a trailing fence before exposing its writer.
 
 ## Memory, scratch and failures
 
