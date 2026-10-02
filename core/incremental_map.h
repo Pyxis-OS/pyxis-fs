@@ -75,7 +75,8 @@ enum pfs_status pfs_incremental_map_init(struct pfs_plan_arena *arena,
 /* Context names the selected source root at its original generation. The flat
  * source map is immutable, validated retained-state storage and remains borrowed
  * through encode. Reads validate tree identity, ancestry, exact child minima and
- * coverage, and equality with that flat map. Workspace borrows only path[0].
+ * coverage, canonical encoding and equality with that flat map. Workspace borrows
+ * path[0], path[1].data and records[0].
  * Failure is an actual source/read error, never an optimization fallback. */
 enum pfs_status pfs_incremental_map_load(struct pfs_incremental_map *map,
   const struct pfs_block_reader *reader, const struct pfs_block_context *context,

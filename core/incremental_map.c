@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "incremental_map.h"
 #include "internal.h"
+#include "canonical.h"
 
 /* A numeric internal record has an eight-byte key-length/reserved field,
  * a reference and its eight-byte key after the common record header. */
@@ -233,6 +234,25 @@ pfs_incremental_map_load(struct pfs_incremental_map *map,
     }
     node->level = tree->level;
     record_context.containing_birth = tree->header.birth;
+    struct pfs_encoded_record *encoded = workspace->records[0];
+    for (size_t j = 0; j < tree->count; j++) {
+      const struct pfs_tree_slot *slot = &tree->slots[j];
+      encoded[j] = (struct pfs_encoded_record){path->data + slot->offset, slot->length};
+      status = pfs_canonical_record_validate(encoded[j].data, encoded[j].length,
+        PFS_INDEX_ALLOCATION, tree->level, &record_context);
+      if (status != PFS_OK) {
+        return status;
+      }
+    }
+    status = pfs_tree_encode(workspace->path[1].data, PFS_BLOCK_SIZE,
+      &tree_context, tree, encoded);
+    if (status != PFS_OK) {
+      return status;
+    }
+    if (pfs_bytes_compare(path->data, PFS_BLOCK_SIZE,
+                         workspace->path[1].data, PFS_BLOCK_SIZE)) {
+      return PFS_CORRUPT;
+    }
     if (tree->level) {
       node->first_child = map->source_count;
       node->child_count = tree->count;
