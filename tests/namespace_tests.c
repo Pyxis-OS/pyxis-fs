@@ -916,16 +916,31 @@ quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release(void)
 
 static struct test_failure_flush_cut cleanup_cuts[TEST_FAILURE_EVENTS_MAX];
 static uint64_t cleanup_generations[TEST_FAILURE_EVENTS_MAX];
+struct cleanup_progress {
+  uint64_t orphans;
+  uint64_t file_blocks;
+  uint64_t grants;
+};
+static struct cleanup_progress cleanup_before[TEST_FAILURE_EVENTS_MAX];
+static struct cleanup_progress cleanup_after[TEST_FAILURE_EVENTS_MAX];
 static uint64_t cleanup_flush_base;
 static enum pfs_status cleanup_trace_status;
 
-/* Inspect only durable slots, without reentering the writer or tracing reads. */
+static enum pfs_status
+cleanup_durable_read(void *context, uint64_t first, uint32_t count, void *buffer)
+{
+  return test_failure_durable_read(context, first, count, buffer);
+}
+
+/* Discover logical cleanup progress from durable media on a separate reader.
+ * Checking uses the seed's idle memory owner, never writer allocations/handles.
+ * Independent payload comparisons remain the correctness oracle after each cut. */
 static void
 observe_cleanup_generation(struct test_failure *adapter,
   const struct test_failure_event *event, bool before, void *context)
 {
   (void)context;
-  if (!before || event->kind != TEST_FAILURE_FLUSH || cleanup_trace_status != PFS_OK) {
+  if (event->kind != TEST_FAILURE_FLUSH || cleanup_trace_status != PFS_OK) {
     return;
   }
   uint64_t index = event->ordinal - cleanup_flush_base - 1;
@@ -933,24 +948,40 @@ observe_cleanup_generation(struct test_failure *adapter,
     cleanup_trace_status = PFS_LIMIT;
     return;
   }
-  uint64_t generation = 0;
-  for (unsigned slot = 0; slot < 2; slot++) {
-    uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
-    uint8_t bytes[PFS_BLOCK_SIZE];
-    struct pfs_superblock super;
-    cleanup_trace_status = test_failure_durable_read(adapter, block, 1, bytes);
-    if (cleanup_trace_status == PFS_OK) {
-      cleanup_trace_status = pfs_superblock_decode(bytes, sizeof(bytes),
-        PFS_POOL_BLOCKS_MIN, block, &super);
-    }
-    if (cleanup_trace_status != PFS_OK) {
-      return;
-    }
-    if (super.header.birth > generation) {
-      generation = super.header.birth;
-    }
+  struct pfs_block_reader reader = {
+    .context = adapter, .geometry = adapter->builder.reader.geometry,
+    .read = cleanup_durable_read,
+  };
+  struct pfs_check_result check;
+  cleanup_trace_status = pfs_check(&reader, &seed.memory, NULL, NULL, &check);
+  if (cleanup_trace_status != PFS_OK) {
+    return;
   }
-  cleanup_generations[index] = generation;
+  unsigned selected = check.state[1].generation > check.state[0].generation;
+  const struct pfs_check_state_result *state = &check.state[selected];
+  struct cleanup_progress progress = {state->orphans, state->file_blocks, state->grants};
+  if (before) {
+    cleanup_generations[index] = state->generation;
+    cleanup_before[index] = progress;
+  } else {
+    cleanup_after[index] = progress;
+  }
+}
+
+static enum pfs_completion
+startup_cut_completion(const struct test_failure_flush_cut *cut)
+{
+  const struct cleanup_progress *before = &cleanup_before[cut->ordinal - 1];
+  const struct cleanup_progress *after = &cleanup_after[cut->ordinal - 1];
+  if (!before->orphans) {
+    /* Final paired deletion was confirmed; only its retained-root drain fails. */
+    return PFS_COMPLETE;
+  }
+  bool progress = before->orphans != after->orphans ||
+    before->file_blocks != after->file_blocks || before->grants != after->grants;
+  /* An uncertain cleanup publication can change remaining work. A failed drain
+   * after a partial cleanup leaves the overall cleanup stopped/incomplete. */
+  return cut->publishes && progress ? PFS_UNKNOWN : PFS_STOPPED;
 }
 
 static void
@@ -1158,9 +1189,9 @@ interrupted_startup_preserves_confirmed_generation_and_withholds_instance(void)
     TEST_ASSERT_NULL(pool.reader);
     TEST_ASSERT_EQUAL_UINT64(0, snapshot.memory->used);
     TEST_ASSERT_EQUAL_UINT64(generation, opening.confirmed_generation);
-    if (opening.recovery.completion == PFS_UNKNOWN) {
-      TEST_ASSERT_TRUE(cut->publishes);
-    }
+    enum pfs_completion expected = cut->publication == 0 ?
+      cut->publishes ? PFS_UNKNOWN : PFS_STOPPED : startup_cut_completion(cut);
+    TEST_ASSERT_EQUAL(expected, opening.recovery.completion);
     TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.operation_status);
     TEST_ASSERT_EQUAL(PFS_IO, opening.recovery.maintenance_status);
     TEST_ASSERT_EQUAL(cut->publishes ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED,
