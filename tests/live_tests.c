@@ -2,12 +2,15 @@
 #include "live_tests.h"
 #include "support.h"
 #include "unity.h"
-#include "writer.h"
-#include "read_internal.h"
+#include "failure.h"
+#include "plan.h"
+#include <pyxis_fs/write.h>
 #include <pyxis_fs/build.h>
 #include <string.h>
 
 static struct test_fixture fixture;
+static struct test_failure device;
+static bool failure_device;
 static const uint8_t payload[] = "live reads preserve held authority";
 static struct pfs_pool pool;
 static struct pfs_volume volume;
@@ -77,8 +80,9 @@ add_explicit_directory_checkpoint(const struct pfs_volume_record *volume_record)
 
 /* Ordinary live access uses the same admitted writer as mutation tests. */
 static void
-open_bridge_fixture(void)
+open_bridge_fixture_on(bool use_failure_device)
 {
+  failure_device = use_failure_device;
   hook_enabled = false;
   hook_closing_pool = false;
   read_failure = false;
@@ -114,14 +118,31 @@ open_bridge_fixture(void)
   const struct pfs_write_options options = {
     .extent_limit = 16, .metadata_limit = 16, .random = test_random,
   };
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &fixture.builder,
-    &fixture.memory, &options, &opening));
+  struct pfs_block_builder *builder = &fixture.builder;
+  struct pfs_memory *memory = &fixture.memory;
+  if (failure_device) {
+    struct pfs_plan_limits limits;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, options.extent_limit,
+      options.metadata_limit, 1, &limits));
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_open(&device, PFS_POOL_BLOCKS_MIN,
+      (size_t)limits.pool_blocks + PFS_PLAN_VOLUME_NEW + 1, 0, &fixture.builder.reader));
+    builder = &device.builder;
+    memory = device.memory;
+  }
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, builder,
+    memory, &options, &opening));
   const struct pfs_volume_id id = {{2}};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_volume_open(&pool, &id, &volume));
   authority = (struct pfs_trusted_context) {
     .principal = {{5}}, .root = {{3}}, .scope = PFS_SCOPE_SUBTREE,
     .ceiling = {PFS_FILE_RIGHTS_ALL, PFS_DIR_RIGHTS_ALL, PFS_ADMIN_RIGHTS_ALL},
   };
+}
+
+static void
+open_bridge_fixture(void)
+{
+  open_bridge_fixture_on(false);
 }
 
 static void
@@ -142,12 +163,21 @@ static void
 close_bridge_fixture(void)
 {
   hook_enabled = false;
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view, &(struct pfs_view_close_result){0}));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_FALSE(pool.writer_busy);
   TEST_ASSERT_NULL(pool.writer);
+  if (failure_device) {
+    TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    TEST_ASSERT_EQUAL_UINT64(0, device.memory->used);
+    TEST_ASSERT_FALSE(device.infrastructure_failure);
+    TEST_ASSERT_TRUE(test_failure_close(&device));
+  }
   TEST_ASSERT_EQUAL_UINT64(0, fixture.memory.used);
   TEST_ASSERT_TRUE(test_fixture_close(&fixture));
 }
@@ -202,7 +232,7 @@ checkpoint_authority_does_not_imply_read_lookup_or_metadata(void)
 }
 
 static void
-live_mode_separates_immutable_diagnostics_and_stopped_reads(void)
+live_mode_separates_immutable_diagnostics(void)
 {
   open_bridge_fixture();
   acquire_read_views();
@@ -227,38 +257,96 @@ live_mode_separates_immutable_diagnostics_and_stopped_reads(void)
   TEST_ASSERT_EQUAL(1, count);
   TEST_ASSERT_TRUE(done);
   TEST_ASSERT_EQUAL_MEMORY("file", entries[0].name.bytes, 4);
-  pool.writer->status.health = PFS_WRITER_READABLE_STOPPED;
-  uint8_t bytes[sizeof(payload)];
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_read(file_view, 0, bytes, sizeof(bytes), &count));
-  TEST_ASSERT_EQUAL_MEMORY(payload, bytes, sizeof(payload));
+  close_bridge_fixture();
+}
+
+static void
+publication_failures_enforce_real_stopped_read_states(void)
+{
+  uint64_t write_cuts[2] = {0};
+  open_bridge_fixture_on(true);
+  struct pfs_view *mutation = NULL;
+  const struct pfs_object_id file = {{4}};
+  const struct pfs_rights write_rights = {.file = PFS_FILE_WRITE};
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &authority, &file,
+    PFS_SCOPE_OBJECT, &write_rights, &mutation));
+  uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+  test_failure_trace_reset(&device);
   struct pfs_write_result result;
-  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_checkpoint(file_view, &result));
-  TEST_ASSERT_EQUAL(PFS_STOPPED, result.completion);
-  TEST_ASSERT_EQUAL(PFS_WRITER_READABLE_STOPPED, result.health);
-  pool.writer->status.health = PFS_WRITER_ACCESS_STOPPED;
-  struct pfs_view_metadata metadata;
-  memset(&metadata, 0xa5, sizeof(metadata));
-  struct pfs_view_metadata before = metadata;
-  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_metadata(file_view, &metadata));
-  TEST_ASSERT_EQUAL_MEMORY(&before, &metadata, sizeof(metadata));
-  struct pfs_view *child = NULL;
-  struct pfs_view_identity identity;
-  struct pfs_rights rights = {.file = PFS_FILE_READ};
-  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_lookup(directory_view,
-      (const uint8_t *)"file", 4, PFS_SCOPE_OBJECT, &rights, &child, &identity));
-  TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_acquire_path(&volume, &authority,
-      (const uint8_t *)"file", 4, PFS_SCOPE_OBJECT, &rights, &child));
-  TEST_ASSERT_NULL(child);
-  uint64_t writes = fixture.writes;
-  uint64_t flushes = fixture.flushes;
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&file_view, &(struct pfs_view_close_result){0}));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&directory_view, &(struct pfs_view_close_result){0}));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&volume));
-  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
-  TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
-  TEST_ASSERT_EQUAL_UINT64(flushes, fixture.flushes);
-  TEST_ASSERT_EQUAL_UINT64(0, fixture.memory.used);
-  TEST_ASSERT_TRUE(test_fixture_close(&fixture));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(mutation, 0, "X", 1, &result));
+  TEST_ASSERT_EQUAL(PFS_COMPLETE, result.completion);
+  TEST_ASSERT_EQUAL(PFS_WRITER_READY, result.health);
+  for (size_t i = 0; i < device.event_count; i++) {
+    const struct test_failure_event *event = &device.events[i];
+    if (event->kind != TEST_FAILURE_WRITE) {
+      continue;
+    }
+    bool slot = event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1;
+    if (!write_cuts[slot]) {
+      write_cuts[slot] = event->ordinal - writes;
+    }
+  }
+  TEST_ASSERT_GREATER_THAN_UINT64(0, write_cuts[0]);
+  TEST_ASSERT_GREATER_THAN_UINT64(0, write_cuts[1]);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&mutation, &(struct pfs_view_close_result){0}));
+  close_bridge_fixture();
+
+  for (unsigned slot_failure = 0; slot_failure < 2; slot_failure++) {
+    open_bridge_fixture_on(true);
+    acquire_read_views();
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &authority, &file,
+      PFS_SCOPE_OBJECT, &write_rights, &mutation));
+    struct test_failure_fault fault = {.kind = TEST_FAILURE_WRITE,
+      .ordinal = device.ordinals[TEST_FAILURE_WRITE] + write_cuts[slot_failure],
+      .mode = TEST_FAILURE_BEFORE, .enabled = true};
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
+    TEST_ASSERT_EQUAL(PFS_IO, pfs_view_write(mutation, 0, "X", 1, &result));
+    TEST_ASSERT_TRUE(device.triggered);
+    enum pfs_writer_health health = slot_failure ? PFS_WRITER_ACCESS_STOPPED :
+                                                  PFS_WRITER_READABLE_STOPPED;
+    TEST_ASSERT_EQUAL(health, result.health);
+    TEST_ASSERT_EQUAL(slot_failure ? PFS_UNKNOWN : PFS_STOPPED, result.completion);
+    TEST_ASSERT_EQUAL_UINT64(0, result.confirmed_bytes);
+    struct pfs_writer_status status;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
+    TEST_ASSERT_EQUAL(health, status.health);
+    TEST_ASSERT_EQUAL(PFS_IO, status.failure);
+    /* Removing the adapter fault does not heal this writer instance. */
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &(struct test_failure_fault){0}));
+    uint8_t bytes[sizeof(payload)];
+    size_t count = 123;
+    if (!slot_failure) {
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_view_read(file_view, 0, bytes, sizeof(bytes), &count));
+      TEST_ASSERT_EQUAL_UINT(sizeof(payload), count);
+      TEST_ASSERT_EQUAL_MEMORY(payload, bytes, sizeof(payload));
+    } else {
+      TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED,
+        pfs_view_read(file_view, 0, bytes, sizeof(bytes), &count));
+      TEST_ASSERT_EQUAL_UINT(123, count);
+      struct pfs_view_metadata metadata;
+      memset(&metadata, 0xa5, sizeof(metadata));
+      struct pfs_view_metadata before = metadata;
+      TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_metadata(file_view, &metadata));
+      TEST_ASSERT_EQUAL_MEMORY(&before, &metadata, sizeof(metadata));
+      struct pfs_view *child = NULL;
+      struct pfs_view_identity identity;
+      struct pfs_rights rights = {.file = PFS_FILE_READ};
+      TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_lookup(directory_view,
+        (const uint8_t *)"file", 4, PFS_SCOPE_OBJECT, &rights, &child, &identity));
+      TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_acquire_path(&volume, &authority,
+        (const uint8_t *)"file", 4, PFS_SCOPE_OBJECT, &rights, &child));
+      TEST_ASSERT_NULL(child);
+    }
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_checkpoint(file_view, &result));
+    TEST_ASSERT_EQUAL(PFS_STOPPED, result.completion);
+    TEST_ASSERT_EQUAL(health, result.health);
+    writes = device.ordinals[TEST_FAILURE_WRITE];
+    uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&mutation, &(struct pfs_view_close_result){0}));
+    TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    close_bridge_fixture();
+  }
 }
 
 static void
@@ -399,7 +487,8 @@ run_live_tests(void)
 {
   Unity.TestFile = __FILE__;
   RUN_TEST(checkpoint_authority_does_not_imply_read_lookup_or_metadata);
-  RUN_TEST(live_mode_separates_immutable_diagnostics_and_stopped_reads);
+  RUN_TEST(live_mode_separates_immutable_diagnostics);
+  RUN_TEST(publication_failures_enforce_real_stopped_read_states);
   RUN_TEST(callbacks_cannot_reenter_reads_authority_or_lifetime_changes);
   RUN_TEST(read_io_failure_stops_access_without_automatic_retry);
 }
