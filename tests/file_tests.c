@@ -726,8 +726,9 @@ creation_failures_publish_a_view_only_after_confirmed_namespace_commit(void)
   uint64_t flush_base = device.ordinals[TEST_FAILURE_FLUSH];
   test_failure_trace_reset(&device);
   struct pfs_write_result healthy;
+  struct pfs_view_identity healthy_identity;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_create_file(parent_view, (const uint8_t *)"new", 3,
-    &file_rights, &other_view, NULL, &healthy));
+    &file_rights, &other_view, &healthy_identity, &healthy));
   expect_complete(&healthy);
   struct test_failure_flush_cut cuts[TEST_FAILURE_EVENTS_MAX];
   size_t count;
