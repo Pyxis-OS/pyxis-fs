@@ -40,9 +40,10 @@ sudo python3 tests/ram_run.py --suite check
 sudo python3 tests/ram_run.py --suite extended
 sudo python3 tests/ram_run.py --suite safety
 sudo python3 tests/ram_run.py --suite baseline
+sudo python3 tests/ram_run.py --suite sustained --background-blocks 256 --case append
 ```
 
-The safety suite and baseline also require loop devices, tracefs `block_bio_queue`,
+The safety, baseline and sustained suites also require loop devices, tracefs `block_bio_queue`,
 and ext4/Btrfs kernel support and formatter tools. Unsupported evidence or
 permissions cause refusal, without a buffered/disk-backed fallback. The launcher does not disable
 system-wide swapping. It creates a fresh job before allocating workload storage:
@@ -59,8 +60,8 @@ Before quick, extended or preflight work and the result-socket connection, the
 worker clears supplementary groups, permanently drops its real/effective/saved
 UIDs and GIDs, and sets `no_new_privs`. Compilation and test children therefore
 run without root authority; the C fixture guard independently rejects UID 0.
-The result socket authenticates the selected worker UID. For the safety suite
-and baseline, the root supervisor connects to a socket expecting UID 0 and
+The result socket authenticates the selected worker UID. For the safety, baseline
+and sustained suites, the root supervisor connects to a socket expecting UID 0 and
 retains the loop, mount and trace duties; compilation and comparison children
 always use the unprivileged worker identity with `no_new_privs`.
 
@@ -80,8 +81,8 @@ is not part of this command and remains unassigned under this storage budget.
 | Fixture images, including logically large sparse geometries | Unlinked files opened relative to the guard's pinned RAM directory; sparse geometry is not a write budget |
 | Failure adapter durable image and volatile/pending log | Same directory; 4,120-byte log records and bounded record count; no alternate production callback path |
 | Seed copies and cold-recovery clones | Same directory; independent files, fixed 64 KiB copy buffer |
-| Small workload expected payloads and source copies | Same directory; image, logs and all independent expectations share the aggregate scratch/job limits |
-| Safety/baseline native images | Fresh 1 GiB logical images in scratch, attached only to exclusively owned loop devices with verified backing identity |
+| Expected payloads and source copies | Same RAM job; independent in-memory byte mirrors, images, logs and any source copies share the aggregate scratch/job limits |
+| Safety/baseline/sustained native images | Fresh 1 GiB logical images in scratch, attached only to exclusively owned loop devices with verified backing identity |
 | Extracted payloads | The inspector takes an explicit output path; it is not redirected by TMPDIR. No extraction command is used by this baseline. Any future extraction must explicitly target verified scratch |
 | Build temporaries and output | RAM build directory and TMPDIR during scoped runs; CI checkout/source is the only persistent input workspace |
 | stdout/stderr, traces and core dumps | Bounded memory capture/streaming counters; core dumps disabled; no raw workload log saved to disk |
@@ -95,6 +96,10 @@ Reclaimed filesystem blocks also need not release the backing file's tmpfs pages
 
 ## Small comparison contract
 
+`--suite baseline` retains its original workload and, without filters, its
+40-case matrix. `--population`, `--case`, `--durability` and `--filesystem` select
+a subset; for example, `--population 256 --case compiler --durability operation`
+runs the individually durable Pyxis/ext4/Btrfs triplet. Pyxis has no batch profile.
 Each case starts fresh at 1 GiB logical geometry, with 32 or 256 populated files.
 Each population file receives 4 KiB; preparation then performs eight partial
 1 KiB overwrites and four create/write/close/replacement histories. The measured
@@ -106,7 +111,8 @@ The Pyxis profile remains E=8192, M=4096 with the existing 128 MiB core-owner ca
 ordinary/migration/recovery reserves are each 8192 blocks. This is populated
 history coverage, not evidence for the maximum profile or a large empty image.
 
-Pyxis completes and drains each mutation under its existing contract. Native
+Pyxis completes each mutation durably under its existing contract. Reclamation
+may carry over until the explicit final checkpoint. Native
 operation mode synchronizes a written file before returning; creation synchronizes
 file and parent, rename synchronizes both affected parents (the same directory
 in this matrix), and deletion synchronizes the parent. Close alone is not a
@@ -159,6 +165,97 @@ not acceptance of writable deployment or authorization for another implementatio
 
 The [initial baseline report](ram-baseline.md) records two completed matrices,
 storage evidence and the next proposed bounded investigation.
+
+## Sustained comparison
+
+`--suite sustained` runs one chosen background population and case serially on
+fresh Pyxis, ext4 and Btrfs backends. `--filesystem pyxis|ext4|btrfs` selects one
+backend for controls or separate result collection. Each mutation uses operation
+durability as described above; batch mode is refused. Compiler cases model
+create/write/close/rename/delete histories, rather than invoking a compiler in
+each cycle. Repetitions are separate serial launcher invocations.
+
+The following defaults are configurable experiment inputs, not filesystem
+contracts or acceptance targets. `--background-blocks` is the total number of
+4-KiB background blocks distributed across all `--population` files, with at
+least one block per file. Division remainders go to the first files.
+
+| Option | Launcher default and use |
+| --- | --- |
+| `--population` | 64 background files |
+| `--background-blocks` | 256 total background blocks |
+| `--case` | `append`; alternatives are `overwrite` and `compiler` |
+| `--windows` | 3 consecutive windows on the same populated backend |
+| `--operations` | 512 mutations per append/overwrite window |
+| `--cycles` | 128 compiler histories per compiler window |
+| `--seed` | 1 for deterministic payloads and overwrite offsets; zero is accepted |
+| `--target-bytes` | 4 MiB pre-existing overwrite target |
+| `--overwrite-bytes` | 1024 bytes per overwrite |
+
+For example, choose total background populations of 256, 2048 or 5120 blocks
+with `--population 64`, then select one case per invocation. Append windows issue
+4-KiB writes to one growing file. Overwrite preparation fills the configured target
+using requests of at most 256 KiB; windows alternate contained and cross-block
+writes without extending it. Compiler cycles write 4 KiB before rename/delete.
+The background files remain unchanged throughout the windows. There is no extra
+checkpoint or filesystem sync between windows. Preparation and the terminal
+phase retain their explicit final boundaries. The current Pyxis E/M profile,
+reserves and core memory cap are the same as the small comparison.
+
+The summary's `phases` array contains `setup`, `preparation`, `window_1` through
+`window_W`, and `final`. The child emits and stops at `setup_end`,
+`preparation_end`, each `window_i_end`, and `final_end`: exactly W+3 boundaries.
+The launcher checks marker order and stop count. Final checkpoint/synchronization
+and core close precede `final_end`; verification follows it. Pyxis phase records
+include application bytes, operations, elapsed time, user/orphan/drain data and
+metadata writes, flushes, reads/planning reads, and selected extent/metadata/map,
+live/reusable-block and generation state. `map_plans.phase_order` uses the same
+phase sequence and separates local/bulk planning evidence and fallback reasons.
+
+Sustained totals include the full write history. Pyxis `setup` counts formatter
+and writer-open callbacks, and its total sums setup, preparation, all windows and
+final maintenance/close. Simulator duplicate log writes remain infrastructure,
+not filesystem submitted bytes. Native tracing begins before formatting and
+continues through clean unmount. The first setup snapshot includes mkfs/mount
+writes; subsequent phase bytes, flush and FUA counts are snapshot deltas. Writes
+after `final_end` remain in `after_end_submitted_bytes` and the total, rather than
+being dropped or assigned to a window. `after_end_seconds` covers verification,
+result handoff and clean unmount; `external_setup_seconds` records external
+setup, and native setup elapsed time includes it. Submitted bytes must still
+equal the owned loop's completed write bytes after teardown. Historic baseline
+Pyxis preparation/measurement counts continue to exclude formatting/open;
+its native preparation retains format-inclusive traffic. Those historic phase
+denominators must not be substituted for sustained setup-inclusive totals.
+
+An independently updated byte mirror and namespace ledger record requested
+payloads and confirmed progress. After the final boundary, Pyxis reopens read-only;
+both backends check every surviving byte, file length and expected namespace
+against that oracle. Verification does not regenerate expected contents by
+replaying the workload's offset/tag decisions. A healthy quota, profile or space
+refusal produces `complete: false` with the refusing phase/operation, status,
+confirmed bytes and namespace progress, followed by verification of the confirmed
+prefix. Unexecuted windows remain empty diagnostic phases. Such a record is a
+valid incomplete result, not completion of the requested history. I/O or stopped
+writer errors, adapter failures, OOM, trace loss or execution-budget exhaustion invalidate
+the experiment and do not produce a successful prefix claim.
+
+This suite retains the existing RAM-only, zero-swap, identity, native-target,
+trace-loss and submitted/completed guards. Scratch/job/output/trace budgets remain
+unchanged, as do the 600-second child and 1200-second service limits. A selected
+configuration must fit those limits; there is no automatic limit increase or
+shortened retry. The summary also records compiler/version and actual build
+commands, core and job memory evidence, oracle capacity, build allocation and
+case-end scratch/backing physical allocation snapshots. End snapshots are not
+peak storage measurements. Quick and extended contract coverage remains separate
+and unchanged; sustained comparison is a diagnostic experiment, not writable
+deployment or real-device durability qualification.
+
+Native cgroup peaks do not establish whole-job RAM peaks: kernel/loop-worker
+charging can fall outside the member cgroup. Scratch remains independently
+bounded by tmpfs, with no swap or disk fallback, and trace memory has separate
+bounds. Account conservatively for native cache/kernel overhead rather than
+treating a low cgroup peak as evidence that all native backing/cache is charged
+there; see the [sustained resource observations](sustained-map-measurements.md#resource-estimate-and-safety-boundary).
 
 ## CI
 

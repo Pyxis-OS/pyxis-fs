@@ -20,7 +20,8 @@ The launcher gives RAM temporary/build directories to its selected non-root
 worker, clears supplementary groups, permanently drops UIDs/GIDs and sets
 `no_new_privs` before quick, extended or preflight work and result reporting.
 Compilation and comparison children also run unprivileged in the native safety
-suite and baseline; their supervisor retains the loop, mount and trace duties. The
+suite, baseline and sustained comparison; their supervisor retains the loop,
+mount and trace duties. The
 [launcher contract](ram-validation.md#local-execution) describes identity selection
 and result-socket authentication, and the
 [comparison contract](ram-validation.md#small-comparison-contract) describes the
@@ -30,6 +31,20 @@ Run `sudo python3 tests/ram_run.py --suite safety` for the bounded native launch
 check: one 32-file compiler operation case each on ext4 and Btrfs, plus five
 descriptor/backing refusal cases. This checks the launch boundary without a full
 comparative matrix; it adds no timing evidence to the initial baseline report.
+
+The [sustained comparison](ram-validation.md#sustained-comparison) uses
+`sudo python3 tests/ram_run.py --suite sustained --background-blocks 256 --case append`
+for one configurable experiment, with serial Pyxis/ext4/Btrfs operation-durable
+runs. Select `overwrite` or `compiler`, or a single `--filesystem`, explicitly.
+Independent byte mirrors and namespace expectations verify the resulting history;
+`complete: false` reports a verified healthy capacity-refused prefix, not a full
+workload pass. Setup, preparation, successive windows and final maintenance have
+separate diagnostics, and native verification/handoff/unmount writes remain in
+the total. The existing small baseline and quick/extended suites retain their
+coverage and storage guards. This adds comparison instrumentation, not new quick
+or extended groups or authorization for the larger recovery command. Scoped quick
+and extended builds compile the comparison binary too; CI does not run the
+sustained measurement matrix.
 
 `make check` builds `build/pyxis-fs-tests` and runs `--suite pr`. It links the same
 freestanding `libpyxis-fs.a` as the ordinary tools, with no alternate core or

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Scoped Linux launcher for pyxis-fs contract tests and the small RAM baseline."""
+"""Scoped Linux launcher for pyxis-fs contract tests and bounded RAM comparisons."""
 import argparse
 import ctypes
 import errno
@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import resource
 import selectors
+import shlex
 import shutil
 import signal
 import socket
@@ -164,6 +165,8 @@ def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_
         selector.register(trace.fd, selectors.EVENT_READ)
     os.set_blocking(process.stdout.fileno(), False)
     phase_counts = []
+    phase_names = None if phases is True or not phases else tuple(phases)
+    expected_stops = len(phase_names) if phase_names is not None else 2
     result_received = False
     result_stream = None
     if result_listener is not None:
@@ -179,10 +182,13 @@ def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_
                 pid, status = os.waitpid(process.pid, os.WNOHANG | os.WUNTRACED)
                 if pid and os.WIFSTOPPED(status):
                     require(os.WSTOPSIG(status) == signal.SIGSTOP, 'unexpected child stop')
-                    require(len(phase_counts) < 2, 'extra comparison phase stop')
+                    require(len(phase_counts) < expected_stops, 'extra comparison phase stop')
                     if trace:
                         trace.drain()
                         trace.phase_times.append(time.monotonic())
+                        trace.phase_snapshots.append({'submitted_bytes': trace.bytes,
+                                                      'flush_events': trace.flushes,
+                                                      'fua_events': trace.fua_events})
                     phase_counts.append(trace.bytes if trace else 0)
                     os.kill(process.pid, signal.SIGCONT)
                 elif pid:
@@ -221,7 +227,12 @@ def capture(command, *, trace=None, phases=False, timeout=600, env=None, result_
                 output[-8192:].decode(errors='replace'))
         require(result_listener is None or result_received, 'job produced no RAM socket result')
         if phases:
-            require(len(phase_counts) == 2, 'missing comparison phase stops')
+            require(len(phase_counts) == expected_stops, 'missing comparison phase stops')
+            if phase_names is not None:
+                records = [json.loads(line) for line in output.decode().splitlines()
+                           if line.startswith('{')]
+                markers = [record['phase'] for record in records if 'phase' in record]
+                require(markers == list(phase_names), 'unexpected comparison phase markers')
         return output.decode(), phase_counts
     finally:
         # Also kill descendants when the direct child already exited.
@@ -262,6 +273,7 @@ class BlockTrace:
         self.trace_bytes = 0
         self.pending = b''
         self.phase_times = []
+        self.phase_snapshots = []
         self.path.mkdir()
         try:
             device_id = os.stat(device).st_rdev
@@ -479,12 +491,30 @@ def callback_bytes(phase):
                for kind in ('data_blocks', 'metadata_blocks')) * 4096
 
 
-def baseline(binary, name, identity):
+def baseline(binary, name, identity, population=None, case=None, durability=None,
+             filesystem=None, sustained=None):
     results = []
-    for population in (32, 256):
-        for case in ('small', 'large', 'overwrite', 'compiler'):
-            for filesystem, durability in (('pyxis', 'operation'), ('ext4', 'operation'),
-                                            ('btrfs', 'operation'), ('ext4', 'batch'), ('btrfs', 'batch')):
+    populations = (population,) if population is not None else ((64,) if sustained else (32, 256))
+    cases = (case,) if case is not None else (('append',) if sustained else
+                                            ('small', 'large', 'overwrite', 'compiler'))
+    profiles = (('pyxis', 'operation'), ('ext4', 'operation'), ('btrfs', 'operation'),
+                ('ext4', 'batch'), ('btrfs', 'batch'))
+    if sustained:
+        durability = 'operation'
+    if durability is not None:
+        profiles = tuple(profile for profile in profiles if profile[1] == durability)
+    if filesystem is not None:
+        profiles = tuple(profile for profile in profiles if profile[0] == filesystem)
+    require(profiles, 'selected filesystem has no matching durability profile')
+    phase_names = None
+    if sustained:
+        phase_names = ['setup', 'preparation']
+        phase_names += [f'window_{index}' for index in range(1, sustained['windows'] + 1)]
+        phase_names += ['final']
+    for population in populations:
+        for case in cases:
+            for filesystem, durability in profiles:
+                case_start = time.monotonic()
                 directory = SCRATCH / 'case'
                 directory.mkdir()
                 os.chown(directory, *identity)
@@ -497,9 +527,14 @@ def baseline(binary, name, identity):
                         trace = BlockTrace(name, loop.device)
                         root = loop.mount(filesystem, trace)
                         os.chown(root, *identity)
+                    external_setup_seconds = time.monotonic() - case_start
                     command = [str(binary), '--filesystem', 'pyxis' if filesystem == 'pyxis' else 'native',
                                '--root', str(root), '--population', str(population), '--case', case,
                                '--durability', durability, '--phase-stops', 'yes']
+                    if sustained:
+                        command += ['--workload', 'sustained']
+                        for option, value in sustained.items():
+                            command += ['--' + option.replace('_', '-'), str(value)]
                     environment = os.environ.copy()
                     if filesystem == 'pyxis':
                         environment['TMPDIR'] = str(directory)
@@ -511,34 +546,62 @@ def baseline(binary, name, identity):
                             descriptors.append(os.open(loop.image, os.O_RDONLY | os.O_NOFOLLOW))
                             for option, fd in zip(('root', 'loop', 'backing'), descriptors):
                                 command += [f'--native-{option}-fd', str(fd)]
-                        text, counts = capture(command, trace=trace, phases=True, env=environment,
+                        text, counts = capture(command, trace=trace,
+                                               phases=tuple(name + '_end' for name in phase_names)
+                                               if sustained else True, env=environment,
                                                identity=identity, pass_fds=descriptors)
                     finally:
                         for fd in descriptors:
                             os.close(fd)
                     records = [json.loads(line) for line in text.splitlines() if line.startswith('{')]
-                    require(records and 'measurement' in records[-1], 'comparison produced no summary')
+                    require(records and ('phases' if sustained else 'measurement') in records[-1],
+                            'comparison produced no summary')
                     record = records[-1]
                     record.update(filesystem=filesystem, durability=durability, population=population, case=case)
+                    if sustained:
+                        require([phase['name'] for phase in record['phases']] == phase_names,
+                                'unexpected comparison summary phases')
+                        record.update(workload='sustained', **sustained)
                     if loop:
                         loop.unmount(trace)
                         trace.finish()
                         completed = loop.completed_written_bytes() - loop.initial_written_bytes
                         require(completed == trace.bytes,
                                 'submitted/completed loop write bytes differ; measurement invalid')
+                        finished = time.monotonic()
                         record.update(profile=loop.profile, completed_write_bytes=completed,
                                       submission_source='block_bio_queue on owned loop',
-                                      preparation_submitted_bytes=counts[0],
-                                      measured_submitted_bytes=trace.bytes - counts[0],
-                                      phase_end_submitted_bytes=counts[1],
-                                      after_end_submitted_bytes=trace.bytes - counts[1],
-                                      after_end_seconds=time.monotonic() - trace.phase_times[1],
-                                      measurement_with_teardown_seconds=time.monotonic() - trace.phase_times[0],
+                                      after_end_submitted_bytes=trace.bytes - counts[-1],
+                                      after_end_seconds=finished - trace.phase_times[-1],
                                       total_submitted_bytes=trace.bytes,
                                       flush_events=trace.flushes, fua_events=trace.fua_events,
                                       discard_sectors=trace.discard_sectors, trace_bytes=trace.trace_bytes,
                                       sector_bytes=512, filesystem_block_bytes=4096,
                                       btrfs_node_bytes=16384 if filesystem == 'btrfs' else None)
+                        if sustained:
+                            previous = {'submitted_bytes': 0, 'flush_events': 0, 'fua_events': 0}
+                            previous_time = case_start
+                            for phase, snapshot, stopped in zip(record['phases'], trace.phase_snapshots,
+                                                               trace.phase_times):
+                                phase.update({key: value - previous[key] for key, value in snapshot.items()})
+                                phase['native_elapsed_seconds'] = stopped - previous_time
+                                previous, previous_time = snapshot, stopped
+                            record.update(external_setup_seconds=external_setup_seconds,
+                                          total_with_verification_teardown_seconds=finished - case_start,
+                                          after_end_scope='verification, result handoff, and clean unmount',
+                                          after_end_flush_events=trace.flushes - previous['flush_events'],
+                                          after_end_fua_events=trace.fua_events - previous['fua_events'])
+                        else:
+                            record.update(preparation_submitted_bytes=counts[0],
+                                          measured_submitted_bytes=trace.bytes - counts[0],
+                                          phase_end_submitted_bytes=counts[1],
+                                          measurement_with_teardown_seconds=finished - trace.phase_times[0])
+                    elif sustained:
+                        for phase in record['phases']:
+                            phase['submitted_bytes'] = callback_bytes(phase)
+                        record.update(total_submitted_bytes=sum(phase['submitted_bytes']
+                                                                for phase in record['phases']),
+                                      submission_source='core write callbacks')
                     else:
                         preparation_bytes = callback_bytes(record['preparation'])
                         measured_bytes = callback_bytes(record['measurement'])
@@ -546,6 +609,11 @@ def baseline(binary, name, identity):
                                       measured_submitted_bytes=measured_bytes,
                                       total_submitted_bytes=preparation_bytes + measured_bytes,
                                       submission_source='core write callbacks')
+                    if sustained:
+                        fs = os.statvfs(SCRATCH)
+                        record['scratch_allocated_bytes_at_case_end'] = (fs.f_blocks - fs.f_bfree) * fs.f_frsize
+                        if loop:
+                            record['backing_allocated_bytes_at_case_end'] = os.stat(loop.image).st_blocks * 512
                     results.append(record)
                 finally:
                     try:
@@ -570,7 +638,8 @@ def connect_result(name):
     sys.stderr = sys.stdout
 
 
-def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
+def inner(suite, name, ci_quick=False, identity=None, result_socket=None,
+          population=None, case=None, durability=None, filesystem=None, sustained=None):
     require(not ci_quick or suite == 'check', 'CI storage mode is restricted to the quick suite')
     evidence = preflight(ci_quick)
     identity = identity or worker_identity()
@@ -581,7 +650,7 @@ def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
     if os.geteuid() == 0:
         os.chown(os.environ['TMPDIR'], *identity)
         os.chown(build, *identity)
-    if suite not in ('baseline', 'safety'):
+    if suite not in ('baseline', 'safety', 'sustained'):
         drop_privileges(identity)
     os.environ['HOME'] = os.environ['TMPDIR']
     evidence.update(worker_uid=identity[0], worker_gid=identity[1])
@@ -589,15 +658,26 @@ def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
         connect_result(result_socket)
     runner = build / 'pyxis-fs-tests'
     comparison = build / 'pyxis-fs-compare'
-    targets = ['all', str(runner)] + ([str(comparison)] if suite in ('baseline', 'safety') else [])
+    targets = ['all', str(runner), str(comparison)]
     if suite == 'preflight':
         return {'safety': evidence, 'status': 'preflight-only'}
-    capture(['make', '-j16', f'BUILD={build}', *targets], identity=identity)
+    build_output, _ = capture(['make', '-j16', f'BUILD={build}', *targets], identity=identity)
+    if suite == 'sustained':
+        compiler = shlex.split(os.environ.get('HOST_CC', 'cc'))
+        version, _ = capture(compiler + ['--version'], identity=identity)
+        evidence['compiler_command'] = compiler
+        evidence['compiler_version'] = version.strip()
+        evidence['build_commands'] = [line for line in build_output.splitlines()
+                                      if any(target in line for target in
+                                             ('/tests/comparison.o', '/core/mutate.o', '/pyxis-fs-compare'))]
+        artifacts = [path.stat() for path in build.rglob('*') if path.is_file()]
+        evidence['build_allocated_bytes'] = sum(artifact.st_blocks * 512 for artifact in artifacts)
+        evidence['build_files'] = len(artifacts)
     if suite == 'safety':
         import ram_safety
         results = ram_safety.run(sys.modules[__name__], comparison, name, identity)
-    elif suite == 'baseline':
-        results = baseline(comparison, name, identity)
+    elif suite in ('baseline', 'sustained'):
+        results = baseline(comparison, name, identity, population, case, durability, filesystem, sustained)
     else:
         command = [str(runner), '--suite', 'pr' if suite == 'check' else 'extended']
         if ci_quick:
@@ -615,9 +695,41 @@ def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
     return {'safety': evidence, 'results': results}
 
 
+def nonnegative_int(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError('value must be nonnegative')
+    return number
+
+
+def positive_int(value):
+    number = nonnegative_int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError('value must be positive')
+    return number
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--suite', choices=('preflight', 'check', 'extended', 'safety', 'baseline'), default='check')
+    parser.add_argument('--suite', choices=('preflight', 'check', 'extended', 'safety', 'baseline', 'sustained'), default='check')
+    parser.add_argument('--population', type=positive_int,
+                        help='comparison population (sustained default: 64 background files)')
+    parser.add_argument('--case', choices=('small', 'large', 'append', 'overwrite', 'compiler'),
+                        help='comparison case (sustained default: append)')
+    parser.add_argument('--durability', choices=('operation', 'batch'), help='baseline durability filter')
+    parser.add_argument('--filesystem', choices=('pyxis', 'ext4', 'btrfs'),
+                        help='run only the selected comparison filesystem')
+    parser.add_argument('--background-blocks', type=positive_int,
+                        help='total sustained background blocks across all files (default: 256)')
+    parser.add_argument('--windows', type=positive_int, help='sustained default: 3')
+    parser.add_argument('--operations', type=positive_int,
+                        help='sustained default: 512 per append/overwrite window')
+    parser.add_argument('--cycles', type=positive_int, help='sustained default: 128 per compiler window')
+    parser.add_argument('--seed', type=nonnegative_int, help='sustained default: 1')
+    parser.add_argument('--target-bytes', type=positive_int,
+                        help='sustained default: 4 MiB pre-existing overwrite target')
+    parser.add_argument('--overwrite-bytes', type=positive_int,
+                        help='sustained default: 1024 per overwrite operation')
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--ci-quick', action='store_true',
                         help='quick suite only: verify zero-swap cgroup instead of requiring mount noswap')
@@ -629,6 +741,24 @@ def main():
     args = parser.parse_args()
     require(not args.ci_quick or (args.inside and args.suite == 'check'),
             '--ci-quick requires --inside --suite check')
+    require(args.suite in ('baseline', 'sustained') or
+            all(value is None for value in (args.population, args.case, args.durability, args.filesystem)),
+            'comparison filters require --suite baseline or sustained')
+    settings = {option: getattr(args, option) for option in
+                ('background_blocks', 'windows', 'operations', 'cycles', 'seed',
+                 'target_bytes', 'overwrite_bytes')}
+    require(args.suite == 'sustained' or all(value is None for value in settings.values()),
+            'sustained parameters require --suite sustained')
+    sustained = None
+    if args.suite == 'sustained':
+        require(args.case in (None, 'append', 'overwrite', 'compiler'), 'unsupported sustained case')
+        require(args.durability in (None, 'operation'), 'sustained requires operation durability')
+        defaults = {'background_blocks': 256, 'windows': 3, 'operations': 512, 'cycles': 128,
+                    'seed': 1, 'target_bytes': 4 * 1024**2, 'overwrite_bytes': 1024}
+        sustained = {key: settings[key] if settings[key] is not None else value
+                     for key, value in defaults.items()}
+    else:
+        require(args.case != 'append', 'append requires --suite sustained')
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     if args.cleanup_trace:
@@ -638,12 +768,13 @@ def main():
         identity = worker_identity() if args.worker_uid is None else (args.worker_uid, args.worker_gid)
         require(all(value is not None and value > 0 for value in identity), 'invalid worker identity')
         try:
-            result = json.dumps(inner(args.suite, args.name, args.ci_quick, identity, args.result_socket),
+            result = json.dumps(inner(args.suite, args.name, args.ci_quick, identity, args.result_socket,
+                                      args.population, args.case, args.durability, args.filesystem, sustained),
                                 sort_keys=True, separators=(',', ':'))
         except (RuntimeError, OSError, ValueError):
             if args.result_socket and sys.stdout is sys.__stdout__:
                 # Preflight/setup errors still use the selected sender identity.
-                if args.suite not in ('baseline', 'safety'):
+                if args.suite not in ('baseline', 'safety', 'sustained'):
                     drop_privileges(identity)
                 connect_result(args.result_socket)
             raise
@@ -671,12 +802,17 @@ def main():
                sys.executable, str(launcher), '--inside', '--suite', args.suite, '--name', name,
                '--result-socket', name, '--worker-uid', str(identity[0]),
                '--worker-gid', str(identity[1])]
+    for option in ('population', 'case', 'durability', 'filesystem', 'background_blocks',
+                   'windows', 'operations', 'cycles', 'seed', 'target_bytes', 'overwrite_bytes'):
+        value = getattr(args, option)
+        if value is not None:
+            command += ['--' + option.replace('_', '-'), str(value)]
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind('\0' + name)
     listener.listen(1)
     try:
         output, _ = capture(command, timeout=1250, result_listener=listener,
-                            result_uid=0 if args.suite in ('baseline', 'safety') else identity[0])
+                            result_uid=0 if args.suite in ('baseline', 'safety', 'sustained') else identity[0])
         print(output, end='')
     finally:
         listener.close()
