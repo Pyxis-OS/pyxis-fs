@@ -103,7 +103,13 @@ pfs_writer_checkpoint(struct pfs_pool *pool, struct pfs_write_result *result)
     result->operation_status = PFS_RECOVERY_REQUIRED;
     return PFS_RECOVERY_REQUIRED;
   }
-  return PFS_OK;
+  enum pfs_status status = pfs_writer_fence(pool, result);
+  if (status != PFS_OK) {
+    result->completion = result->maintenance_completion == PFS_MAINTENANCE_UNKNOWN ?
+      PFS_UNKNOWN : PFS_STOPPED;
+    result->operation_status = status;
+  }
+  return status;
 }
 
 void

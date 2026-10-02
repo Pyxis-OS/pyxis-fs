@@ -201,20 +201,22 @@ through the real COW editor/admitted publisher. Expected contents are supplied b
 the workload. A separate retained-root traversal compares both durable payloads
 while they differ, after replacement writes and before the user and each
 maintenance slot write. The observer does not prescribe allocator placement.
-The suite then checks later reuse. A no-op checkpoint is tested for authority and
-health only; it supplies no publication evidence.
+The suite then checks later reuse. Retirement checkpoints preserve held authority
+and classify replacement/pre-slot failure separately from slot uncertainty. A
+checkpoint with no volume debt completes without publication; it supplies no
+publication evidence.
 
 The bounded matrix covers each replacement write and slot write in that fixture,
-all six publication flushes with none/all pending writes durable, actual slot
-tears, and cleanup failure after confirmed user progress. Cold recovery uses a
+publication flushes with none/all pending writes durable, actual slot tears, and
+cleanup/fence failure after confirmed user progress. Cold recovery uses a
 clone of the simulator's explicitly durable image. The cache-only slot case
 shows cached structural validation plus a successful later flush disagreeing
 with durable storage, while the failed core remains stopped. It does not assert
 that a fresh core can detect adapter history absent from its inputs.
 
 Focused read-error cases discover every backing-read boundary during the small
-fixture's user publication planning and both maintenance publications. A transient
-read failure must stop all ordinary access, preserve confirmed progress and remain
+fixture's user publication planning and requested maintenance publications. A
+transient read failure must stop all ordinary access, preserve confirmed progress and remain
 sticky until close. Fresh validated recovery uses the explicitly durable clone.
 Existing write/flush cases separately require readable pre-slot failure and
 access-stopping publication uncertainty.
@@ -225,9 +227,9 @@ reversed, mixed and equal-key inputs. Replacing insertion sort removes its
 calculated quadratic worst-case sorting cost; no sorting benchmark or measured
 throughput improvement is claimed.
 
-Unexpected resource failure during a funded drain is an invariant failure,
+Unexpected resource failure during funded cleanup/fencing is an invariant failure,
 not successful safe refusal. Resource cases deny further allocation after admission
-and require the drain to finish. Ordinary refusal before admission leaves the
+and require the funded work to finish. Ordinary refusal before admission leaves the
 writer usable. Task 6 adds allocation-free final orphan release and funded startup
 cleanup, including their resource and interruption cases below.
 
@@ -531,7 +533,13 @@ exits nonzero because the requested history is incomplete. Completed history wit
 successful verification exits zero. Refusal during admitted maintenance remains
 a correctness failure. The runner does not increase limits or shrink/retry requests.
 Phase reports separate user, orphan and maintenance metadata/data writes, flushes,
-publications, write/flush callback time and useful-byte throughput. Read-callback
+publications, write/flush callback time and useful-byte throughput. Writes/flushes
+follow the active publication batch, not the presence of carried debt; standalone
+fences have no active user/orphan batch. Healthy pending retirement is accepted
+without treating it as failure or a verified capacity refusal. Debt summaries
+report the maximum selected volume debt sampled at completed-call boundaries,
+selected volume/pool debt at phase end, and the existing map/extent counts. These
+sampled maxima do not claim to cover private intermediate batches. Read-callback
 time is reported separately: planning reads can precede batch initialization or
 follow a completed orphan batch, so its cleanup flag cannot classify those reads.
 These are simulator costs,

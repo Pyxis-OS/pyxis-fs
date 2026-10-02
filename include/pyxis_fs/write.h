@@ -36,6 +36,8 @@ struct pfs_write_result {
 struct pfs_writer_status {
   enum pfs_writer_health health;
   enum pfs_status failure;
+  /* Last-confirmed selected volume debt; READY may coexist with pending debt.
+   * After uncertainty this does not describe the actual durable image. */
   bool drain_pending;
   bool invariant_failure;
 };
@@ -69,7 +71,9 @@ enum pfs_status pfs_pool_volume_open(struct pfs_pool *pool,
   const struct pfs_volume_id *id, struct pfs_volume *volume);
 
 /* Uses the held file.checkpoint or dir.checkpoint right, not lookup/read rights.
- * No-op after prior funded drains; stopped instances cannot retry to health. */
+ * Settles pool-wide volume retirement with at most two pure publications and
+ * leaves bounded pool-metadata retirement. It does not clean retained orphans
+ * or widen object authority. Stopped instances cannot retry to health. */
 enum pfs_status pfs_view_checkpoint(struct pfs_view *view, struct pfs_write_result *result);
 
 /* Invalid arguments and rejected callback reentry leave result unchanged.
@@ -102,8 +106,9 @@ enum pfs_status pfs_view_create_directory(struct pfs_view *parent,
 /* REMOVE on the held parent authorizes unlink of a file or empty directory.
  * Every victim becomes a persistent orphan in the namespace transaction;
  * retained views keep identity, contents and rights. An unheld victim is cleaned
- * after confirmed publication and its funded drain. Namespace confirmation stays
- * true even if that cleanup fails, reported in the maintenance fields. */
+ * after confirmed publication. Complete deletion may leave funded retirement
+ * debt pending until a later publication or checkpoint. Namespace confirmation
+ * stays true even if that cleanup fails, reported in the maintenance fields. */
 enum pfs_status pfs_view_remove(struct pfs_view *parent,
   const uint8_t *name, size_t length, struct pfs_write_result *result);
 

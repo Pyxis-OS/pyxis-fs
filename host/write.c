@@ -396,6 +396,7 @@ maintenance_name(enum pfs_maintenance_completion completion)
 {
   switch (completion) {
   case PFS_MAINTENANCE_NONE: return "none";
+  case PFS_MAINTENANCE_PENDING: return "pending";
   case PFS_MAINTENANCE_COMPLETE: return "complete";
   case PFS_MAINTENANCE_STOPPED: return "stopped";
   case PFS_MAINTENANCE_UNKNOWN: return "unknown";

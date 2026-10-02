@@ -39,7 +39,7 @@ struct phase_counters {
 
 struct workload_stats {
   struct phase_counters phases[3];
-  uint64_t calls, useful_bytes;
+  uint64_t calls, useful_bytes, maximum_boundary_volume_debt;
   double seconds, maximum_latency, callback_start, read_callback_seconds;
   unsigned callback_phase;
   bool violation;
@@ -106,8 +106,9 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
   if (before) {
     stats.callback_start = now();
     if (event->kind != TEST_FAILURE_READ) {
-      stats.callback_phase = pool.writer->status.drain_pending ? PHASE_DRAIN :
-        pool.writer->batch.orphan_cleanup ? PHASE_ORPHAN : PHASE_USER;
+      const struct pfs_batch *active = pool.writer->active_batch;
+      stats.callback_phase = !active ? PHASE_DRAIN :
+        active->orphan_cleanup ? PHASE_ORPHAN : PHASE_USER;
     }
     stats.violation |= stats.callback_start < 0;
     return;
@@ -129,7 +130,7 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
   for (uint64_t block = event->first; block < event->first + event->count; block++) {
     bool data = false;
     if (stats.callback_phase != PHASE_DRAIN) {
-      const struct pfs_batch *batch = &pool.writer->batch;
+      const struct pfs_batch *batch = pool.writer->active_batch;
       for (size_t i = 0; i < batch->add_count; i++) {
         const struct check_claim *claim = &batch->add[i];
         data |= !claim->type && block >= claim->first && block - claim->first < claim->count;
@@ -151,7 +152,7 @@ report_state(const char *name)
          "extents=%llu metadata=%llu effective=%llu namespace=%llu deletion=%llu "
          "orphan-work=%llu charged-memory=%llu peak-charged-memory=%llu\n"
          "  budgets cow=%llu/%llu migration=%llu/%llu recovery=%llu/%llu "
-         "live=%llu retired=%llu reusable=%llu\n", name,
+         "live=%llu retired=%llu reusable=%llu volume-debt=%llu pool-debt=%llu\n", name,
     (unsigned long long)pool.writer->last_confirmed_generation,
     (unsigned long long)v->record.object_count, (unsigned long long)v->directories,
     state->map_count, state->claim_count, (unsigned long long)v->file_extents,
@@ -163,7 +164,8 @@ report_state(const char *name)
     (unsigned long long)root->migration.occupied, (unsigned long long)root->migration.capacity,
     (unsigned long long)root->recovery.occupied, (unsigned long long)root->recovery.capacity,
     (unsigned long long)v->record.live_blocks, (unsigned long long)v->record.retired_blocks,
-    (unsigned long long)state->reusable_blocks);
+    (unsigned long long)state->reusable_blocks, (unsigned long long)state->retired_volume,
+    (unsigned long long)state->retired_pool);
   fflush(stdout);
 }
 
@@ -183,7 +185,8 @@ report(const char *name)
     (unsigned long long)stats.calls, (unsigned long long)stats.useful_bytes, stats.seconds,
     stats.seconds ? (double)stats.useful_bytes / (1024 * 1024) / stats.seconds : 0,
     stats.calls ? stats.seconds / stats.calls : 0, stats.maximum_latency);
-  printf("  read-callback=%.6fs\n", stats.read_callback_seconds);
+  printf("  read-callback=%.6fs maximum-boundary-volume-debt-blocks=%llu\n",
+    stats.read_callback_seconds, (unsigned long long)stats.maximum_boundary_volume_debt);
   const char *names[] = {"user", "orphan", "drain"};
   uint64_t metadata = 0;
   for (size_t i = 0; i < 3; i++) {
@@ -215,6 +218,10 @@ account_call(double start, uint64_t useful)
 {
   double latency = now() - start;
   TEST_ASSERT_TRUE(start >= 0 && latency >= 0);
+  const struct pfs_admit_state *state = &pool.writer->states[pool.writer->selected];
+  if (state->retired_volume > stats.maximum_boundary_volume_debt) {
+    stats.maximum_boundary_volume_debt = state->retired_volume;
+  }
   stats.calls++;
   stats.seconds += latency;
   stats.useful_bytes += useful;
@@ -230,6 +237,7 @@ require_complete(const char *operation, enum pfs_status status,
   bool failed = status != PFS_OK || result->completion != PFS_COMPLETE ||
     result->operation_status != PFS_OK || result->maintenance_status != PFS_OK ||
     (result->maintenance_completion != PFS_MAINTENANCE_NONE &&
+     result->maintenance_completion != PFS_MAINTENANCE_PENDING &&
      result->maintenance_completion != PFS_MAINTENANCE_COMPLETE) ||
     result->health != PFS_WRITER_READY;
   if (failed) {
@@ -237,10 +245,11 @@ require_complete(const char *operation, enum pfs_status status,
     struct pfs_writer_status writer;
     TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &writer));
     healthy_refusal = result->health == PFS_WRITER_READY && writer.health == PFS_WRITER_READY &&
-      !writer.drain_pending && !writer.invariant_failure && !device.infrastructure_failure &&
+      !writer.invariant_failure && !device.infrastructure_failure &&
       result->completion == PFS_STOPPED && result->operation_status == status &&
       result->maintenance_status == PFS_OK &&
       (result->maintenance_completion == PFS_MAINTENANCE_NONE ||
+       result->maintenance_completion == PFS_MAINTENANCE_PENDING ||
        result->maintenance_completion == PFS_MAINTENANCE_COMPLETE) &&
       (status == PFS_LIMIT || status == PFS_NO_SPACE || status == PFS_QUOTA ||
        status == PFS_NO_MEMORY);
@@ -339,6 +348,7 @@ close_file(struct pfs_view **view)
   if (status != PFS_OK || !result.released || result.health != PFS_WRITER_READY ||
       result.maintenance_status != PFS_OK ||
       (result.maintenance_completion != PFS_MAINTENANCE_NONE &&
+       result.maintenance_completion != PFS_MAINTENANCE_PENDING &&
        result.maintenance_completion != PFS_MAINTENANCE_COMPLETE)) {
     struct pfs_write_result failure = {.completion = PFS_STOPPED,
       .operation_status = status, .health = result.health,
