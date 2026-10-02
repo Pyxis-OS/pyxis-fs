@@ -827,3 +827,8 @@ The [implementation proof](incremental-map.md) separates source retirements from
 emitted inventory and derives the single-reset work and existing scratch bounds.
 General structural editing, native writable runtime and broader deployment
 qualification remain outside this correction.
+
+All 153 quick groups and six extended groups pass normally and with ASan/UBSan
+for this revision. The unchanged [matched RAM comparison](overflow-split-measurements.md)
+completes and independently verifies all 54 backend cases, including final
+maintenance. Measured regressions and remaining qualification limits are retained.
