@@ -24,6 +24,12 @@ static bool reentry_checked, reentry_violation;
 static struct pfs_write_options options = {.extent_limit = 16, .metadata_limit = 16, .random = test_random};
 static uint64_t initial_generation = 1;
 static size_t seed_objects, seed_directories;
+/* Configured near-minimum fixture inputs, not independent formatter defaults. */
+static const struct pfs_build_spec seed_reserves = {
+  .reserve_set = PFS_RESERVE_COW | PFS_RESERVE_MIGRATION | PFS_RESERVE_RECOVERY,
+  .cow_reserve = 1024, .migration_reserve = 1024,
+};
+static uint64_t seed_workspace_capacity;
 static uint64_t middle_payload_generation = UINT64_MAX;
 static struct test_failure_flush_cut commit_cuts[TEST_FAILURE_EVENTS_MAX];
 
@@ -112,11 +118,15 @@ build_seed_with_budgets(uint64_t quota, uint64_t guarantee, uint64_t recovery)
     .object_count = seed_objects, .objects = objects};
   struct pfs_build_spec spec = {.block_count = PFS_POOL_BLOCKS_MIN, .pool = {{1}},
     .volume_count = 1, .volumes = &v,
-    .reserve_set = PFS_RESERVE_COW | PFS_RESERVE_MIGRATION | PFS_RESERVE_RECOVERY,
-    .cow_reserve = 1024, .migration_reserve = 1024, .recovery_reserve = recovery};
+    .reserve_set = seed_reserves.reserve_set,
+    .cow_reserve = seed_reserves.cow_reserve,
+    .migration_reserve = seed_reserves.migration_reserve, .recovery_reserve = recovery};
   struct pfs_build_plan plan = {0};
   struct pfs_build_source source = {.read = source_read, .validate = source_validate};
   TEST_ASSERT_EQUAL(PFS_OK, pfs_build_plan_create(&seed.memory, &spec, &plan));
+  TEST_ASSERT_EQUAL_UINT64(spec.cow_reserve, plan.pool_root.cow.capacity);
+  TEST_ASSERT_EQUAL_UINT64(spec.migration_reserve, plan.pool_root.migration.capacity);
+  seed_workspace_capacity = plan.pool_root.cow.capacity + plan.pool_root.migration.capacity;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_build(&plan, &seed.builder, &source));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_build_plan_destroy(&plan));
   initial_generation = 1;
@@ -663,9 +673,8 @@ near_minimum_profile_quota_pool_and_memory_fund_drain(void)
   uint64_t recovery = minimum_recovery(&limits);
   /* One case fills effective quota; the other fills the logical pool promise.
    * Geometry stays at the format's 64 MiB minimum in both cases. */
+  uint64_t guarantee = 0;
   for (unsigned tight_pool = 0; tight_pool < 2; tight_pool++) {
-    uint64_t guarantee = tight_pool ? PFS_POOL_BLOCKS_MIN - 2 -
-      limits.permanent_pool - 2 * 1024 - recovery : 0;
     build_seed_with_budgets(tight_pool ? guarantee : 4, guarantee, recovery);
     open_device();
     struct pfs_admit_state *state = &pool.writer->states[pool.writer->selected];
@@ -679,8 +688,8 @@ near_minimum_profile_quota_pool_and_memory_fund_drain(void)
       state->volumes[0].namespace_nodes + deletion, state->volumes[0].effective_blocks);
     TEST_ASSERT_LESS_OR_EQUAL_UINT64(state->volumes[0].record.quota,
       state->volumes[0].effective_blocks);
-    TEST_ASSERT_EQUAL_UINT64(1024, state->candidate.root.cow.capacity);
-    TEST_ASSERT_EQUAL_UINT64(1024, state->candidate.root.migration.capacity);
+    TEST_ASSERT_EQUAL_UINT64(seed_reserves.cow_reserve, state->candidate.root.cow.capacity);
+    TEST_ASSERT_EQUAL_UINT64(seed_reserves.migration_reserve, state->candidate.root.migration.capacity);
     TEST_ASSERT_EQUAL_UINT64(recovery, state->candidate.root.recovery.capacity);
     TEST_ASSERT_EQUAL_UINT64(limits.arena_bytes, pool.writer->arena.allocation.size);
     if (tight_pool) {
@@ -689,6 +698,9 @@ near_minimum_profile_quota_pool_and_memory_fund_drain(void)
         state->candidate.root.recovery.capacity);
     } else {
       TEST_ASSERT_EQUAL_UINT64(state->volumes[0].effective_blocks, state->volumes[0].record.quota);
+      guarantee = PFS_POOL_BLOCKS_MIN - 2 - limits.permanent_pool -
+        state->candidate.root.cow.capacity - state->candidate.root.migration.capacity -
+        state->candidate.root.recovery.capacity;
     }
     /* Existing handles and the reserved arena are the entire remaining memory
      * budget. A drain may neither raise that cap nor request another allocation. */
@@ -766,7 +778,11 @@ opening_refuses_unfunded_pool_recovery_and_memory(void)
   struct pfs_plan_limits limits;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 1, 3, 1, &limits));
   uint64_t recovery = minimum_recovery(&limits);
-  uint64_t guarantee = PFS_POOL_BLOCKS_MIN - 2 - limits.permanent_pool - 2 * 1024 - recovery;
+  /* Establish the fixture's actual recorded workspace before varying promises. */
+  build_seed_with_budgets(64, 0, recovery);
+  uint64_t guarantee = PFS_POOL_BLOCKS_MIN - 2 - limits.permanent_pool -
+    seed_workspace_capacity - recovery;
+  TEST_ASSERT_TRUE(test_fixture_close(&seed));
   for (unsigned cause = 0; cause < 4; cause++) {
     uint64_t promised = cause == 0 ? guarantee + 1 : guarantee;
     build_seed_with_budgets(promised, promised, cause == 1 ? recovery - 1 : recovery);
