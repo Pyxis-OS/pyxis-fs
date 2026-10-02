@@ -479,6 +479,63 @@ test_failure_memory_fail_after(struct test_failure *adapter, size_t successes)
     SIZE_MAX : adapter->backing.allocation_calls + successes;
 }
 
+enum pfs_status
+test_failure_flush_cuts(const struct test_failure *adapter, uint64_t flush_base,
+                       struct test_failure_flush_cut *cuts, size_t capacity, size_t *count)
+{
+  if (!adapter || !cuts || !count || adapter->infrastructure_failure) {
+    return PFS_INVALID;
+  }
+  size_t found = 0, publication = 0;
+  bool replacements = false, replacement_flushed = false, slot = false;
+  for (size_t i = 0; i < adapter->event_count; i++) {
+    const struct test_failure_event *event = &adapter->events[i];
+    if (event->status != PFS_OK || event->kind == TEST_FAILURE_CUT) {
+      return PFS_INVALID;
+    }
+    if (event->kind == TEST_FAILURE_WRITE) {
+      bool is_slot = event->first == 0 ||
+        event->first == adapter->builder.reader.geometry.block_count - 1;
+      if (is_slot) {
+        if (event->count != 1 || !replacement_flushed || slot) {
+          return PFS_INVALID;
+        }
+        slot = true;
+      } else {
+        if (replacement_flushed || slot || !event->count ||
+            event->first >= adapter->builder.reader.geometry.block_count - 1 ||
+            event->count > adapter->builder.reader.geometry.block_count - 1 - event->first) {
+          return PFS_INVALID;
+        }
+        replacements = true;
+      }
+    } else if (event->kind == TEST_FAILURE_FLUSH) {
+      if (!replacements && !replacement_flushed && !slot) {
+        continue;
+      }
+      if ((replacement_flushed && !slot) || event->ordinal <= flush_base) {
+        return PFS_INVALID;
+      }
+      if (found == capacity) {
+        return PFS_LIMIT;
+      }
+      cuts[found++] = (struct test_failure_flush_cut){event->ordinal - flush_base,
+        publication, slot};
+      if (slot) {
+        publication++;
+        replacements = replacement_flushed = slot = false;
+      } else {
+        replacement_flushed = true;
+      }
+    }
+  }
+  if (replacements || replacement_flushed || slot) {
+    return PFS_INVALID;
+  }
+  *count = found;
+  return PFS_OK;
+}
+
 void
 test_failure_trace_reset(struct test_failure *adapter)
 {

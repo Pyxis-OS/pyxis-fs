@@ -62,6 +62,16 @@ underlying architecture is appropriate. Execution-profile checks belong to the
 [launcher boundary](ram-validation.md#contracts-and-execution-profiles), separate
 from filesystem correctness.
 
+Publication cuts follow healthy callback roles rather than saved operation
+ordinals. Trace discovery still enforces the deliberate replacement-write/flush/
+slot-write/flush protocol; it does not prescribe a maintenance-publication count.
+Retained payload comparisons cover every observed slot write, using independently
+expected bytes for each retained state. Editor assertions preserve mappings,
+ordering, exact minima, occupancy, reachability and new/retired-node bounds without
+requiring one split or repair shape. Deliberately constructed maximum-depth
+worst-case witnesses remain explicit. Stopped-state behavior is exercised through
+real adapter failures and reported through the public status interface.
+
 ## Current coverage
 
 The suite includes the following test groups. The runner prints each group and the
@@ -75,7 +85,7 @@ executed total; several groups contain boundary tables or repeated edit historie
 | Formatter | Root exceptions, short leaf/internal tails and mixed/minimum/maximum names; occupancy, exact minima, payloads, grants and metadata/allocation accounting across 30 populated fixtures |
 | Private tree edits | Independently maintained expected entries through insert/update/delete histories; exact minima, ordering, byte fit, namespace occupancy, split/merge/redistribution/root collapse; maximum-depth sparse deletion, separator growth during namespace deletion, unpublished buffer reuse and atomic refusal; overlapping newly split extents rejected while touching ranges remain valid |
 | Private map planning | Independent interval/ownership expectations, canonical coalescing, unchanged inputs and refusal outputs; inconsistent deltas distinguished from corrupt bases; fragmented interior allocations accounting for every replacement map/catalog/root block, exact finite bounds and reachable nonempty nodes |
-| Publication and recovery | Real private COW overwrite through user/advance/free publications; each replacement/slot write and all six flush boundaries; durable recovery, sticky health and cache-visible/non-pending-slot counterexample; both retained payloads compared before every maintenance slot write |
+| Publication and recovery | Real private COW overwrite through user and maintenance publications; each replacement/slot write and every publication flush discovered from a healthy trace; durable recovery, sticky health and cache-visible/non-pending-slot counterexample; both retained payloads compared before every maintenance slot write |
 | Writable admission and views | Both-state canonical validation, quota/deletion/profile/reserve/memory boundaries; ordinary live reads and checkpoint authority without read/lookup; callback reentry refusal; funded startup orphan cleanup and refusal before writes when recovery admission fails |
 | Reserved memory | Accepted profile arithmetic, capped arena reservation, allocation failure, release and no further allocation/I/O during private map planning |
 
@@ -383,13 +393,14 @@ grants and final paired deletion at MAX-39; one generation less headroom refuses
 the unlink before publication. These are bounded histories, not all possible
 namespace heights, occupancy patterns or full-profile populations.
 
-The shared failure adapter checks replacement publication at all six flush
-boundaries, including uncertainty after a failed flush has made pending writes
+The shared failure adapter discovers replacement publication flush boundaries
+from a healthy execution trace and checks every observed phase, including uncertainty after a failed flush has made pending writes
 durable. Expected names, source/victim identities and different payloads are
 supplied independently. Planning and maintenance read failures require
 `ACCESS_STOPPED`, with confirmed namespace progress retained. Focused final-close
-and startup cases interrupt cleanup after a confirmed data-removal batch, check
-remaining paired object/orphan records and grants, then require a qualified cold
+and startup cases interrupt each observed cleanup publication phase, check
+remaining paired object/orphan records, original payload prefixes and bounded grants,
+then require a qualified cold
 reopen of the explicitly durable image to finish. The consumed close reference
 and failed-open resource release are checked separately from cleanup completion.
 Existing overwrite/reuse tests still compare both retained payloads during each
