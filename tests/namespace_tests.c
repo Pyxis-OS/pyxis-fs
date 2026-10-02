@@ -1896,9 +1896,7 @@ small_orphan_failures_preserve_atomic_progress_and_resume_without_retry(void)
         TEST_ASSERT_NULL(pool.reader);
         TEST_ASSERT_EQUAL_UINT64(0, adapter->memory->used);
         TEST_ASSERT_EQUAL_UINT64(generation, opening.confirmed_generation);
-        enum pfs_completion completion = cut->publication == 0 ?
-          cut->publishes ? PFS_UNKNOWN : PFS_STOPPED : startup_cut_completion(cut);
-        TEST_ASSERT_EQUAL(completion, opening.recovery.completion);
+        TEST_ASSERT_EQUAL(startup_cut_completion(cut), opening.recovery.completion);
         TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.operation_status);
         TEST_ASSERT_EQUAL(PFS_IO, opening.recovery.maintenance_status);
         TEST_ASSERT_EQUAL(maintenance, opening.recovery.maintenance_completion);
@@ -1945,6 +1943,72 @@ small_orphan_failures_preserve_atomic_progress_and_resume_without_retry(void)
         close_fixture();
       }
     }
+  }
+}
+
+static void
+small_cleanup_planning_reads_stop_access_without_fallback(void)
+{
+  static uint64_t cuts[TEST_FAILURE_EVENTS_MAX];
+  open_fixture();
+  create_small_file(PFS_BLOCK_SIZE - 17u);
+  unlink_small_file();
+  uint64_t read_base = device.ordinals[TEST_FAILURE_READ];
+  test_failure_trace_reset(&device);
+  close_view(2);
+  size_t count = 0;
+  /* Every healthy pre-write read is a planning cut, including the eligibility
+   * grant probe. No physical address or saved callback ordinal is required. */
+  for (size_t i = 0; i < device.event_count; i++) {
+    const struct test_failure_event *event = &device.events[i];
+    if (event->kind == TEST_FAILURE_WRITE) {
+      break;
+    }
+    if (event->kind == TEST_FAILURE_READ) {
+      cuts[count++] = event->ordinal - read_base;
+    }
+  }
+  TEST_ASSERT_GREATER_THAN_UINT(0, count);
+  close_fixture();
+
+  for (size_t i = 0; i < count; i++) {
+    open_fixture();
+    create_small_file(PFS_BLOCK_SIZE - 17u);
+    unlink_small_file();
+    struct test_failure_fault fault = {.kind = TEST_FAILURE_READ,
+      .ordinal = device.ordinals[TEST_FAILURE_READ] + cuts[i],
+      .mode = TEST_FAILURE_BEFORE, .enabled = true};
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&device, &fault));
+    uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
+    uint64_t flushes = device.ordinals[TEST_FAILURE_FLUSH];
+    struct pfs_view_close_result closing;
+    TEST_ASSERT_EQUAL(PFS_IO, pfs_view_close(&views[2], &closing));
+    TEST_ASSERT_TRUE(device.triggered);
+    TEST_ASSERT_TRUE(closing.released);
+    TEST_ASSERT_NULL(views[2]);
+    TEST_ASSERT_EQUAL(PFS_MAINTENANCE_STOPPED, closing.maintenance_completion);
+    TEST_ASSERT_EQUAL(PFS_IO, closing.maintenance_status);
+    TEST_ASSERT_EQUAL(PFS_WRITER_ACCESS_STOPPED, closing.health);
+    struct pfs_write_result result;
+    TEST_ASSERT_EQUAL(PFS_RECOVERY_REQUIRED, pfs_view_checkpoint(views[0], &result));
+    close_handles();
+    TEST_ASSERT_EQUAL_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+    TEST_ASSERT_EQUAL_UINT64(flushes, device.ordinals[TEST_FAILURE_FLUSH]);
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_cold_cut(&device));
+    small_atomic = true;
+    expect_small_durable(&device, 0, false);
+    for (unsigned slot = 0; slot < 2; slot++) {
+      struct pfs_object_record object;
+      TEST_ASSERT_EQUAL(PFS_OK, small_durable_object(&device, slot, &object));
+      TEST_ASSERT_EQUAL_UINT64(small_length, object.file_length);
+    }
+    struct pfs_write_open_result opening;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_open_writer(&pool, &device.builder,
+      device.memory, &options, &opening));
+    TEST_ASSERT_EQUAL(PFS_WRITER_READY, opening.writer.health);
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
+    expect_small_durable(&device, 0, true);
+    close_fixture();
   }
 }
 
@@ -2047,6 +2111,7 @@ run_namespace_tests(void)
   RUN_TEST(cleanup_uses_recovery_while_named_and_retained_orphan_mutations_use_ordinary);
   RUN_TEST(small_orphan_close_and_startup_preserve_retained_payload_and_recovery_accounting);
   RUN_TEST(small_orphan_failures_preserve_atomic_progress_and_resume_without_retry);
+  RUN_TEST(small_cleanup_planning_reads_stop_access_without_fallback);
   RUN_TEST(small_cleanup_excludes_grants_and_inline_multi_block_mappings);
   RUN_TEST(small_orphan_near_minimum_profile_and_quota_fund_last_release);
 }
