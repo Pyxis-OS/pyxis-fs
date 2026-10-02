@@ -779,6 +779,12 @@ After the last view/operation ends, cleanup removes at most six tail mappings or
 six grants and at most 128 data blocks per publication. Grant cleanup and final
 paired object/orphan removal use separate batches. The object and marker remain
 paired until final deletion; every intermediate state is valid and resumable.
+An unreferenced regular orphan with exactly one inline one-block mapping and no
+object-specific grants combines the final data retirement with paired deletion,
+without publishing an intermediate empty object. Eligibility is established
+before edits; other shapes retain their existing path. The
+[complete transaction proof](small-orphan-cleanup.md) covers metadata repair,
+accounting, publication/drains and scratch within unchanged limits and reserves.
 Empty sparse files can proceed directly to grant/final cleanup. Each batch reduces
 remaining orphan work, and its usual retained-root drain finishes before the next
 batch. Cleanup volume retirements charge recovery workspace; user mutations,

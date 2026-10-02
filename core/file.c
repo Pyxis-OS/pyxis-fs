@@ -1088,6 +1088,24 @@ cleanup_grant(struct pfs_mutation *mutation, const struct pfs_object_id *id,
   return status;
 }
 
+static enum pfs_status
+cleanup_final(struct pfs_mutation *mutation, const struct pfs_object_record *object)
+{
+  struct pfs_key key = cleanup_id_key(&object->id);
+  enum pfs_status status = pfs_mutation_tree(mutation, PFS_INDEX_OBJECTS, NULL,
+    &mutation->state.volume.record.object_root, PFS_EDIT_DELETE, &key, NULL);
+  if (status == PFS_OK) {
+    status = pfs_mutation_tree(mutation, PFS_INDEX_ORPHANS, NULL,
+      &mutation->state.volume.record.orphan_root, PFS_EDIT_DELETE, &key, NULL);
+  }
+  if (status == PFS_OK) {
+    mutation->state.volume.record.object_count--;
+    mutation->state.volume.directories -= object->kind == PFS_OBJECT_DIRECTORY;
+    mutation->state.volume.orphan_work--;
+  }
+  return status;
+}
+
 static void
 cleanup_directory_forget(struct pfs_writer *writer, const struct pfs_volume_id *volume,
                          const struct pfs_object_id *id)
@@ -1191,6 +1209,16 @@ cleanup_batches(struct pfs_pool *pool, const struct pfs_volume_id *volume,
         mutation->state.extent_count += file_claim(mutation, &mutation->source->claims[i], id);
       }
       struct pfs_extent_mapping mapping;
+      bool combine_final = object.kind == PFS_OBJECT_FILE &&
+        object.storage_kind == PFS_STORAGE_INLINE && object.inline_extent.count == 1 &&
+        mutation->state.extent_count == 1 &&
+        mapping_find(mutation, id, 0, true, &mapping) && mapping.count == 1;
+      if (combine_final) {
+        struct pfs_key key;
+        bool grants = false;
+        status = cleanup_grant(mutation, id, &key, &grants);
+        combine_final = status == PFS_OK && !grants;
+      }
       uint64_t retired = 0;
       size_t edits = 0;
       while (status == PFS_OK && edits < SHRINK_MAPPINGS_MAX && retired < SHRINK_DATA_MAX &&
@@ -1215,12 +1243,18 @@ cleanup_batches(struct pfs_pool *pool, const struct pfs_volume_id *volume,
         edits++;
       }
       if (status == PFS_OK && edits) {
-        status = mapping_reduce(mutation, &object);
-        if (status == PFS_OK && !mapping_find(mutation, id, 0, true, &mapping)) {
-          object.file_length = 0;
-        }
-        if (status == PFS_OK) {
-          status = object_update(mutation, &object);
+        if (combine_final) {
+          /* The proved one-block path deletes both records without an empty-object update. */
+          status = cleanup_final(mutation, &object);
+          final = status == PFS_OK;
+        } else {
+          status = mapping_reduce(mutation, &object);
+          if (status == PFS_OK && !mapping_find(mutation, id, 0, true, &mapping)) {
+            object.file_length = 0;
+          }
+          if (status == PFS_OK) {
+            status = object_update(mutation, &object);
+          }
         }
       } else if (status == PFS_OK) {
         bool grants = false;
@@ -1240,19 +1274,8 @@ cleanup_batches(struct pfs_pool *pool, const struct pfs_volume_id *volume,
         }
         /* Keep final paired deletion separate from six grant edits. */
         if (status == PFS_OK && !edits && !grants) {
-          key = cleanup_id_key(id);
-          status = pfs_mutation_tree(mutation, PFS_INDEX_OBJECTS, NULL,
-            &mutation->state.volume.record.object_root, PFS_EDIT_DELETE, &key, NULL);
-          if (status == PFS_OK) {
-            status = pfs_mutation_tree(mutation, PFS_INDEX_ORPHANS, NULL,
-              &mutation->state.volume.record.orphan_root, PFS_EDIT_DELETE, &key, NULL);
-          }
-          if (status == PFS_OK) {
-            mutation->state.volume.record.object_count--;
-            mutation->state.volume.directories -= object.kind == PFS_OBJECT_DIRECTORY;
-            mutation->state.volume.orphan_work--;
-            final = true;
-          }
+          status = cleanup_final(mutation, &object);
+          final = status == PFS_OK;
         }
       }
     }
