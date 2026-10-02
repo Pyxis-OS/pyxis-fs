@@ -90,20 +90,24 @@ The existing host recovery precondition and kernel-stack prerequisite remain.
 
 Private per-publication diagnostics report J, q, growth passes, largest addition,
 redistribution additions, chosen path and fallback reasons. The comparison
-keeps separate preparation and measurement aggregates, including each phase's
+keeps separate phase aggregates, including each phase's
 trailing maintenance and final checkpoints. Fallback reason counts can overlap.
 It reports each phase's last exhausted run's l/r, emitted map nodes and local cost
 categories. Earlier combined records cannot establish measurement-window hit rates.
 
 To retain all fields within the unchanged bounded output budget, `map_plans`
 serializes one set of field names with `phase_order` set to
-`["preparation", "measurement"]`. Scalar fields contain a pair in that order;
-array fields contain a pair of arrays. Combined totals can be derived by adding
+`["preparation", "measurement"]` for the small baseline. The sustained comparison
+uses setup, preparation, successive windows and final maintenance in the same
+phase-indexed representation. Scalar fields contain one value per phase;
+array fields contain one array per phase. Combined totals can be derived by adding
 count/sum fields and taking maxima for maximum fields; use the last failed run
-from measurement when present, otherwise preparation. The comparison checks each
-phase's observed publications against actual fixed-slot writes and two flushes
+from the last applicable phase. The comparison checks publication phases'
+observed publications against actual fixed-slot writes and two flushes
 per publication, and flush counters against the adapter's monotonic ordinals.
 It does not require a particular number of publications or allocation choices.
+Sustained setup separately counts formatting/open writes and flushes; it is not
+subject to the per-publication count relation.
 
 Optional reference counting reconstructs the bulk preclaim base for the same
 immutable input and logical work, using only dead raw-delta storage. Canonical
@@ -128,8 +132,10 @@ O(J log J) lookup work. This replaces the previous O(J³) repeated-lookup
 contribution. These are calculated costs, not measured timings or a complete
 planning bound. Source-load duplicate detection remains O(J²) once; full source
 validation, canonical editing and admission retain other population-sized costs.
-Larger-map qualification remains separate: the existing matched histories reach
-only J=10 and cannot establish scaling with unrelated population.
+The original matched histories reach only J=10 and cannot establish scaling with
+unrelated population. The separately assigned sustained populated-map comparison
+adds larger histories; it does not establish a local worst-case bound or settle
+larger-profile, pressure and writable-deployment qualification.
 The [matched planning report](map-planning-measurements.md) records unchanged
 submitted bytes, newly separated fallback costs and modest instrumented timing
 increases; it establishes no speedup on these small maps.

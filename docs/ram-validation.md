@@ -250,6 +250,13 @@ peak storage measurements. Quick and extended contract coverage remains separate
 and unchanged; sustained comparison is a diagnostic experiment, not writable
 deployment or real-device durability qualification.
 
+Native cgroup peaks do not establish whole-job RAM peaks: kernel/loop-worker
+charging can fall outside the member cgroup. Scratch remains independently
+bounded by tmpfs, with no swap or disk fallback, and trace memory has separate
+bounds. Account conservatively for native cache/kernel overhead rather than
+treating a low cgroup peak as evidence that all native backing/cache is charged
+there; see the [sustained resource observations](sustained-map-measurements.md#resource-estimate-and-safety-boundary).
+
 ## CI
 
 The quick filesystem PR job requires tmpfs with finite positive byte and inode
