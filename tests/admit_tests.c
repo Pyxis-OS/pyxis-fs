@@ -174,19 +174,84 @@ static void
 opening_accepts_checked_nonadjacent_generations(void)
 {
   build_image(64, 1024);
-  const uint64_t generations[] = {5, 2};
-  uint8_t bytes[PFS_BLOCK_SIZE];
-  for (size_t i = 0; i < 2; i++) {
-    uint64_t slot = i ? PFS_POOL_BLOCKS_MIN - 1 : 0;
-    struct pfs_superblock superblock;
-    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_read(&fixture.builder.reader, slot, 1, bytes, sizeof(bytes)));
-    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes),
-      PFS_POOL_BLOCKS_MIN, slot, &superblock));
-    superblock.header.birth = generations[i];
-    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_encode(bytes, sizeof(bytes), &superblock));
-    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, slot, 1, bytes, sizeof(bytes)));
-  }
+  const uint64_t generations[] = {5, 1};
   struct pfs_check_result check;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_open(&fixture.builder.reader, &fixture.memory,
+    0, 16, &arena, states, &check));
+  struct pfs_reusable_range ranges[32];
+  size_t range_count;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_reusable(&states[0], &states[1],
+    ranges, 32, &range_count));
+  struct pfs_map_change changes[32];
+  size_t change_count = 0;
+  /* A slot and its pool root share a birth. Give the imported newer state its
+   * own root/map, retaining protection for the older state's live pool nodes. */
+  for (size_t i = 0; i < states[0].claim_count; i++) {
+    const struct check_claim *claim = &states[0].claims[i];
+    if (claim->type != PFS_BLOCK_POOL && claim->kind != PFS_INDEX_ALLOCATION) {
+      continue;
+    }
+    TEST_ASSERT_LESS_THAN_UINT(32, change_count);
+    changes[change_count++] = (struct pfs_map_change){
+      .before = {.first = claim->first, .count = claim->count,
+        .state = PFS_ALLOCATION_POOL, .birth = claim->birth},
+      .after = {.first = claim->first, .count = claim->count,
+        .state = PFS_ALLOCATION_RETIRED, .charge = PFS_CHARGE_RECOVERY,
+        .birth = claim->birth, .retirement = generations[0]},
+    };
+  }
+  pfs_plan_sort_changes(changes, change_count);
+  struct pfs_record_context record_context = {
+    .block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = generations[0],
+    .containing_birth = generations[0],
+  };
+  size_t base_count;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_apply(&record_context,
+    states[0].maps, states[0].map_count, changes, change_count,
+    arena.maps[2], arena.limits.records, &base_count));
+  struct pfs_block_context context = {
+    .block_count = PFS_POOL_BLOCKS_MIN, .selected_generation = generations[0],
+    .referring_birth = generations[0], .pool = states[0].candidate.superblock.header.pool,
+  };
+  struct pfs_map_plan plan;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_map_build(&arena, &context, arena.maps[2], base_count,
+    ranges, range_count, 0, &plan));
+  for (size_t i = 0; i < plan.node_count; i++) {
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, plan.nodes[i].block, 1,
+      plan.blocks + i * PFS_BLOCK_SIZE, PFS_BLOCK_SIZE));
+  }
+  struct pfs_pool_root root = states[0].candidate.root;
+  root.header.block = plan.pool_root_block;
+  root.header.birth = generations[0];
+  root.allocation = plan.root;
+  root.live_pool = root.live_volume = root.retired = root.free = 0;
+  root.recovery.occupied = 0;
+  for (size_t i = 0; i < plan.record_count; i++) {
+    const struct pfs_allocation_record *record = &plan.records[i];
+    if (record->state == PFS_ALLOCATION_POOL) {
+      root.live_pool += record->count;
+    } else if (record->state == PFS_ALLOCATION_VOLUME) {
+      root.live_volume += record->count;
+    } else if (record->state == PFS_ALLOCATION_RETIRED) {
+      root.retired += record->count;
+      root.recovery.occupied += record->count;
+    } else {
+      root.free += record->count;
+    }
+  }
+  struct pfs_superblock superblock = states[0].candidate.superblock;
+  superblock.header.birth = generations[0];
+  superblock.root.block = root.header.block;
+  superblock.root.birth = generations[0];
+  context.reference = superblock.root;
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_root_encode(bytes, sizeof(bytes), &context, &root));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, root.header.block, 1,
+    bytes, sizeof(bytes)));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_encode(bytes, sizeof(bytes), &superblock));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_block_write(&fixture.builder, 0, 1, bytes, sizeof(bytes)));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_destroy(&arena));
+  memset(states, 0, summaries.size);
   uint64_t writes = fixture.writes, flushes = fixture.flushes;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_admit_open(&fixture.builder.reader, &fixture.memory,
     0, 16, &arena, states, &check));
