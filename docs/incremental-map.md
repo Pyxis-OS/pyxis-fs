@@ -62,7 +62,8 @@ source topology independently of bulk packing. Candidate admission still checks
 profile, charges, claims, orphan work and next-step funding before any write.
 
 The existing delta region is partitioned into raw deltas 128(4H+3D+V), source
-nodes 128m, worklist 8m, runs 32m, output descriptors 128H, IDs 8H and ranges 16H.
+nodes 128m, block-sorted descriptor index 8m, worklist 8m, runs 32m, output
+descriptors 128H, IDs 8H and ranges 16H.
 Checked offsets and compile-time descriptor sizes fit the original
 1024(H+V+D) reservation. Regeneration reuses raw deltas without touching source
 inputs. Bulk construction can overwrite the dead front of this region; its
@@ -70,6 +71,15 @@ reusable ranges remain outside that overwrite. The existing publication editor
 supplies traversal, canonical re-encoding and record buffers before catalog
 editing. Admission uses the lower scratch half; publication the third quarter;
 mutation staging the final quarter. No extra allocation occurs after admission.
+
+The index is constructed once after complete source validation, using an in-place
+heapsort with constant extra storage. It stores descriptor identities rather than
+copies of marks, preserving source topology and its authoritative replacement set.
+The complete layout is 664H+176m+384D+128V bytes, at most
+840H+384D+128V within the existing 1024(H+V+D) reservation. Checked subregion
+offsets still establish nonoverlapping lifetimes; bulk planning discards the index
+with the other provisional descriptors. Existing source-load duplicate detection
+is unchanged, and an incomplete load exposes no retirement membership.
 
 Both retained states, individually durable completed calls, the two-flush
 protocol, pending debt, confirmed progress and sticky failure provenance are
@@ -80,12 +90,20 @@ The existing host recovery precondition and kernel-stack prerequisite remain.
 
 Private per-publication diagnostics report J, q, growth passes, largest addition,
 redistribution additions, chosen path and fallback reasons. The comparison
-aggregates these over preparation and measurement, including trailing maintenance
-and final checkpoints. Fallback reason counts can overlap. It reports the last
-exhausted run's l/r, emitted map nodes and local cost categories.
-These aggregates do not establish the measurement-window local/bulk split.
-The nearly constant fallback totals may reflect preparation, but the current
-record cannot attribute them to that phase.
+keeps separate preparation and measurement aggregates, including each phase's
+trailing maintenance and final checkpoints. Fallback reason counts can overlap.
+It reports each phase's last exhausted run's l/r, emitted map nodes and local cost
+categories. Earlier combined records cannot establish measurement-window hit rates.
+
+To retain all fields within the unchanged bounded output budget, `map_plans`
+serializes one set of field names with `phase_order` set to
+`["preparation", "measurement"]`. Scalar fields contain a pair in that order;
+array fields contain a pair of arrays. Combined totals can be derived by adding
+count/sum fields and taking maxima for maximum fields; use the last failed run
+from measurement when present, otherwise preparation. The comparison checks each
+phase's observed publications against actual fixed-slot writes and two flushes
+per publication, and flush counters against the adapter's monotonic ordinals.
+It does not require a particular number of publications or allocation choices.
 
 Optional reference counting reconstructs the bulk preclaim base for the same
 immutable input and logical work, using only dead raw-delta storage. Canonical
@@ -103,18 +121,15 @@ clock dependency. Source traversal and full map/claim validation remain
 population-sized; global closure remains possible. General structural editing,
 CPU/locality improvements and deployment qualification require separate tasks.
 
-The current retirement-membership lookup scans all J source descriptors. Each
-accounting pass performs it for J allocation-map claims, contributing O(J²) work
-per pass and O(J³) over at most J growth passes plus the final decision. Sealing
-also reconstructs claims with an O(J²) lookup contribution. These are calculated
-worst-case lookup costs, not measured timings or a complete planning-cost bound;
-source validation, canonical map editing and admission add other work.
-
-A proposed focused follow-up would separate preparation and measurement plan
-diagnostics and replace repeated linear membership searches with a block-sorted
-source-node index. Its storage and construction must fit the existing reserved
-workspace, preserving source topology and the single authoritative set of marks.
-It would change neither placement nor closure, funding or durability policy.
-This follow-up remains separate from the current implementation. Larger-map
-qualification follows it: the matched histories reach only J=10 and cannot
-establish how replacement size or planning time scales with unrelated population.
+Retirement membership now uses O(log J) binary search through the sorted index.
+Index construction costs O(J log J), accounting membership O(J log J) per pass and
+O(J² log J) over at most J growth passes plus the final decision; sealing adds
+O(J log J) lookup work. This replaces the previous O(J³) repeated-lookup
+contribution. These are calculated costs, not measured timings or a complete
+planning bound. Source-load duplicate detection remains O(J²) once; full source
+validation, canonical editing and admission retain other population-sized costs.
+Larger-map qualification remains separate: the existing matched histories reach
+only J=10 and cannot establish scaling with unrelated population.
+The [matched planning report](map-planning-measurements.md) records unchanged
+submitted bytes, newly separated fallback costs and modest instrumented timing
+increases; it establishes no speedup on these small maps.
