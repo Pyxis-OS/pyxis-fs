@@ -462,6 +462,22 @@ underflow_redistributes_across_parent_boundary(void)
 }
 
 static void
+first_leaf_overflow_uses_successor_slack(void)
+{
+  const size_t counts[] = {46, 6, 6, 6, 6, 6, 6, 6, 6};
+  start_case(counts);
+  change_range(leaf_first[0] + 20, 1, 2, false);
+  load_source();
+  close_candidate();
+  check_local_result();
+  TEST_ASSERT_TRUE(pfs_incremental_map_retired(&incremental, source_reference(1).block));
+  TEST_ASSERT_FALSE(pfs_incremental_map_retired(&incremental,
+    source_reference(SOURCE_LEAVES + 2).block));
+  TEST_ASSERT_TRUE(incremental.redistribution_leaves > 0);
+  finish_case();
+}
+
+static void
 canonical_straddling_repairs_both_run_endpoints(void)
 {
   const size_t counts[] = {3, 6, 6, 1, 6, 6, 6, 6, 6};
@@ -555,14 +571,29 @@ adapter_read_error_is_not_an_optimization_miss(void)
   load_source();
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_open(&failed_reader, PFS_POOL_BLOCKS_MIN,
     arena.limits.pool_blocks + PFS_PLAN_VOLUME_NEW + 1, 0, &fixture.builder.reader));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_incremental_map_init(&arena, &incremental));
+  struct pfs_block_context context = block_context(3);
+  context.reference = source_reference(SOURCE_NODES - 1);
+  uint64_t read_base = failed_reader.ordinals[TEST_FAILURE_READ];
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_incremental_map_load(&incremental,
+    &failed_reader.builder.reader, &context, source, source_count, &workspace));
+  uint64_t read_cut = 0;
+  for (size_t i = 0; i < failed_reader.event_count; i++) {
+    const struct test_failure_event *event = &failed_reader.events[i];
+    if (event->kind == TEST_FAILURE_READ && event->status == PFS_OK) {
+      read_cut = event->ordinal - read_base;
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE(read_cut > 0);
+  test_failure_trace_reset(&failed_reader);
   struct test_failure_fault fault = {
-    .kind = TEST_FAILURE_READ, .ordinal = 1,
+    .kind = TEST_FAILURE_READ,
+    .ordinal = failed_reader.ordinals[TEST_FAILURE_READ] + read_cut,
     .mode = TEST_FAILURE_BEFORE, .enabled = true,
   };
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_set_fault(&failed_reader, &fault));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_incremental_map_init(&arena, &incremental));
-  struct pfs_block_context context = block_context(3);
-  context.reference = source_reference(SOURCE_NODES - 1);
   TEST_ASSERT_EQUAL(PFS_IO, pfs_incremental_map_load(&incremental,
     &failed_reader.builder.reader, &context, source, source_count, &workspace));
   TEST_ASSERT_TRUE(failed_reader.triggered);
@@ -579,6 +610,7 @@ run_incremental_tests(void)
   RUN_TEST(local_change_shares_remote_subtree_and_fixed_input_prefix);
   RUN_TEST(overflow_redistributes_across_parent_boundary);
   RUN_TEST(underflow_redistributes_across_parent_boundary);
+  RUN_TEST(first_leaf_overflow_uses_successor_slack);
   RUN_TEST(canonical_straddling_repairs_both_run_endpoints);
   RUN_TEST(global_change_requests_bulk_without_encoding_local_padding);
   RUN_TEST(exhausted_overflow_requests_bulk);
