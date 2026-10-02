@@ -703,8 +703,15 @@ recovery tests. The ordinary Linux host adapter has no qualified post-error or
 unknown-history interrupted-session recovery route, no registry and no force
 clear. See [healthy host operation](host-tools.md#healthy-writer-sessions).
 
-The writer attempts [topology-preserving incremental map publication](incremental-map.md)
-with monotone self-accounting, seam closure and neighbouring-leaf redistribution.
+The writer attempts [incremental map publication](incremental-map.md)
+with self-accounting, seam closure and neighbouring-leaf redistribution.
+Replacement marks grow within each planning phase.
+Before expansion it can try one additional leaf under an existing parent with
+room, renewing accounting for n=p+1 emissions and checking final live J+1<=m.
+A miss restores the seed once, regenerates mutable candidate accounting and
+disables further trials before current repair/bulk. Source retirements remain p;
+the virtual leaf is not source metadata. No internal split, root growth or merge
+is introduced, and all reserve/admission/memory bounds remain unchanged.
 The accepted repair policy scores both immediate clean-neighbour expansions,
 including any bridged marked run, preferring fit/smaller deficit with left ties.
 It still renews accounting and seams before sealing and uses no new reservation.

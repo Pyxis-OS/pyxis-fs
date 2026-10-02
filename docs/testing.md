@@ -797,3 +797,33 @@ independent application ledger and read-only content/namespace verification.
 The [matched planning report](map-planning-measurements.md) records unchanged
 submitted bytes, phase-specific fallback costs, instrumented timing and storage
 evidence. Larger-map and writable-deployment qualification remain open.
+
+## Bounded one-leaf overflow trials
+
+The focused planner cases extend the independent per-block canonical oracle and
+encoded-tree reachability walk to an extra leaf under an existing parent. They
+cover cross-parent runs and internal-root minima, necessary/sufficient capacity,
+coalescing that makes the surplus unnecessary, another failing run, insufficient
+surplus, full parents, a leaf root and the computed live-map cap. Configured source
+identities establish inputs and expected unchanged sharing; ordinary allocation
+placement is not asserted. Seed restoration is compared with freshly planned
+split-disabled repair, including immutable source and fixed eligible-prefix rules.
+
+Public-history cases reach an admitted split and a real late metadata-profile
+refusal. The latter checks compatible overwrite/checkpoint after healthy refusal,
+then discovers a discarded trial's catalog read from its healthy trace and injects
+a backing failure there. A read failure must stop access without fallback or
+progress. Selected-path cuts cover planning reads, allocation-map replacement
+writes and both flush boundaries, preserving failure provenance and sticky health.
+An independent generation/payload ledger decodes both retained states after
+replacement writes and before each slot attempt, including checkpoint/startup
+maintenance and explicitly durable simulator restarts. It accepts either inline
+or indexed mappings. The tests do not infer contents from agreement between the
+writer and checker, or require incidental publication/generation counts.
+
+Existing cross-volume carryover, near-minimum funded mutation/orphan/fence tests,
+authority, handle lifetimes, corruption and interrupted-recovery coverage remain.
+The [implementation proof](incremental-map.md) separates source retirements from
+emitted inventory and derives the single-reset work and existing scratch bounds.
+General structural editing, native writable runtime and broader deployment
+qualification remain outside this correction.
