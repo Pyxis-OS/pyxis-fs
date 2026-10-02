@@ -769,3 +769,13 @@ allocation denied, checkpoint/final-release and interrupted startup semantics.
 The [implementation](incremental-map.md) and
 [matched RAM observations](incremental-map-measurements.md) distinguish proven
 bounds, measurements and remaining deployment qualification.
+
+The focused planning follow-up adds shuffled physical source IDs, retirement
+membership against independently expected changed ancestry, absent IDs and shared
+topology preservation. The source-read failure case now interrupts after partial
+traversal and establishes that incomplete loading exposes no retirement result;
+only the standalone planner is reused, without making a stopped writer healthy.
+These cases bring the quick suite to 135 groups. The unchanged comparison checks
+each phase's diagnostic attribution against actual slot writes, the deliberate
+two-flush protocol and the adapter's monotonic flush counts. It retains the
+independent application ledger and read-only content/namespace verification.
