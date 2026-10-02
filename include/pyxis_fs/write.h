@@ -79,6 +79,9 @@ enum pfs_status pfs_view_checkpoint(struct pfs_view *view, struct pfs_write_resu
 /* Invalid arguments and rejected callback reentry leave result unchanged.
  * Accepted calls report confirmed user
  * progress independently of maintenance and health, even on non-OK return.
+ * Healthy refusal after partial progress may report maintenance PENDING or NONE
+ * depending on its stage; neither changes confirmed progress. NONE does not
+ * certify debt absence; writer status drain_pending reports debt separately.
  * Buffers, results and handles are disjoint; bytes are borrowed through return.
  * A write that extends requires both write and resize before any progress. */
 enum pfs_status pfs_view_write(struct pfs_view *view, uint64_t offset,

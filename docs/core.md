@@ -587,8 +587,13 @@ editors. Those editors establish semantic changes and complete changed-path
 claims; the publisher independently reconciles physical maps/claims, counts,
 limits, charges and retained protection. It does not rescan unchanged file trees
 for each transaction. `prepare` holds the serial operation gate until `commit` or
-`abort`; candidate refusal performs no device writes and leaves a healthy writer
-usable. There is no public test transaction interface. File mutation uses this
+`abort`; ordinary quota/profile/capacity admission refusal performs no device writes
+and leaves a healthy writer usable. Failure to obtain publication workspace already
+guaranteed by writable-state admission is an admission/editor invariant failure,
+even during preparation or planning before any device write. It stops mutation
+with `READABLE_STOPPED`, escalating to `ACCESS_STOPPED` if integrity or publication
+certainty is lost; that instance cannot retry itself healthy. There is no public
+test transaction interface. File mutation uses this
 same private path; it does not introduce an alternate publisher.
 
 Volume preparation prefers the first physically contiguous eligible run covering
@@ -648,7 +653,7 @@ references.
 | Replacement write or pre-slot flush error | `STOPPED`, `READABLE_STOPPED`; confirmed-state reads remain authorized |
 | Slot-write attempt or final flush error | `UNKNOWN`, `ACCESS_STOPPED`; no ordinary access |
 | Cleanup error after confirmed user publication | User remains `COMPLETE`; cleanup reports stopped/unknown independently with the corresponding health |
-| Unexpected resource failure during admitted cleanup/fence | Admission/editor invariant failure; mutation remains stopped and cannot retry itself healthy |
+| Failure to obtain already-guaranteed publication workspace, or unexpected resource failure during funded cleanup/fence | Admission/editor invariant failure; `READABLE_STOPPED`, escalating if integrity or publication certainty is lost; that instance cannot retry itself healthy |
 | Integrity failure or any backing read failure during an ordinary operation, publication planning or maintenance | `ACCESS_STOPPED`, pool-wide, even for a transient read error |
 
 The initial writer deliberately uses this conservative read-error policy. Even a
@@ -656,7 +661,9 @@ transient backing read failure requires a fresh validated reopen under the
 adapter recovery preconditions; clearing the error does not restore this instance.
 A read error during maintenance preserves all already confirmed user progress.
 
-`PFS_NO_SPACE`, `PFS_QUOTA` and `PFS_LIMIT` distinguish capacity/profile refusal.
+`PFS_NO_SPACE`, `PFS_QUOTA` and `PFS_LIMIT` identify capacity/profile errors, but
+the status alone does not establish a healthy admission refusal: failure to obtain
+already-guaranteed workspace stops mutation and sets writer `invariant_failure`.
 `PFS_RECOVERY_REQUIRED` refuses operations prohibited by stopped health. Unknown
 outcomes may include additional committed bytes and are not automatically
 retryable. The result's confirmed bytes/length/namespace fields are independent of
@@ -674,8 +681,15 @@ indefinitely; there is no timer or background worker. After uncertainty it does 
 actual durable image. Ordinary successful mutation stays `COMPLETE` with its
 confirmed progress even when maintenance is `PENDING`.
 
+After earlier batches confirm partial progress, a later ordinary admission refusal
+may leave health `READY` and report maintenance `PENDING` or `NONE`, depending on
+the refusal stage. Planning can retain the earlier `PENDING`; commit-time admission
+can replace it with `NONE`. Neither changes confirmed progress or establishes that
+debt was settled. `NONE` reports no maintenance outcome; `drain_pending` separately
+reports last-confirmed selected volume debt.
+
 A later user-batch failure retains the confirmed call prefix and reports its own
-operation error/uncertainty and sticky health, without inventing maintenance
+operation error/uncertainty and resulting health, without inventing maintenance
 failure. If required orphan cleanup instead fails after namespace confirmation,
 that confirmation remains true and maintenance reports `STOPPED` or `UNKNOWN`.
 The latest actual maintenance failure takes precedence over earlier healthy
