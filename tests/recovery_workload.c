@@ -61,7 +61,7 @@ static uint64_t source_files, source_directories, source_bytes, source_blocks;
 static uint64_t workload_seed;
 static const char *source_directory;
 static const char *active_phase;
-static bool workload_failed, healthy_refusal;
+static bool history_stopped, healthy_refusal, history_complete;
 static bool sequential_created, small_created;
 static uint64_t random_counter;
 static uint64_t retained_length, replacement_length, churn_named_length, churn_named_base;
@@ -233,20 +233,25 @@ require_complete(const char *operation, enum pfs_status status,
      result->maintenance_completion != PFS_MAINTENANCE_COMPLETE) ||
     result->health != PFS_WRITER_READY;
   if (failed) {
-    printf("UNEXPECTED workload refusal/failure: %s status=%s completion=%u "
-           "operation=%s confirmed=%llu maintenance=%u/%s health=%u\n", operation,
-      pfs_status_string(status), result->completion, pfs_status_string(result->operation_status),
-      (unsigned long long)result->confirmed_bytes, result->maintenance_completion,
-      pfs_status_string(result->maintenance_status), result->health);
-    report_state("failed-call");
-  }
-  if (failed) {
-    workload_failed = true;
-    healthy_refusal = result->health == PFS_WRITER_READY &&
-      result->completion != PFS_UNKNOWN && !device.infrastructure_failure &&
+    history_stopped = true;
+    struct pfs_writer_status writer;
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &writer));
+    healthy_refusal = result->health == PFS_WRITER_READY && writer.health == PFS_WRITER_READY &&
+      !writer.drain_pending && !writer.invariant_failure && !device.infrastructure_failure &&
+      result->completion == PFS_STOPPED && result->operation_status == status &&
+      result->maintenance_status == PFS_OK &&
+      (result->maintenance_completion == PFS_MAINTENANCE_NONE ||
+       result->maintenance_completion == PFS_MAINTENANCE_COMPLETE) &&
       (status == PFS_LIMIT || status == PFS_NO_SPACE || status == PFS_QUOTA ||
        status == PFS_NO_MEMORY);
-    printf("  failure phase=%s call=%llu E=%llu M=%llu healthy-resource-refusal=%s\n",
+    printf("workload %s: %s status=%s completion=%u "
+           "operation=%s confirmed=%llu maintenance=%u/%s health=%u\n",
+      healthy_refusal ? "capacity refusal; verification pending" : "unexpected failure",
+      operation, pfs_status_string(status), result->completion,
+      pfs_status_string(result->operation_status), (unsigned long long)result->confirmed_bytes,
+      result->maintenance_completion, pfs_status_string(result->maintenance_status), result->health);
+    report_state("stopped-call");
+    printf("  stopped phase=%s call=%llu E=%llu M=%llu healthy-resource-refusal=%s\n",
       active_phase, (unsigned long long)stats.calls,
       (unsigned long long)options.extent_limit, (unsigned long long)options.metadata_limit,
       healthy_refusal ? "true" : "false");
@@ -281,7 +286,7 @@ write_expected(struct pfs_view *view, FILE *host, uint64_t host_base,
     churn_named_length = view == retained ? retained_length : replacement_length;
   }
   if (!require_complete("write", status, &result)) {
-    printf("  failed write offset=%llu requested=%zu confirmed-prefix=%llu\n",
+    printf("  stopped write offset=%llu requested=%zu confirmed-prefix=%llu\n",
       (unsigned long long)offset, length, (unsigned long long)result.confirmed_bytes);
     fflush(stdout);
     return false;
@@ -644,7 +649,7 @@ setup(void)
   source_objects = source_files = source_directories = source_bytes = source_blocks = 0;
   stats = (struct workload_stats){0};
   manifest = source_paths = (struct pfs_allocation){0};
-  workload_failed = healthy_refusal = sequential_created = small_created = false;
+  history_stopped = healthy_refusal = sequential_created = small_created = false;
   random_counter = 0;
   retained_length = replacement_length = churn_named_length = churn_named_base = 0;
   churn_named = false;
@@ -885,10 +890,10 @@ populated_recovery_history(void)
   }
   report(active_phase);
 verify:
-  if (workload_failed) {
-    report("failed-phase-prefix");
+  if (history_stopped) {
+    report("stopped-phase-prefix");
     if (!healthy_refusal) {
-      TEST_FAIL_MESSAGE("unexpected non-ready workload failure; no safe expected-state reopen claimed");
+      TEST_FAIL_MESSAGE("unexpected workload failure; no safe expected-state reopen claimed");
     }
     /* If a churn call refuses before publication, verify held orphan contents
      * before last-reference cleanup can legitimately erase them. */
@@ -904,7 +909,7 @@ verify:
   open_writer();
   compare_outputs();
   const struct pfs_admit_volume *v = &pool.writer->states[pool.writer->selected].volumes[0];
-  if (!workload_failed) {
+  if (!history_stopped) {
     TEST_ASSERT_EQUAL_UINT64(source_objects + 2, v->record.object_count);
     TEST_ASSERT_EQUAL_UINT64(source_directories, v->directories);
     TEST_ASSERT_EQUAL_UINT64(0, v->orphan_work);
@@ -927,15 +932,18 @@ verify:
   TEST_ASSERT_TRUE(test_fixture_close(&expected_sequential));
   TEST_ASSERT_TRUE(test_fixture_close(&expected_small));
   TEST_ASSERT_TRUE(test_fixture_close(&expected_churn));
-  TEST_ASSERT_FALSE_MESSAGE(workload_failed,
-    "planned recovery history refused; confirmed prefix verified without reducing workload/profile");
+  history_complete = !history_stopped;
+  printf("recovery-workload outcome: %s; confirmed contents independently verified\n",
+    history_complete ? "requested history complete" : "healthy capacity refusal; requested history incomplete");
 }
 
-void
+bool
 run_recovery_workload(uint64_t seed, const char *source_path)
 {
   Unity.TestFile = __FILE__;
+  history_complete = false;
   workload_seed = seed;
   source_directory = source_path;
   RUN_TEST(populated_recovery_history);
+  return history_complete;
 }

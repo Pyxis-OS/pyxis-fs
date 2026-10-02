@@ -492,11 +492,12 @@ degraded-slot refusal and qualified cold recovery are separate assertions. A
 cache-visible image is never substituted for the explicitly durable recovery
 input. This does not qualify real-host post-error recovery.
 
-### Recovery workload contract
+### Recovery workload configuration and outcomes
 
-The recovery run declares one 4 GiB volume, E=8192, M=4096 and a 128 MiB charged
-memory cap. It uses ordinary/migration formatter floors of 1024 blocks and the
-larger of the computed recovery requirement and its 256-block formatter floor.
+The recovery run uses a chosen measurement configuration of one 4 GiB volume,
+E=8192, M=4096 and a 128 MiB charged memory cap. It uses ordinary/migration
+formatter floors of 1024 blocks and the larger of the computed recovery
+requirement and its 256-block formatter floor.
 For this geometry/profile, H=723, S=32,256, Pmax=725, the reserved arena is
 30,198,688 bytes and recovery requires 2553 blocks. The bounded simulator log
 holds H+V+1 = 852 replacement/slot block records. Initial source formatting writes
@@ -512,8 +513,12 @@ payload campaign above provides the separate older-state content oracle.
 
 If this history exceeds the profile, the runner records the first refusal and
 confirmed prefix, independently verifies that prefix after qualified durable
-reopen when the writer remains healthy, and returns failure. It does not increase
-limits, shrink/retry the request or count safe refusal as workload success.
+reopen when the writer remains healthy, and reports a verified healthy capacity
+refusal separately from a correctness failure. Correctness assertions pass only
+if confirmed contents and both retained states still verify; the command still
+exits nonzero because the requested history is incomplete. Completed history with
+successful verification exits zero. Refusal during admitted maintenance remains
+a correctness failure. The runner does not increase limits or shrink/retry requests.
 Phase reports separate user, orphan and maintenance metadata/data writes, flushes,
 publications, write/flush callback time and useful-byte throughput. Read-callback
 time is reported separately: planning reads can precede batch initialization or
