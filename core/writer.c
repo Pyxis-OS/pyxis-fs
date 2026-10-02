@@ -544,6 +544,9 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
   struct pfs_reusable_range *ranges = (struct pfs_reusable_range *)(ids + demand);
   status = select_free(writer, ids, demand, batch);
   if (status != PFS_OK) {
+    /* Admission guarantees H+V input blocks; excluding at most V batch blocks
+     * cannot exhaust the publisher's H-block reservation. */
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
     return status;
   }
   size_t range_count = 0;
