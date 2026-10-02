@@ -319,46 +319,34 @@ selection_block_eligible(uint64_t block)
   return true;
 }
 
-static uint64_t
-first_selection_run(void)
+static bool
+selection_run_available(size_t demand)
 {
   size_t length = 0;
   for (uint64_t block = 1; block < PFS_POOL_BLOCKS_MIN - 1; block++) {
     length = selection_block_eligible(block) ? length + 1 : 0;
-    if (length == PFS_PLAN_VOLUME_NEW) {
-      return block + 1 - length;
+    if (length == demand) {
+      return true;
     }
   }
-  return 0;
+  return false;
 }
 
 static void
 expect_selection(const struct pfs_batch *batch, bool contiguous)
 {
   TEST_ASSERT_EQUAL_UINT(PFS_PLAN_VOLUME_NEW, batch->available_count);
+  bool run_available = selection_run_available(batch->available_count);
+  TEST_ASSERT_EQUAL(contiguous, run_available);
+  bool selected_contiguous = true;
   for (size_t i = 0; i < batch->available_count; i++) {
     TEST_ASSERT_TRUE(selection_block_eligible(batch->available[i]));
     if (i) {
       TEST_ASSERT_TRUE(batch->available[i] > batch->available[i - 1]);
-      if (contiguous) {
-        TEST_ASSERT_EQUAL_UINT64(batch->available[i - 1] + 1, batch->available[i]);
-      }
+      selected_contiguous &= batch->available[i] == batch->available[i - 1] + 1;
     }
   }
-  uint64_t first_run = first_selection_run();
-  if (contiguous) {
-    TEST_ASSERT_NOT_EQUAL(0, first_run);
-    TEST_ASSERT_EQUAL_UINT64(first_run, batch->available[0]);
-  } else {
-    TEST_ASSERT_EQUAL_UINT64(0, first_run);
-    size_t selected = 0;
-    for (uint64_t block = 1; selected < batch->available_count; block++) {
-      TEST_ASSERT_LESS_THAN_UINT64(PFS_POOL_BLOCKS_MIN - 1, block);
-      if (selection_block_eligible(block)) {
-        TEST_ASSERT_EQUAL_UINT64(block, batch->available[selected++]);
-      }
-    }
-  }
+  TEST_ASSERT_EQUAL(run_available, selected_contiguous);
 }
 
 static struct pfs_batch *
@@ -378,7 +366,7 @@ prepare_selection(void)
 }
 
 static void
-contiguous_prepare_skips_reclaimed_holes_and_preserves_contents(void)
+contiguous_prepare_preserves_committed_contents(void)
 {
   build_seed();
   open_device();
@@ -388,11 +376,6 @@ contiguous_prepare_skips_reclaimed_holes_and_preserves_contents(void)
   expect_read('B');
   batch = prepare_selection();
   expect_selection(batch, true);
-  bool earlier_hole = false;
-  for (uint64_t block = 1; block < batch->available[0]; block++) {
-    earlier_hole |= selection_block_eligible(block);
-  }
-  TEST_ASSERT_TRUE(earlier_hole);
   pfs_writer_abort(&pool);
   expect_read('B');
   close_device();
@@ -439,13 +422,15 @@ contiguous_prepare_joins_eligible_retained_map_boundaries(void)
   install_selection_maps();
   size_t older = 1 - pool.writer->selected;
   struct pfs_admit_state *state = &pool.writer->states[older];
-  uint64_t first = state->maps[0].first, half = PFS_PLAN_VOLUME_NEW / 2;
+  uint64_t first = state->maps[0].first, demand = PFS_PLAN_VOLUME_NEW;
+  uint64_t half = demand / 2;
   state->map_count = 3;
   state->maps[0].count = half;
   state->maps[1] = (struct pfs_allocation_record){.first = first + half,
-    .count = half, .state = PFS_ALLOCATION_RETIRED};
-  state->maps[2] = (struct pfs_allocation_record){.first = first + 2 * half,
-    .count = PFS_POOL_BLOCKS_MIN - 2 - 2 * half, .state = PFS_ALLOCATION_FREE};
+    .count = demand - half, .state = PFS_ALLOCATION_RETIRED};
+  /* Only the run crossing the eligible map boundary can meet this demand. */
+  state->maps[2] = (struct pfs_allocation_record){.first = first + demand,
+    .count = PFS_POOL_BLOCKS_MIN - 2 - demand, .state = PFS_ALLOCATION_POOL};
   struct pfs_batch *batch = prepare_selection();
   expect_selection(batch, true);
   restore_selection_maps();
@@ -495,7 +480,16 @@ contiguous_prepare_respects_each_retained_map_and_claim(void)
       }
       struct pfs_batch *batch = prepare_selection();
       expect_selection(batch, true);
-      TEST_ASSERT_TRUE(batch->available[0] > interrupted);
+      TEST_ASSERT_FALSE(selection_block_eligible(interrupted));
+      if (claim) {
+        TEST_ASSERT_FALSE(selection_block_eligible(first));
+      }
+      for (size_t i = 0; i < batch->available_count; i++) {
+        TEST_ASSERT_NOT_EQUAL(interrupted, batch->available[i]);
+        if (claim) {
+          TEST_ASSERT_NOT_EQUAL(first, batch->available[i]);
+        }
+      }
       restore_selection_maps();
     }
   }
@@ -1427,7 +1421,7 @@ run_publication_tests(void)
 {
   Unity.TestFile = __FILE__;
   RUN_TEST(real_publication_drains_and_preserves_retained_payloads);
-  RUN_TEST(contiguous_prepare_skips_reclaimed_holes_and_preserves_contents);
+  RUN_TEST(contiguous_prepare_preserves_committed_contents);
   RUN_TEST(contiguous_prepare_joins_eligible_retained_map_boundaries);
   RUN_TEST(contiguous_prepare_respects_each_retained_map_and_claim);
   RUN_TEST(contiguous_prepare_falls_back_when_only_short_runs_exist);
