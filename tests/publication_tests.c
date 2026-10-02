@@ -802,7 +802,8 @@ rolling_volume_record(struct test_failure *adapter, struct pfs_tree_context cont
 }
 
 static bool
-rolling_payloads_match(struct test_failure *adapter, unsigned slot, uint64_t leaves[ROLLING_VOLUMES])
+rolling_payloads_match(struct test_failure *adapter, unsigned slot,
+                       uint64_t leaves[ROLLING_VOLUMES], uint64_t *retired)
 {
   uint8_t bytes[PFS_BLOCK_SIZE];
   struct pfs_superblock super;
@@ -824,6 +825,9 @@ rolling_payloads_match(struct test_failure *adapter, unsigned slot, uint64_t lea
          rolling_history[history + 1].generation <= super.header.birth) {
     history++;
   }
+  if (retired) {
+    *retired = 0;
+  }
   for (size_t v = 0; v < ROLLING_VOLUMES; v++) {
     struct pfs_tree_context catalog = {.block = context, .kind = PFS_INDEX_VOLUMES};
     catalog.block.reference = root.volumes;
@@ -833,6 +837,9 @@ rolling_payloads_match(struct test_failure *adapter, unsigned slot, uint64_t lea
       return false;
     }
     leaves[v] = leaf;
+    if (retired) {
+      *retired += record.retired_blocks;
+    }
     struct pfs_tree_context objects = {.block = context, .kind = PFS_INDEX_OBJECTS,
       .volume = record.id};
     objects.block.reference = record.object_root;
@@ -878,8 +885,8 @@ observe_rolling_payloads(struct test_failure *adapter, const struct test_failure
       (event->first == 0 || event->first == PFS_POOL_BLOCKS_MIN - 1)) {
     uint64_t leaves[ROLLING_VOLUMES];
     rolling_checks++;
-    rolling_violation |= !rolling_payloads_match(adapter, 0, leaves) ||
-                         !rolling_payloads_match(adapter, 1, leaves);
+    rolling_violation |= !rolling_payloads_match(adapter, 0, leaves, NULL) ||
+                         !rolling_payloads_match(adapter, 1, leaves, NULL);
   }
 }
 
@@ -932,7 +939,7 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
     rolling_history[0].bytes[i] = (uint8_t)('a' + i);
   }
   uint64_t leaves[ROLLING_VOLUMES];
-  TEST_ASSERT_TRUE(rolling_payloads_match(&device, 0, leaves));
+  TEST_ASSERT_TRUE(rolling_payloads_match(&device, 0, leaves, NULL));
   size_t indexes[3] = {SIZE_MAX, SIZE_MAX, SIZE_MAX};
   for (size_t i = 0; i < ROLLING_VOLUMES && indexes[0] == SIZE_MAX; i++) {
     for (size_t j = i + 1; j < ROLLING_VOLUMES; j++) {
@@ -1043,8 +1050,8 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
     TEST_ASSERT_EQUAL(PFS_OK, pfs_check(&recovered.builder.reader, recovered.memory,
       NULL, NULL, &checked));
     TEST_ASSERT_TRUE(checked.cross_complete);
-    TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, 0, leaves));
-    TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, 1, leaves));
+    TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, 0, leaves, NULL));
+    TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, 1, leaves, NULL));
     struct pfs_plan_arena arena = {0};
     static struct pfs_admit_state admitted[3];
     memset(admitted, 0, sizeof(admitted));
@@ -1082,8 +1089,18 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
     recovered.memory, &options, &opening));
   TEST_ASSERT_FALSE(opening.writer.drain_pending);
   TEST_ASSERT_FALSE(rolling_violation);
-  TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, 0, leaves));
-  TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, 1, leaves));
+  for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t retired;
+    TEST_ASSERT_TRUE(rolling_payloads_match(&recovered, slot, leaves, &retired));
+    uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock super;
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(&recovered, block, 1, encoded));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(encoded, sizeof(encoded),
+      PFS_POOL_BLOCKS_MIN, block, &super));
+    if (super.header.birth == opening.confirmed_generation) {
+      TEST_ASSERT_EQUAL_UINT64(0, retired);
+    }
+  }
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
   TEST_ASSERT_TRUE(test_failure_close(&recovered));
   TEST_ASSERT_TRUE(test_failure_close(&device));
