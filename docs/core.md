@@ -705,6 +705,9 @@ clear. See [healthy host operation](host-tools.md#healthy-writer-sessions).
 
 The writer attempts [topology-preserving incremental map publication](incremental-map.md)
 with monotone self-accounting, seam closure and neighbouring-leaf redistribution.
+The accepted repair policy scores both immediate clean-neighbour expansions,
+including any bridged marked run, preferring fit/smaller deficit with left ties.
+It still renews accounting and seams before sealing and uses no new reservation.
 An explicit funded bulk fallback handles global closure and exhausted packing;
 source reads, flat summaries and admission remain population-sized. The two-flush
 publication protocol and carryover/fence guarantees are unchanged. Local hits
