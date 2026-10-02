@@ -748,3 +748,24 @@ See [matched RAM measurements](retirement-carryover-measurements.md) for the
 unchanged comparison through all trailing maintenance. This bounded suite does
 not close task 7, qualify real-host post-error recovery or enable the Caelum
 writer; the kernel-stack integration prerequisite remains deferred.
+
+
+## Topology-preserving allocation-map correction
+
+Nine new quick groups bring the suite to 134. Synthetic source trees define
+independent interval histories and decode the sealed mixed shared/new tree against
+an independently generated per-block oracle. Cases cover remote subtree sharing,
+fixed input prefix excluding same-publication frees, both canonical seam endpoints,
+overflow/underflow redistribution across parents, successor-only expansion and
+exhausted/global funded bulk construction. Emitted inventory must be reachable;
+no unused pool allocation is permitted. Configured fixture identities establish
+inputs, not required allocator placement in ordinary filesystems.
+
+Source-summary mismatch, noncanonical checksum-valid bytes and an adapter read
+failure remain errors. The read cut is discovered from a healthy trace. Existing
+publisher tests preserve retained payload checks during replacement writes,
+cross-volume/cohort histories, ordinary refusals, funded cleanup with further
+allocation denied, checkpoint/final-release and interrupted startup semantics.
+The [implementation](incremental-map.md) and
+[matched RAM observations](incremental-map-measurements.md) distinguish proven
+bounds, measurements and remaining deployment qualification.
