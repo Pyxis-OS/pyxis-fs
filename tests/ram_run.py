@@ -719,7 +719,8 @@ def main():
     parser.add_argument('--durability', choices=('operation', 'batch'), help='baseline durability filter')
     parser.add_argument('--filesystem', choices=('pyxis', 'ext4', 'btrfs'),
                         help='run only the selected comparison filesystem')
-    parser.add_argument('--background-blocks', type=positive_int, help='sustained default: 256 per file')
+    parser.add_argument('--background-blocks', type=positive_int,
+                        help='total sustained background blocks across all files (default: 256)')
     parser.add_argument('--windows', type=positive_int, help='sustained default: 3')
     parser.add_argument('--operations', type=positive_int,
                         help='sustained default: 512 per append/overwrite window')

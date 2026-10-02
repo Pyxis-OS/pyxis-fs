@@ -24,9 +24,6 @@
 #include <unistd.h>
 
 #define IMAGE_BLOCKS (UINT64_C(1024) * 1024 * 1024 / PFS_BLOCK_SIZE)
-#define POPULATION_MAX 256u
-#define FILES_MAX (POPULATION_MAX + 2u)
-#define PATCHES_MAX 80u
 #define REQUEST_MAX (256u * 1024u)
 #define CORE_MEMORY_MAX (128u * 1024u * 1024u)
 #define MOUNT_LINE_BYTES 16384u
@@ -36,18 +33,12 @@
 #define EXT4_JOURNAL_INODE_BYTES 4u
 #define EXT4_JOURNAL_DEVICE_BYTES 4u
 
-struct patch {
-  uint64_t offset;
-  size_t length;
-  unsigned tag;
-};
-
 /* Independent application history, with no core metadata or read-back inputs. */
 struct oracle_file {
   char name[32];
   uint64_t length;
-  size_t patch_count;
-  struct patch patches[PATCHES_MAX];
+  size_t capacity;
+  uint8_t *bytes;
   bool present;
 };
 
@@ -67,16 +58,22 @@ struct callback_stats {
 struct map_stats {
   uint64_t publications, local, bulk, source_sum, source_max, closure_sum, closure_max;
   uint64_t passes, largest_addition, redistribution, emitted, bulk_reference;
+  uint64_t local_emitted, bulk_emitted;
   uint64_t fallback[4], local_cost[3], failed_leaves, failed_records;
   int64_t local_node_difference;
   double planning_seconds, planning_max;
+  double local_planning_seconds, bulk_planning_seconds;
 };
 struct phase_stats {
   uint64_t operations, application_bytes, closes, barriers;
+  uint64_t reads, planning_reads;
   uint64_t maximum_boundary_volume_debt, final_volume_debt, final_pool_debt;
   uint64_t initial_flush_ordinal, slot_writes;
   struct callback_stats user, orphan, drain;
   struct map_stats maps;
+  char name[32];
+  double elapsed_seconds;
+  uint64_t extents, metadata_blocks, map_records, map_nodes, live_blocks, reusable_blocks, generation;
 };
 
 static double planning_started;
@@ -87,14 +84,24 @@ static struct test_failure device;
 static struct pfs_pool pool;
 static struct pfs_volume volume;
 static struct pfs_view *parent;
-static struct oracle_file files[FILES_MAX];
+static struct oracle_file *files;
+static size_t file_count;
 static struct phase_stats preparation, measurement;
+static struct phase_stats *sustained_phases;
+static size_t sustained_phase_count;
 static struct phase_stats *phase = &preparation;
 static uint8_t payload[REQUEST_MAX], actual[REQUEST_MAX];
 static int root_fd = -1;
 static int native_root_fd = -1, native_loop_fd = -1, native_backing_fd = -1;
-static bool native, batch, callback_failed, phase_stops, verifying;
+static bool native, batch, callback_failed, phase_stops, verifying, sustained, incomplete;
 static unsigned population;
+static unsigned background_blocks, window_count, operations_per_window, cycles_per_window;
+static unsigned target_bytes, overwrite_bytes, seed;
+static enum pfs_status refusal_status;
+static unsigned refusal_errno;
+static uint64_t refusal_bytes;
+static bool refusal_namespace;
+static const char *refusal_phase, *refusal_operation;
 static const char *case_name, *root_path;
 static struct callback_stats *callback_phase;
 static const struct pfs_write_options options = {
@@ -169,6 +176,46 @@ require_result(const struct pfs_write_result *result)
     "incomplete operation or maintenance");
 }
 
+static bool
+accept_operation(enum pfs_status status, const struct pfs_write_result *result,
+                 const char *operation)
+{
+  if (status == PFS_OK) {
+    require_result(result);
+    return true;
+  }
+  bool capacity = status == PFS_QUOTA || status == PFS_NO_SPACE || status == PFS_LIMIT;
+  if (sustained && capacity && result->health == PFS_WRITER_READY &&
+      result->maintenance_status == PFS_OK && result->operation_status == status &&
+      result->completion == PFS_STOPPED) {
+    incomplete = true;
+    refusal_status = status;
+    refusal_bytes = result->confirmed_bytes;
+    refusal_namespace = result->namespace_confirmed;
+    refusal_phase = phase->name;
+    refusal_operation = operation;
+    planning_generation = 0;
+    planning_phase = NULL;
+    return false;
+  }
+  require_status(status, operation);
+  return false;
+}
+
+static bool
+native_refusal(int error, const char *operation, uint64_t confirmed)
+{
+  if (sustained && (error == ENOSPC || error == EDQUOT)) {
+    incomplete = true;
+    refusal_errno = (unsigned)error;
+    refusal_bytes = confirmed;
+    refusal_phase = phase->name;
+    refusal_operation = operation;
+    return true;
+  }
+  return false;
+}
+
 static double
 now(void)
 {
@@ -189,6 +236,9 @@ static void
 observe_plan(const struct test_failure_event *event)
 {
   const struct pfs_writer *writer = pool.writer;
+  if (!writer || !writer->collect_map_metrics) {
+    return;
+  }
   const struct pfs_map_metrics *metrics = &writer->map_metrics;
   if (event->kind == TEST_FAILURE_READ && writer->map_planning &&
       planning_generation != metrics->generation) {
@@ -222,6 +272,13 @@ observe_plan(const struct test_failure_event *event)
   }
   stats->redistribution += metrics->redistribution_additions;
   stats->emitted += metrics->replacement_nodes;
+  if (metrics->local) {
+    stats->local_emitted += metrics->replacement_nodes;
+    stats->local_planning_seconds += elapsed;
+  } else {
+    stats->bulk_emitted += metrics->replacement_nodes;
+    stats->bulk_planning_seconds += elapsed;
+  }
   stats->bulk_reference += metrics->bulk_reference_nodes;
   for (size_t i = 0; i < 4; i++) {
     stats->fallback[i] += (metrics->fallback & (1u << i)) != 0;
@@ -251,12 +308,18 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
   (void)context;
   if (before) {
     observe_plan(event);
-    const struct pfs_batch *active = pool.writer->active_batch;
-    callback_phase = !active ? &phase->drain :
+    const struct pfs_batch *active = pool.writer ? pool.writer->active_batch : NULL;
+    callback_phase = !pool.writer ? &phase->user : !active ? &phase->drain :
       active->orphan_cleanup ? &phase->orphan : &phase->user;
     return;
   }
   callback_failed |= event->status != PFS_OK;
+  if (event->kind == TEST_FAILURE_READ) {
+    phase->reads += event->count;
+    if (pool.writer && pool.writer->map_planning) {
+      phase->planning_reads += event->count;
+    }
+  }
   if (event->kind == TEST_FAILURE_FLUSH) {
     callback_phase->flushes++;
   }
@@ -269,7 +332,7 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
   }
   for (uint64_t block = event->first; block < event->first + event->count; block++) {
     bool data = false;
-    if (callback_phase != &phase->drain) {
+    if (pool.writer && callback_phase != &phase->drain) {
       const struct pfs_batch *writer_batch = pool.writer->active_batch;
       for (size_t i = 0; i < writer_batch->add_count; i++) {
         const struct check_claim *claim = &writer_batch->add[i];
@@ -305,6 +368,9 @@ completed_operation(void)
 static void
 close_file(struct comparison_file *handle)
 {
+  if (handle->fd < 0 && !handle->view) {
+    return;
+  }
   if (native) {
     require(close(handle->fd) == 0, "close file");
     handle->fd = -1;
@@ -322,11 +388,12 @@ static struct comparison_file
 create_file(struct oracle_file *oracle, const char *name)
 {
   require(strlen(name) < sizeof(oracle->name), "file name too long");
-  *oracle = (struct oracle_file){.present = true};
-  strcpy(oracle->name, name);
   struct comparison_file handle = {.fd = -1, .oracle = oracle};
   if (native) {
     handle.fd = openat(root_fd, name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (handle.fd < 0 && native_refusal(errno, "create", 0)) {
+      return handle;
+    }
     require(handle.fd >= 0, "create native file");
     if (!batch) {
       require(fsync(handle.fd) == 0 && fsync(root_fd) == 0, "sync creation and parent");
@@ -335,11 +402,17 @@ create_file(struct oracle_file *oracle, const char *name)
     reset_trace();
     struct pfs_write_result result;
     struct pfs_view_identity identity;
-    require_status(pfs_view_create_file(parent, (const uint8_t *)name, strlen(name),
-      &file_rights, &handle.view, &identity, &result), "create core file");
-    require_result(&result);
+    enum pfs_status status = pfs_view_create_file(parent, (const uint8_t *)name, strlen(name),
+      &file_rights, &handle.view, &identity, &result);
+    if (!accept_operation(status, &result, "create")) {
+      require(!result.namespace_confirmed && !handle.view, "refused creation changed namespace");
+      return handle;
+    }
     require(result.namespace_confirmed, "unconfirmed creation");
   }
+  oracle->length = 0;
+  oracle->present = true;
+  strcpy(oracle->name, name);
   completed_operation();
   return handle;
 }
@@ -360,13 +433,18 @@ open_file(struct oracle_file *oracle)
   return handle;
 }
 
-static void
+static bool
 write_file(struct comparison_file *handle, uint64_t offset, size_t length, unsigned tag)
 {
   require(length <= sizeof(payload), "oversized request");
+  struct oracle_file *oracle = handle->oracle;
+  require(offset <= oracle->capacity && length <= oracle->capacity - offset,
+    "write exceeds configured oracle capacity");
   for (size_t i = 0; i < length; i++) {
     payload[i] = (uint8_t)(1u + tag * 31u + i * 7u + (i >> 8));
   }
+  size_t confirmed = length;
+  bool complete = true;
   if (native) {
     size_t done = 0;
     while (done < length) {
@@ -374,34 +452,55 @@ write_file(struct comparison_file *handle, uint64_t offset, size_t length, unsig
       if (count < 0 && errno == EINTR) {
         continue;
       }
+      if (count < 0 && native_refusal(errno, "write", done)) {
+        complete = false;
+        break;
+      }
       require(count > 0, "write native file");
       done += (size_t)count;
     }
+    confirmed = done;
     if (!batch) {
       require(fsync(handle->fd) == 0, "sync written file");
     }
   } else {
     reset_trace();
     struct pfs_write_result result;
-    require_status(pfs_view_write(handle->view, offset, payload, length, &result), "write core file");
-    require_result(&result);
-    require(result.confirmed_bytes == length, "short core write");
+    enum pfs_status status = pfs_view_write(handle->view, offset, payload, length, &result);
+    complete = accept_operation(status, &result, "write");
+    require(result.confirmed_bytes <= length, "invalid confirmed write prefix");
+    confirmed = (size_t)result.confirmed_bytes;
+    require(!complete || confirmed == length, "short complete core write");
   }
-  struct oracle_file *oracle = handle->oracle;
-  require(oracle->patch_count < PATCHES_MAX, "oracle history overflow");
-  oracle->patches[oracle->patch_count++] = (struct patch){offset, length, tag};
-  if (offset + length > oracle->length) {
-    oracle->length = offset + length;
+  if (confirmed) {
+    if (offset > oracle->length) {
+      memset(oracle->bytes + oracle->length, 0, (size_t)(offset - oracle->length));
+    }
+    for (size_t i = 0; i < confirmed; i++) {
+      oracle->bytes[offset + i] = (uint8_t)(1 + (uint64_t)tag * 31 + i * 7 + i / 256);
+    }
+    if (offset + confirmed > oracle->length) {
+      oracle->length = offset + confirmed;
+    }
   }
-  phase->application_bytes += length;
-  completed_operation();
+  phase->application_bytes += confirmed;
+  if (complete) {
+    completed_operation();
+  } else {
+    sample_debt();
+  }
+  return complete;
 }
 
-static void
+static bool
 rename_file(struct oracle_file *source, const char *name, struct oracle_file *victim)
 {
   if (native) {
-    require(renameat(root_fd, source->name, root_fd, name) == 0, "rename native file");
+    int status = renameat(root_fd, source->name, root_fd, name);
+    if (status < 0 && native_refusal(errno, "rename", 0)) {
+      return false;
+    }
+    require(status == 0, "rename native file");
     if (!batch) {
       /* Both affected parents are the same held root in this bounded case. */
       require(fsync(root_fd) == 0, "sync renamed parent");
@@ -409,9 +508,12 @@ rename_file(struct oracle_file *source, const char *name, struct oracle_file *vi
   } else {
     reset_trace();
     struct pfs_write_result result;
-    require_status(pfs_view_rename(parent, (const uint8_t *)source->name, strlen(source->name),
-      parent, (const uint8_t *)name, strlen(name), victim != NULL, &result), "rename core file");
-    require_result(&result);
+    enum pfs_status status = pfs_view_rename(parent, (const uint8_t *)source->name, strlen(source->name),
+      parent, (const uint8_t *)name, strlen(name), victim != NULL, &result);
+    if (!accept_operation(status, &result, "rename")) {
+      require(!result.namespace_confirmed, "refused rename changed namespace");
+      return false;
+    }
     require(result.namespace_confirmed, "unconfirmed rename");
   }
   strcpy(source->name, name);
@@ -419,26 +521,35 @@ rename_file(struct oracle_file *source, const char *name, struct oracle_file *vi
     victim->present = false;
   }
   completed_operation();
+  return true;
 }
 
-static void
+static bool
 remove_file(struct oracle_file *oracle)
 {
   if (native) {
-    require(unlinkat(root_fd, oracle->name, 0) == 0, "remove native file");
+    int status = unlinkat(root_fd, oracle->name, 0);
+    if (status < 0 && native_refusal(errno, "remove", 0)) {
+      return false;
+    }
+    require(status == 0, "remove native file");
     if (!batch) {
       require(fsync(root_fd) == 0, "sync removed parent");
     }
   } else {
     reset_trace();
     struct pfs_write_result result;
-    require_status(pfs_view_remove(parent, (const uint8_t *)oracle->name,
-      strlen(oracle->name), &result), "remove core file");
-    require_result(&result);
+    enum pfs_status status = pfs_view_remove(parent, (const uint8_t *)oracle->name,
+      strlen(oracle->name), &result);
+    if (!accept_operation(status, &result, "remove")) {
+      require(!result.namespace_confirmed, "refused removal changed namespace");
+      return false;
+    }
     require(result.namespace_confirmed, "unconfirmed removal");
   }
   oracle->present = false;
   completed_operation();
+  return true;
 }
 
 static uint64_t
@@ -602,6 +713,9 @@ open_backend(void)
     options.metadata_limit, 1, &limits), "plan limits");
   require_status(test_failure_open(&device, IMAGE_BLOCKS,
     (size_t)limits.pool_blocks + PFS_PLAN_VOLUME_NEW + 1, CORE_MEMORY_MAX, NULL), "open adapter");
+  if (sustained) {
+    device.observer = observe;
+  }
   const struct pfs_build_object object = {
     .id = {{3}}, .parent = UINT32_MAX, .kind = PFS_OBJECT_DIRECTORY,
   };
@@ -633,7 +747,9 @@ open_backend(void)
   require_status(pfs_view_acquire(&volume, &authority, &authority.root,
     PFS_SCOPE_SUBTREE, &rights, &parent), "acquire root");
   pool.writer->collect_map_metrics = true;
-  phase->initial_flush_ordinal = device.ordinals[TEST_FAILURE_FLUSH];
+  if (!sustained) {
+    phase->initial_flush_ordinal = device.ordinals[TEST_FAILURE_FLUSH];
+  }
   device.observer = observe;
 }
 
@@ -645,7 +761,16 @@ final_boundary(void)
   } else {
     /* The formatter's existing grant includes file checkpoint, not directory
      * checkpoint. Exercise that held authority without widening the grant. */
-    struct comparison_file handle = open_file(&files[0]);
+    size_t anchor = 0;
+    while (anchor < file_count && !files[anchor].present) {
+      anchor++;
+    }
+    if (anchor == file_count) {
+      require(incomplete && !pool.writer->status.drain_pending,
+        "pending cleanup has no confirmed checkpoint grant");
+      return;
+    }
+    struct comparison_file handle = open_file(&files[anchor]);
     reset_trace();
     struct pfs_write_result result;
     require_status(pfs_view_checkpoint(handle.view, &result), "checkpoint");
@@ -675,18 +800,22 @@ prepare(void)
     close_file(&handle);
   }
   for (unsigned i = 0; i < 4; i++) {
-    struct oracle_file *temporary = &files[POPULATION_MAX + 1];
+    struct oracle_file *temporary = &files[(size_t)population + 1];
     struct comparison_file handle = create_file(temporary, "prehistory.tmp");
     write_file(&handle, 0, PFS_BLOCK_SIZE, 3000u + i);
     close_file(&handle);
     char destination[32];
     strcpy(destination, files[i].name);
     rename_file(temporary, destination, &files[i]);
-    files[i] = *temporary;
+    require(temporary->length <= files[i].capacity, "replacement exceeds oracle capacity");
+    memcpy(files[i].bytes, temporary->bytes, (size_t)temporary->length);
+    strcpy(files[i].name, temporary->name);
+    files[i].length = temporary->length;
+    files[i].present = true;
     temporary->present = false;
   }
   if (strcmp(case_name, "compiler")) {
-    struct comparison_file handle = create_file(&files[POPULATION_MAX], "work");
+    struct comparison_file handle = create_file(&files[population], "work");
     if (!strcmp(case_name, "overwrite")) {
       write_file(&handle, 0, REQUEST_MAX, 4000);
     }
@@ -700,7 +829,7 @@ run_case(void)
 {
   if (!strcmp(case_name, "compiler")) {
     for (unsigned i = 0; i < 16; i++) {
-      struct oracle_file *temporary = &files[POPULATION_MAX];
+      struct oracle_file *temporary = &files[population];
       struct comparison_file handle = create_file(temporary, "compiler.tmp");
       write_file(&handle, 0, PFS_BLOCK_SIZE, 5000u + i);
       close_file(&handle);
@@ -709,7 +838,7 @@ run_case(void)
     }
     return;
   }
-  struct comparison_file handle = open_file(&files[POPULATION_MAX]);
+  struct comparison_file handle = open_file(&files[population]);
   unsigned count = !strcmp(case_name, "small") ? 64 : !strcmp(case_name, "large") ? 16 : 32;
   size_t length = !strcmp(case_name, "small") ? PFS_BLOCK_SIZE :
     !strcmp(case_name, "large") ? REQUEST_MAX : 1024;
@@ -726,23 +855,95 @@ run_case(void)
   close_file(&handle);
 }
 
-static uint8_t
-expected_byte(const struct oracle_file *oracle, uint64_t offset)
+static void
+prepare_sustained(void)
 {
-  for (size_t i = oracle->patch_count; i; i--) {
-    const struct patch *patch = &oracle->patches[i - 1];
-    if (offset >= patch->offset && offset - patch->offset < patch->length) {
-      uint64_t index = offset - patch->offset;
-      return (uint8_t)(1 + (uint64_t)patch->tag * 31 + index * 7 + index / 256);
+  uint32_t tag = seed;
+  for (unsigned i = 0; i < population && !incomplete; i++) {
+    char name[32];
+    snprintf(name, sizeof(name), "pop-%u", i);
+    struct comparison_file handle = create_file(&files[i], name);
+    unsigned blocks = background_blocks / population + (i < background_blocks % population);
+    for (unsigned j = 0; j < blocks && !incomplete; j++) {
+      write_file(&handle, (uint64_t)j * PFS_BLOCK_SIZE, PFS_BLOCK_SIZE, tag++);
     }
+    close_file(&handle);
   }
-  return 0;
+  if (!incomplete && strcmp(case_name, "compiler")) {
+    struct comparison_file handle = create_file(&files[population], "work");
+    if (!strcmp(case_name, "overwrite")) {
+      for (uint64_t offset = 0; offset < target_bytes && !incomplete;) {
+        size_t length = target_bytes - offset < REQUEST_MAX ?
+          (size_t)(target_bytes - offset) : REQUEST_MAX;
+        write_file(&handle, offset, length, tag++);
+        offset += length;
+      }
+    }
+    close_file(&handle);
+  }
+  final_boundary();
+}
+
+static void
+run_sustained_window(unsigned window, uint32_t *random)
+{
+  if (incomplete) {
+    return;
+  }
+  if (!strcmp(case_name, "compiler")) {
+    for (unsigned i = 0; i < cycles_per_window && !incomplete; i++) {
+      struct oracle_file *temporary = &files[population];
+      struct comparison_file handle = create_file(temporary, "compiler.tmp");
+      if (!incomplete) {
+        write_file(&handle, 0, PFS_BLOCK_SIZE,
+          seed + (uint32_t)((uint64_t)window * cycles_per_window + i));
+      }
+      close_file(&handle);
+      if (!incomplete && rename_file(temporary, "compiler.o", NULL)) {
+        remove_file(temporary);
+      }
+    }
+    return;
+  }
+  struct comparison_file handle = open_file(&files[population]);
+  for (unsigned i = 0; i < operations_per_window && !incomplete; i++) {
+    uint64_t operation = (uint64_t)window * operations_per_window + i;
+    uint64_t offset = operation * PFS_BLOCK_SIZE;
+    size_t length = PFS_BLOCK_SIZE;
+    if (!strcmp(case_name, "overwrite")) {
+      *random = *random * 1664525u + 1013904223u;
+      length = overwrite_bytes;
+      offset = (operation % 2) ?
+        (uint64_t)(*random % (target_bytes / PFS_BLOCK_SIZE - 1)) * PFS_BLOCK_SIZE +
+          PFS_BLOCK_SIZE - overwrite_bytes / 2 :
+        (uint64_t)(*random % (target_bytes / PFS_BLOCK_SIZE)) * PFS_BLOCK_SIZE +
+          (*random / (target_bytes / PFS_BLOCK_SIZE)) % (PFS_BLOCK_SIZE - overwrite_bytes + 1);
+    }
+    write_file(&handle, offset, length, seed + (uint32_t)operation);
+  }
+  close_file(&handle);
+}
+
+static void
+snapshot_state(struct phase_stats *stats)
+{
+  sample_debt();
+  if (!native && pool.writer) {
+    const struct pfs_admit_state *state = &pool.writer->states[pool.writer->selected];
+    stats->extents = state->file_extents;
+    stats->metadata_blocks = state->metadata_blocks;
+    stats->map_records = state->map_count;
+    stats->map_nodes = state->map_nodes;
+    stats->live_blocks = state->volumes[0].record.live_blocks;
+    stats->reusable_blocks = state->reusable_blocks;
+    stats->generation = state->candidate.superblock.header.birth;
+  }
 }
 
 static void
 verify(uint64_t *verified_files, uint64_t *verified_bytes)
 {
-  for (size_t i = 0; i < FILES_MAX; i++) {
+  for (size_t i = 0; i < file_count; i++) {
     struct oracle_file *oracle = &files[i];
     if (!oracle->present) {
       continue;
@@ -773,7 +974,7 @@ verify(uint64_t *verified_files, uint64_t *verified_bytes)
         require(got == count, "short verified core read");
       }
       for (size_t j = 0; j < count; j++) {
-        require(actual[j] == expected_byte(oracle, offset + j), "independent content oracle mismatch");
+        require(actual[j] == oracle->bytes[offset + j], "independent content oracle mismatch");
       }
       offset += count;
     }
@@ -851,9 +1052,17 @@ phase_marker(const char *name)
 static void
 print_phase(const char *name, const struct phase_stats *stats)
 {
-  printf("\"%s\":{\"operations\":%" PRIu64 ",\"application_bytes\":%" PRIu64
-    ",\"closes\":%" PRIu64 ",\"barriers\":%" PRIu64, name, stats->operations,
+  if (sustained) {
+    printf("{\"name\":\"%s\",", name);
+  } else {
+    printf("\"%s\":{", name);
+  }
+  printf("\"operations\":%" PRIu64 ",\"application_bytes\":%" PRIu64
+    ",\"closes\":%" PRIu64 ",\"barriers\":%" PRIu64, stats->operations,
     stats->application_bytes, stats->closes, stats->barriers);
+  if (sustained) {
+    printf(",\"elapsed_seconds\":%.9f", stats->elapsed_seconds);
+  }
   if (native) {
     printf(",\"core_callbacks\":null}");
     return;
@@ -868,49 +1077,81 @@ print_phase(const char *name, const struct phase_stats *stats)
       ",\"flushes\":%" PRIu64 "}", names[i], groups[i]->data_blocks,
       groups[i]->metadata_blocks, groups[i]->flushes);
   }
+  if (sustained) {
+    printf(",\"read_blocks\":%" PRIu64 ",\"planning_read_blocks\":%" PRIu64
+      ",\"state\":{\"extents\":%" PRIu64 ",\"metadata_blocks\":%" PRIu64
+      ",\"map_records\":%" PRIu64 ",\"map_nodes\":%" PRIu64
+      ",\"live_blocks\":%" PRIu64 ",\"reusable_blocks\":%" PRIu64
+      ",\"generation\":%" PRIu64 "}", stats->reads, stats->planning_reads,
+      stats->extents, stats->metadata_blocks, stats->map_records, stats->map_nodes,
+      stats->live_blocks, stats->reusable_blocks, stats->generation);
+  }
   printf("}");
+}
+
+static const struct phase_stats *
+map_phase(size_t index)
+{
+  return sustained ? &sustained_phases[index] : index ? &measurement : &preparation;
 }
 
 static void
 print_map_stats(void)
 {
-  const struct map_stats *a = &preparation.maps, *b = &measurement.maps;
-  /* Shared field names keep both complete phase records within the existing
-   * bounded summary, without serializing a duplicate aggregate. */
-  printf(",\"map_plans\":{\"phase_order\":[\"preparation\",\"measurement\"]"
-    ",\"publications\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"local\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"bulk\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"source_sum\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"source_max\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"closure_sum\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"closure_max\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"growth_passes\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"largest_addition\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"redistribution_additions\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"emitted_nodes\":[%" PRIu64 ",%" PRIu64 "]"
-    ",\"bulk_reference_nodes\":[%" PRIu64 ",%" PRIu64 "]",
-    a->publications, b->publications, a->local, b->local, a->bulk, b->bulk,
-    a->source_sum, b->source_sum, a->source_max, b->source_max,
-    a->closure_sum, b->closure_sum, a->closure_max, b->closure_max,
-    a->passes, b->passes, a->largest_addition, b->largest_addition,
-    a->redistribution, b->redistribution, a->emitted, b->emitted,
-    a->bulk_reference, b->bulk_reference);
-  printf(",\"fallback_counts\":[[%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
-    "],[%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]]"
-    ",\"last_failed_run\":[[%" PRIu64 ",%" PRIu64 "],[%" PRIu64 ",%" PRIu64 "]]"
-    ",\"local_cost_counts\":[[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "],[%" PRIu64
-    ",%" PRIu64 ",%" PRIu64 "]]"
-    ",\"local_node_difference\":[%" PRId64 ",%" PRId64 "]"
-    ",\"planning_seconds\":[%.9f,%.9f]"
-    ",\"planning_max_seconds\":[%.9f,%.9f]}",
-    a->fallback[0], a->fallback[1], a->fallback[2], a->fallback[3],
-    b->fallback[0], b->fallback[1], b->fallback[2], b->fallback[3],
-    a->failed_leaves, a->failed_records, b->failed_leaves, b->failed_records,
-    a->local_cost[0], a->local_cost[1], a->local_cost[2],
-    b->local_cost[0], b->local_cost[1], b->local_cost[2],
-    a->local_node_difference, b->local_node_difference,
-    a->planning_seconds, b->planning_seconds, a->planning_max, b->planning_max);
+  size_t count = sustained ? sustained_phase_count : 2;
+  printf(",\"map_plans\":{\"phase_order\":[");
+  for (size_t i = 0; i < count; i++) {
+    printf("%s\"%s\"", i ? "," : "", sustained ? sustained_phases[i].name :
+      i ? "measurement" : "preparation");
+  }
+  printf("]");
+#define MAP_FIELD(label, member, format) do { \
+  printf(",\"" label "\":["); \
+  for (size_t i = 0; i < count; i++) { \
+    printf("%s" format, i ? "," : "", map_phase(i)->maps.member); \
+  } \
+  printf("]"); \
+} while (0)
+  MAP_FIELD("publications", publications, "%" PRIu64);
+  MAP_FIELD("local", local, "%" PRIu64);
+  MAP_FIELD("bulk", bulk, "%" PRIu64);
+  MAP_FIELD("source_sum", source_sum, "%" PRIu64);
+  MAP_FIELD("source_max", source_max, "%" PRIu64);
+  MAP_FIELD("closure_sum", closure_sum, "%" PRIu64);
+  MAP_FIELD("closure_max", closure_max, "%" PRIu64);
+  MAP_FIELD("growth_passes", passes, "%" PRIu64);
+  MAP_FIELD("largest_addition", largest_addition, "%" PRIu64);
+  MAP_FIELD("redistribution_additions", redistribution, "%" PRIu64);
+  MAP_FIELD("emitted_nodes", emitted, "%" PRIu64);
+  MAP_FIELD("bulk_reference_nodes", bulk_reference, "%" PRIu64);
+  MAP_FIELD("local_node_difference", local_node_difference, "%" PRId64);
+  MAP_FIELD("planning_seconds", planning_seconds, "%.9f");
+  MAP_FIELD("planning_max_seconds", planning_max, "%.9f");
+  if (sustained) {
+    MAP_FIELD("local_emitted_nodes", local_emitted, "%" PRIu64);
+    MAP_FIELD("bulk_emitted_nodes", bulk_emitted, "%" PRIu64);
+    MAP_FIELD("local_planning_seconds", local_planning_seconds, "%.9f");
+    MAP_FIELD("bulk_planning_seconds", bulk_planning_seconds, "%.9f");
+  }
+#undef MAP_FIELD
+  printf(",\"fallback_counts\":[");
+  for (size_t i = 0; i < count; i++) {
+    const struct map_stats *stats = &map_phase(i)->maps;
+    printf("%s[%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]", i ? "," : "",
+      stats->fallback[0], stats->fallback[1], stats->fallback[2], stats->fallback[3]);
+  }
+  printf("],\"last_failed_run\":[");
+  for (size_t i = 0; i < count; i++) {
+    const struct map_stats *stats = &map_phase(i)->maps;
+    printf("%s[%" PRIu64 ",%" PRIu64 "]", i ? "," : "", stats->failed_leaves, stats->failed_records);
+  }
+  printf("],\"local_cost_counts\":[");
+  for (size_t i = 0; i < count; i++) {
+    const struct map_stats *stats = &map_phase(i)->maps;
+    printf("%s[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]", i ? "," : "",
+      stats->local_cost[0], stats->local_cost[1], stats->local_cost[2]);
+  }
+  printf("]}");
 }
 
 static void
@@ -922,6 +1163,9 @@ check_map_phase(const struct phase_stats *stats)
   uint64_t flushes = stats->user.flushes + stats->orphan.flushes + stats->drain.flushes;
   require(flushes == device.ordinals[TEST_FAILURE_FLUSH] - stats->initial_flush_ordinal,
     "phase flush accounting mismatch");
+  if (sustained && stats == &sustained_phases[0]) {
+    return;
+  }
   /* Fixed slot locations and two flushes per healthy publication are format
    * and durability contracts; the workload's publication count is not fixed. */
   require(stats->maps.publications == stats->slot_writes && !(flushes % 2) &&
@@ -943,13 +1187,28 @@ parse_descriptor(const char *text)
   return (int)value;
 }
 
+static unsigned
+parse_unsigned(const char *text, bool positive)
+{
+  require(text && *text, "missing numeric option");
+  unsigned value = 0;
+  for (; *text; text++) {
+    require(*text >= '0' && *text <= '9' &&
+      value <= (UINT_MAX - (unsigned)(*text - '0')) / 10, "invalid numeric option");
+    value = value * 10 + (unsigned)(*text - '0');
+  }
+  require(!positive || value, "numeric option must be positive");
+  return value;
+}
+
 static void
 parse_arguments(int argc, char **argv)
 {
   const char *filesystem = NULL, *durability = NULL, *population_text = NULL, *stops = NULL;
   const char *root_descriptor = NULL, *loop_descriptor = NULL, *backing_descriptor = NULL;
-  require(argc >= 11 && argc <= 19 && argc % 2 == 1,
-    "expected filesystem/root/population/case/durability pairs and optional phase/native descriptors");
+  const char *workload = NULL, *background = NULL, *windows = NULL, *operations = NULL;
+  const char *cycles = NULL, *seed_text = NULL, *target = NULL, *overwrite = NULL;
+  require(argc >= 11 && argc % 2 == 1, "expected comparison option/value pairs");
   for (int i = 1; i < argc; i += 2) {
     const char **destination = NULL;
     if (!strcmp(argv[i], "--filesystem")) {
@@ -970,15 +1229,55 @@ parse_arguments(int argc, char **argv)
       destination = &loop_descriptor;
     } else if (!strcmp(argv[i], "--native-backing-fd")) {
       destination = &backing_descriptor;
+    } else if (!strcmp(argv[i], "--workload")) {
+      destination = &workload;
+    } else if (!strcmp(argv[i], "--background-blocks")) {
+      destination = &background;
+    } else if (!strcmp(argv[i], "--windows")) {
+      destination = &windows;
+    } else if (!strcmp(argv[i], "--operations")) {
+      destination = &operations;
+    } else if (!strcmp(argv[i], "--cycles")) {
+      destination = &cycles;
+    } else if (!strcmp(argv[i], "--seed")) {
+      destination = &seed_text;
+    } else if (!strcmp(argv[i], "--target-bytes")) {
+      destination = &target;
+    } else if (!strcmp(argv[i], "--overwrite-bytes")) {
+      destination = &overwrite;
     }
     require(destination && !*destination, "unknown or repeated option");
     *destination = argv[i + 1];
   }
   require(filesystem && root_path && population_text && case_name && durability, "missing option");
   require(!strcmp(filesystem, "pyxis") || !strcmp(filesystem, "native"), "unknown filesystem");
-  require(!strcmp(population_text, "32") || !strcmp(population_text, "256"), "population must be 32 or 256");
-  require(!strcmp(case_name, "small") || !strcmp(case_name, "large") ||
-    !strcmp(case_name, "overwrite") || !strcmp(case_name, "compiler"), "unknown case");
+  sustained = workload && !strcmp(workload, "sustained");
+  require(!workload || sustained, "unknown workload");
+  population = parse_unsigned(population_text, true);
+  if (sustained) {
+    require(background && windows && operations && cycles && seed_text && target && overwrite,
+      "missing sustained settings");
+    background_blocks = parse_unsigned(background, true);
+    window_count = parse_unsigned(windows, true);
+    operations_per_window = parse_unsigned(operations, true);
+    cycles_per_window = parse_unsigned(cycles, true);
+    target_bytes = parse_unsigned(target, true);
+    overwrite_bytes = parse_unsigned(overwrite, true);
+    seed = parse_unsigned(seed_text, false);
+    require(background_blocks >= population, "each background file needs data");
+    require(target_bytes >= 2 * PFS_BLOCK_SIZE && !(target_bytes % PFS_BLOCK_SIZE) &&
+      overwrite_bytes >= 2 && overwrite_bytes <= PFS_BLOCK_SIZE,
+      "overwrite shape needs a block-aligned target and a small cross-block request");
+    require(!strcmp(case_name, "append") || !strcmp(case_name, "overwrite") ||
+      !strcmp(case_name, "compiler"), "unknown sustained case");
+    require(!strcmp(durability, "operation"), "sustained operations must be individually durable");
+  } else {
+    require(!background && !windows && !operations && !cycles && !seed_text && !target && !overwrite,
+      "sustained options require sustained workload");
+    require(population == 32 || population == 256, "baseline population must be 32 or 256");
+    require(!strcmp(case_name, "small") || !strcmp(case_name, "large") ||
+      !strcmp(case_name, "overwrite") || !strcmp(case_name, "compiler"), "unknown case");
+  }
   require(!strcmp(durability, "operation") || !strcmp(durability, "batch"), "unknown durability");
   require(!stops || !strcmp(stops, "yes") || !strcmp(stops, "no"), "phase stops must be yes or no");
   phase_stops = stops && !strcmp(stops, "yes");
@@ -994,8 +1293,159 @@ parse_arguments(int argc, char **argv)
       "native descriptors are not valid for Pyxis mode");
   }
   batch = !strcmp(durability, "batch");
-  population = !strcmp(population_text, "32") ? 32 : 256;
   require(native || !batch, "Pyxis has operation durability only");
+}
+
+static void
+allocate_oracles(void)
+{
+  uint64_t count = (uint64_t)population + 2;
+  require(count <= SIZE_MAX / sizeof(*files), "oracle file count overflow");
+  file_count = (size_t)count;
+  files = calloc(file_count, sizeof(*files));
+  require(files != NULL, "allocate expected namespace");
+  for (size_t i = 0; i < file_count; i++) {
+    uint64_t bytes = PFS_BLOCK_SIZE;
+    if (i < population && sustained) {
+      bytes *= background_blocks / population + (i < background_blocks % population);
+    } else if (i == population && strcmp(case_name, "compiler")) {
+      bytes = sustained ? !strcmp(case_name, "append") ?
+        (uint64_t)window_count * operations_per_window : target_bytes :
+        !strcmp(case_name, "small") ? 64 * PFS_BLOCK_SIZE :
+        !strcmp(case_name, "large") ? 16 * REQUEST_MAX : REQUEST_MAX;
+      if (sustained && !strcmp(case_name, "append")) {
+        require(bytes <= SIZE_MAX / PFS_BLOCK_SIZE, "append oracle size overflow");
+        bytes *= PFS_BLOCK_SIZE;
+      }
+    }
+    require(bytes && bytes <= SIZE_MAX, "oracle size overflow");
+    files[i].capacity = (size_t)bytes;
+    files[i].bytes = calloc(1, files[i].capacity);
+    require(files[i].bytes != NULL, "allocate expected payload");
+  }
+  if (sustained) {
+    count = (uint64_t)window_count + 3;
+    require(count <= SIZE_MAX / sizeof(*sustained_phases), "phase count overflow");
+    sustained_phase_count = (size_t)count;
+    sustained_phases = calloc(sustained_phase_count, sizeof(*sustained_phases));
+    require(sustained_phases != NULL, "allocate phase observations");
+    strcpy(sustained_phases[0].name, "setup");
+    strcpy(sustained_phases[1].name, "preparation");
+    for (unsigned i = 0; i < window_count; i++) {
+      snprintf(sustained_phases[(size_t)i + 2].name, sizeof(sustained_phases[(size_t)i + 2].name),
+        "window_%u", i + 1);
+    }
+    strcpy(sustained_phases[sustained_phase_count - 1].name, "final");
+    phase = sustained_phases;
+  }
+}
+
+static void
+finish_sustained_phase(double started)
+{
+  phase->elapsed_seconds = now() - started;
+  snapshot_state(phase);
+  check_map_phase(phase);
+  char marker[48];
+  snprintf(marker, sizeof(marker), "%s_end", phase->name);
+  phase_marker(marker);
+}
+
+static double
+begin_sustained_phase(size_t index)
+{
+  phase = &sustained_phases[index];
+  phase->initial_flush_ordinal = device.ordinals[TEST_FAILURE_FLUSH];
+  planning_generation = 0;
+  planning_phase = NULL;
+  return now();
+}
+static void
+release_oracles(void)
+{
+  for (size_t i = 0; i < file_count; i++) {
+    free(files[i].bytes);
+  }
+  free(files);
+  free(sustained_phases);
+}
+
+static int
+run_sustained(void)
+{
+  double started = now();
+  open_backend();
+  finish_sustained_phase(started);
+  started = begin_sustained_phase(1);
+  prepare_sustained();
+  finish_sustained_phase(started);
+  uint32_t random = seed;
+  for (unsigned i = 0; i < window_count; i++) {
+    started = begin_sustained_phase((size_t)i + 2);
+    run_sustained_window(i, &random);
+    finish_sustained_phase(started);
+  }
+  started = begin_sustained_phase(sustained_phase_count - 1);
+  final_boundary();
+  snapshot_state(phase);
+  close_core();
+  finish_sustained_phase(started);
+  struct phase_stats verification = {0};
+  phase = &verification;
+  reopen_verification();
+  uint64_t verified_files = 0, verified_bytes = 0;
+  verify(&verified_files, &verified_bytes);
+  close_core();
+  uint64_t core_peak = 0, backing_bytes = 0;
+  if (!native) {
+    require(!callback_failed && !device.infrastructure_failure, "callback observation failure");
+    struct stat attributes;
+    require(fstat(fileno(device.backing.file), &attributes) == 0, "inspect durable backing allocation");
+    backing_bytes = (uint64_t)attributes.st_blocks * 512;
+    core_peak = device.backing.peak_memory_bytes;
+    require(test_failure_close(&device), "close adapter");
+  }
+  require(close(root_fd) == 0, "close root directory");
+  printf("{\"filesystem\":\"%s\",\"workload\":\"sustained\",\"population\":%u,"
+    "\"case\":\"%s\",\"durability\":\"operation\",\"complete\":%s,"
+    "\"seed\":%u,\"geometry_bytes\":%" PRIu64 ",\"block_bytes\":%u,"
+    "\"background_blocks\":%u,\"windows\":%u,\"operations\":%u,\"cycles\":%u,"
+    "\"target_bytes\":%u,\"overwrite_bytes\":%u,\"phases\":[",
+    native ? "native" : "pyxis", population, case_name, incomplete ? "false" : "true", seed,
+    IMAGE_BLOCKS * PFS_BLOCK_SIZE, PFS_BLOCK_SIZE, background_blocks, window_count,
+    operations_per_window, cycles_per_window, target_bytes, overwrite_bytes);
+  for (size_t i = 0; i < sustained_phase_count; i++) {
+    if (i) {
+      printf(",");
+    }
+    print_phase(sustained_phases[i].name, &sustained_phases[i]);
+  }
+  printf("]");
+  if (!native) {
+    printf(",\"extent_limit\":%" PRIu64 ",\"metadata_limit\":%" PRIu64
+      ",\"core_memory_peak_bytes\":%" PRIu64
+      ",\"backing_allocated_bytes_at_case_end\":%" PRIu64,
+      options.extent_limit, options.metadata_limit, core_peak, backing_bytes);
+    print_map_stats();
+  }
+  uint64_t expected_capacity = 0;
+  for (size_t i = 0; i < file_count; i++) {
+    require(files[i].capacity <= UINT64_MAX - expected_capacity, "oracle accounting overflow");
+    expected_capacity += files[i].capacity;
+  }
+  if (incomplete) {
+    printf(",\"refusal\":{\"status_code\":%u,\"status\":\"%s\",\"errno\":%u,"
+      "\"phase\":\"%s\",\"operation\":\"%s\",\"confirmed_bytes\":%" PRIu64
+      ",\"namespace_confirmed\":%s}", (unsigned)refusal_status,
+      refusal_errno ? "native-capacity" : pfs_status_string(refusal_status), refusal_errno,
+      refusal_phase, refusal_operation, refusal_bytes, refusal_namespace ? "true" : "false");
+  }
+  printf(",\"expected_capacity_bytes\":%" PRIu64
+    ",\"verification\":{\"oracle\":\"independent-byte-mirrors\","
+    "\"contents_verified\":true,\"namespace_verified\":true,\"files\":%" PRIu64
+    ",\"bytes\":%" PRIu64 "}}\n", expected_capacity, verified_files, verified_bytes);
+  release_oracles();
+  return EXIT_SUCCESS;
 }
 
 int
@@ -1003,6 +1453,10 @@ main(int argc, char **argv)
 {
   parse_arguments(argc, argv);
   pfs_test_require_ram();
+  allocate_oracles();
+  if (sustained) {
+    return run_sustained();
+  }
   open_backend();
   prepare();
   check_map_phase(&preparation);
@@ -1024,7 +1478,6 @@ main(int argc, char **argv)
   double elapsed = now() - start;
   check_map_phase(&measurement);
   phase_marker("measurement_end");
-  /* Verification does not change the measured close/callback counters. */
   struct phase_stats verification = {0};
   phase = &verification;
   reopen_verification();
@@ -1037,12 +1490,14 @@ main(int argc, char **argv)
   }
   require(close(root_fd) == 0, "close root directory");
   printf("{\"filesystem\":\"%s\",\"population\":%u,\"case\":\"%s\","
-    "\"durability\":\"%s\",\"seed\":1,\"geometry_bytes\":1073741824,"
-    "\"block_bytes\":4096,\"batch_unit\":%s,\"elapsed_seconds\":%.9f,",
+    "\"durability\":\"%s\",\"seed\":1,\"geometry_bytes\":%" PRIu64 ","
+    "\"block_bytes\":%u,\"batch_unit\":%s,\"elapsed_seconds\":%.9f,",
     native ? "native" : "pyxis", population, case_name, batch ? "batch" : "operation",
+    IMAGE_BLOCKS * PFS_BLOCK_SIZE, PFS_BLOCK_SIZE,
     batch ? "\"16 create/write/rename/remove calls\"" : "null", elapsed);
   if (!native) {
-    printf("\"extent_limit\":8192,\"metadata_limit\":4096,");
+    printf("\"extent_limit\":%" PRIu64 ",\"metadata_limit\":%" PRIu64 ",",
+      options.extent_limit, options.metadata_limit);
   }
   print_phase("preparation", &preparation);
   printf(",");
@@ -1050,11 +1505,10 @@ main(int argc, char **argv)
   if (!native) {
     printf(",\"selected_state\":{\"extents\":%" PRIu64 ",\"metadata_blocks\":%" PRIu64
       ",\"map_records\":%zu}", extents, metadata, map_records);
-  }
-  if (!native) {
     print_map_stats();
   }
-  printf(",\"verification\":{\"oracle\":\"seed1-operation-ledger\",\"contents_verified\":true,"
+  printf(",\"verification\":{\"oracle\":\"independent-byte-mirrors\",\"contents_verified\":true,"
     "\"files\":%" PRIu64 ",\"bytes\":%" PRIu64 "}}\n", verified_files, verified_bytes);
+  release_oracles();
   return EXIT_SUCCESS;
 }
