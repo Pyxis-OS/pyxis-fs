@@ -479,12 +479,17 @@ def callback_bytes(phase):
                for kind in ('data_blocks', 'metadata_blocks')) * 4096
 
 
-def baseline(binary, name, identity):
+def baseline(binary, name, identity, population=None, case=None, durability=None):
     results = []
-    for population in (32, 256):
-        for case in ('small', 'large', 'overwrite', 'compiler'):
-            for filesystem, durability in (('pyxis', 'operation'), ('ext4', 'operation'),
-                                            ('btrfs', 'operation'), ('ext4', 'batch'), ('btrfs', 'batch')):
+    populations = (population,) if population is not None else (32, 256)
+    cases = (case,) if case is not None else ('small', 'large', 'overwrite', 'compiler')
+    profiles = (('pyxis', 'operation'), ('ext4', 'operation'), ('btrfs', 'operation'),
+                ('ext4', 'batch'), ('btrfs', 'batch'))
+    if durability is not None:
+        profiles = tuple(profile for profile in profiles if profile[1] == durability)
+    for population in populations:
+        for case in cases:
+            for filesystem, durability in profiles:
                 directory = SCRATCH / 'case'
                 directory.mkdir()
                 os.chown(directory, *identity)
@@ -570,7 +575,8 @@ def connect_result(name):
     sys.stderr = sys.stdout
 
 
-def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
+def inner(suite, name, ci_quick=False, identity=None, result_socket=None,
+          population=None, case=None, durability=None):
     require(not ci_quick or suite == 'check', 'CI storage mode is restricted to the quick suite')
     evidence = preflight(ci_quick)
     identity = identity or worker_identity()
@@ -597,7 +603,7 @@ def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
         import ram_safety
         results = ram_safety.run(sys.modules[__name__], comparison, name, identity)
     elif suite == 'baseline':
-        results = baseline(comparison, name, identity)
+        results = baseline(comparison, name, identity, population, case, durability)
     else:
         command = [str(runner), '--suite', 'pr' if suite == 'check' else 'extended']
         if ci_quick:
@@ -615,9 +621,20 @@ def inner(suite, name, ci_quick=False, identity=None, result_socket=None):
     return {'safety': evidence, 'results': results}
 
 
+def positive_int(value):
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError('value must be positive')
+    return number
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--suite', choices=('preflight', 'check', 'extended', 'safety', 'baseline'), default='check')
+    parser.add_argument('--population', type=positive_int, help='baseline population filter')
+    parser.add_argument('--case', choices=('small', 'large', 'overwrite', 'compiler'),
+                        help='baseline case filter')
+    parser.add_argument('--durability', choices=('operation', 'batch'), help='baseline durability filter')
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--ci-quick', action='store_true',
                         help='quick suite only: verify zero-swap cgroup instead of requiring mount noswap')
@@ -629,6 +646,9 @@ def main():
     args = parser.parse_args()
     require(not args.ci_quick or (args.inside and args.suite == 'check'),
             '--ci-quick requires --inside --suite check')
+    require(args.suite == 'baseline' or
+            all(value is None for value in (args.population, args.case, args.durability)),
+            'comparison filters require --suite baseline')
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     if args.cleanup_trace:
@@ -638,7 +658,8 @@ def main():
         identity = worker_identity() if args.worker_uid is None else (args.worker_uid, args.worker_gid)
         require(all(value is not None and value > 0 for value in identity), 'invalid worker identity')
         try:
-            result = json.dumps(inner(args.suite, args.name, args.ci_quick, identity, args.result_socket),
+            result = json.dumps(inner(args.suite, args.name, args.ci_quick, identity, args.result_socket,
+                                      args.population, args.case, args.durability),
                                 sort_keys=True, separators=(',', ':'))
         except (RuntimeError, OSError, ValueError):
             if args.result_socket and sys.stdout is sys.__stdout__:
@@ -671,6 +692,10 @@ def main():
                sys.executable, str(launcher), '--inside', '--suite', args.suite, '--name', name,
                '--result-socket', name, '--worker-uid', str(identity[0]),
                '--worker-gid', str(identity[1])]
+    for option in ('population', 'case', 'durability'):
+        value = getattr(args, option)
+        if value is not None:
+            command += ['--' + option, str(value)]
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind('\0' + name)
     listener.listen(1)
