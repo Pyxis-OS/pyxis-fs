@@ -131,8 +131,8 @@ and are not measurements of the sorting change. Linking the revised test runner
 against the pre-review writer (`e768b6c`) fails exactly the two new planning and
 maintenance read-error groups: it incorrectly reports `READABLE_STOPPED`.
 
-The minimum-resource fixture uses 16,384 blocks, two objects and one data mapping.
-The E=1/M=3 profile computes H=27, recovery=465, Pmax=29 and an arena of
+The initial synchronous-drain qualification used 16,384 blocks, two objects and
+one data mapping. Its then-current E=1/M=3 profile computed H=27, recovery=465, Pmax=29 and an arena of
 9,644,032 bytes. Ordinary and migration reserves stay at their 1,024-block
 formatter floors; quota=4 and a separate exact pool-promise boundary are covered.
 The same small reachable fixture with E=4096/M=2048 computes H=375,
@@ -201,20 +201,22 @@ through the real COW editor/admitted publisher. Expected contents are supplied b
 the workload. A separate retained-root traversal compares both durable payloads
 while they differ, after replacement writes and before the user and each
 maintenance slot write. The observer does not prescribe allocator placement.
-The suite then checks later reuse. A no-op checkpoint is tested for authority and
-health only; it supplies no publication evidence.
+The suite then checks later reuse. Retirement checkpoints preserve held authority
+and classify replacement/pre-slot failure separately from slot uncertainty. A
+checkpoint with no volume debt completes without publication; it supplies no
+publication evidence.
 
 The bounded matrix covers each replacement write and slot write in that fixture,
-all six publication flushes with none/all pending writes durable, actual slot
-tears, and cleanup failure after confirmed user progress. Cold recovery uses a
+publication flushes with none/all pending writes durable, actual slot tears, and
+cleanup/fence failure after confirmed user progress. Cold recovery uses a
 clone of the simulator's explicitly durable image. The cache-only slot case
 shows cached structural validation plus a successful later flush disagreeing
 with durable storage, while the failed core remains stopped. It does not assert
 that a fresh core can detect adapter history absent from its inputs.
 
 Focused read-error cases discover every backing-read boundary during the small
-fixture's user publication planning and both maintenance publications. A transient
-read failure must stop all ordinary access, preserve confirmed progress and remain
+fixture's user publication planning and requested maintenance publications. A
+transient read failure must stop all ordinary access, preserve confirmed progress and remain
 sticky until close. Fresh validated recovery uses the explicitly durable clone.
 Existing write/flush cases separately require readable pre-slot failure and
 access-stopping publication uncertainty.
@@ -225,9 +227,9 @@ reversed, mixed and equal-key inputs. Replacing insertion sort removes its
 calculated quadratic worst-case sorting cost; no sorting benchmark or measured
 throughput improvement is claimed.
 
-Unexpected resource failure during a funded drain is an invariant failure,
+Unexpected resource failure during funded cleanup/fencing is an invariant failure,
 not successful safe refusal. Resource cases deny further allocation after admission
-and require the drain to finish. Ordinary refusal before admission leaves the
+and require the funded work to finish. Ordinary refusal before admission leaves the
 writer usable. Task 6 adds allocation-free final orphan release and funded startup
 cleanup, including their resource and interruption cases below.
 
@@ -531,7 +533,13 @@ exits nonzero because the requested history is incomplete. Completed history wit
 successful verification exits zero. Refusal during admitted maintenance remains
 a correctness failure. The runner does not increase limits or shrink/retry requests.
 Phase reports separate user, orphan and maintenance metadata/data writes, flushes,
-publications, write/flush callback time and useful-byte throughput. Read-callback
+publications, write/flush callback time and useful-byte throughput. Writes/flushes
+follow the active publication batch, not the presence of carried debt; standalone
+fences have no active user/orphan batch. Healthy pending retirement is accepted
+without treating it as failure or a verified capacity refusal. Debt summaries
+report the maximum selected volume debt sampled at completed-call boundaries,
+selected volume/pool debt at phase end, and the existing map/extent counts. These
+sampled maxima do not claim to cover private intermediate batches. Read-callback
 time is reported separately: planning reads can precede batch initialization or
 follow a completed orphan batch, so its cleanup flag cannot classify those reads.
 These are simulator costs,
@@ -707,3 +715,36 @@ failure for this exact 4 GiB history; it does not establish arbitrary fragmentat
 all histories at E/M, real-host post-error recovery, native writable integration,
 8 GiB guest memory qualification or the outstanding 64/256 GiB profiles. Task 7
 remains incomplete.
+
+## Bounded retirement carryover coverage
+
+The maintained quick suite now exercises consecutive ordinary and orphan batches
+with healthy pending retirement, rather than inserting implicit fences between
+operations. It verifies derived record/workspace/generation bounds, refusal
+before admission, allocation-free private publications and complete funded orphan
+cleanup/terminal fences. Ordinary public authorization and reads can allocate
+before admission; the no-additional-allocation promise applies to admitted work,
+not every reader call.
+
+The cross-volume fixture discovers a shared catalog leaf pair and another leaf
+from its encoded image, then exercises three volumes without restricting allocator
+placement. An independent per-generation payload ledger checks every retained
+file before slot writes, after replacement writes, in both rolling and startup
+fences. It also imports a fully checked nonadjacent pair protecting two owners;
+opening must use its broader profile and establish an empty volume-debt seed.
+A durable allocation-tree walk verifies old cohorts are free at the freeing
+publication boundary; later publications may legitimately reuse those ranges.
+
+Checkpoint-only held rights settle pool-wide debt without read/lookup widening or
+orphan deletion. Tests cover no-publication idempotence, complete final orphan
+release with pending retirement, I/O-free volume/pool disposal, independently
+confirmed prefixes, and actual planning/replacement/slot failures with sticky
+provenance. Healthy-trace cuts identify initial startup fences, object cleanup and
+trailing fences by independently observed logical progress. Publication counts,
+physical numbers, fixture shape and benchmark configuration are not acceptance
+assertions. The deliberate two-flush protocol and proved resource bounds remain.
+
+See [matched RAM measurements](retirement-carryover-measurements.md) for the
+unchanged comparison through all trailing maintenance. This bounded suite does
+not close task 7, qualify real-host post-error recovery or enable the Caelum
+writer; the kernel-stack integration prerequisite remains deferred.

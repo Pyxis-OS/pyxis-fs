@@ -944,7 +944,7 @@ pfs_view_close(struct pfs_view **view, struct pfs_view_close_result *result)
   }
   struct pfs_object_id object = (*view)->object;
   bool last = (*view)->runtime && (*view)->runtime->views == 1;
-  /* Keep this view's volume retention through synchronous orphan cleanup. */
+  /* Keep this view's volume retention through complete orphan deletion. */
   view_release(*view);
   *view = NULL;
   closed.released = true;
@@ -1034,7 +1034,8 @@ pfs_view_checkpoint(struct pfs_view *view, struct pfs_write_result *result)
     status = pfs_writer_checkpoint(pool, result);
   }
   pfs_view_operation_drop(view);
-  pfs_writer_end(pool, status);
+  /* The fence classifies backing errors by publication phase. */
+  pfs_writer_end(pool, PFS_OK);
   return status;
 }
 

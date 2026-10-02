@@ -9,8 +9,12 @@ enum pfs_writer_health {
   PFS_WRITER_ACCESS_STOPPED,
 };
 
+/* NONE reports no maintenance outcome and does not certify debt absence.
+ * PENDING is healthy, funded volume debt after completed mutation/cleanup.
+ * COMPLETE confirms an explicitly requested retirement fence. */
 enum pfs_maintenance_completion {
   PFS_MAINTENANCE_NONE,
+  PFS_MAINTENANCE_PENDING,
   PFS_MAINTENANCE_COMPLETE,
   PFS_MAINTENANCE_STOPPED,
   PFS_MAINTENANCE_UNKNOWN,
@@ -76,7 +80,8 @@ enum pfs_status pfs_view_acquire_path(struct pfs_volume *volume,
                                      struct pfs_view **out);
 /* Accepted close consumes the view even if final orphan cleanup fails. BUSY
  * preserves the view and reports released=false. Stopped writers release runtime
- * state without cleanup. Close performs no checkpoint or recovery retry. */
+ * state without cleanup. Healthy orphan deletion can leave PENDING retirement
+ * debt; the deletion itself is complete. Close performs no checkpoint or retry. */
 enum pfs_status pfs_view_close(struct pfs_view **view,
   struct pfs_view_close_result *result);
 

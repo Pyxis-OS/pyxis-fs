@@ -201,6 +201,22 @@ checkpoint_authority_does_not_imply_read_lookup_or_metadata(void)
   TEST_ASSERT_FALSE(result.namespace_confirmed);
   TEST_ASSERT_EQUAL_UINT64(writes, fixture.writes);
   TEST_ASSERT_EQUAL_UINT64(flushes, fixture.flushes);
+  struct pfs_trusted_context mutation_authority = authority;
+  mutation_authority.ceiling = (struct pfs_rights){.file = PFS_FILE_WRITE};
+  struct pfs_rights mutation_rights = {.file = PFS_FILE_WRITE};
+  struct pfs_view *mutator = NULL;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_acquire(&volume, &mutation_authority,
+    &mutation_authority.root, PFS_SCOPE_OBJECT, &mutation_rights, &mutator));
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(mutator, 0, "C", 1, &result));
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_PENDING, result.maintenance_completion);
+  struct pfs_writer_status status;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
+  TEST_ASSERT_TRUE(status.drain_pending);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(file_view, &result));
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, result.maintenance_completion);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
+  TEST_ASSERT_FALSE(status.drain_pending);
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&mutator, &(struct pfs_view_close_result){0}));
   uint8_t bytes[8];
   size_t count = 123;
   TEST_ASSERT_EQUAL(PFS_DENIED, pfs_view_read(file_view, 0, bytes, sizeof(bytes), &count));

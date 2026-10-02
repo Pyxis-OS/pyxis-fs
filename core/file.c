@@ -475,6 +475,9 @@ report_failure(struct pfs_volume *volume, enum pfs_status status,
   result->operation_status = status;
   if (volume->pool->writer) {
     result->health = volume->pool->writer->status.health;
+    if (result->health != PFS_WRITER_READY && result->maintenance_status == PFS_OK) {
+      result->maintenance_completion = PFS_MAINTENANCE_NONE;
+    }
   }
   return status;
 }
@@ -1309,7 +1312,9 @@ cleanup_batches(struct pfs_pool *pool, const struct pfs_volume_id *volume,
       result->health = pool->writer->status.health;
       return status;
     }
-    result->maintenance_completion = PFS_MAINTENANCE_COMPLETE;
+    result->maintenance_completion = committed.maintenance_completion;
+    result->maintenance_status = committed.maintenance_status;
+    result->health = committed.health;
     if (final) {
       return PFS_OK;
     }

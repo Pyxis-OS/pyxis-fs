@@ -421,8 +421,14 @@ are trusted embedding inputs, not authentication. The object ID must be obtained
 under appropriate authority before the exclusive session. Existing formatter
 grants have not gained `dir.checkpoint`; they retain the existing file right.
 The command reports admission requirements, confirmed generation and writer
-health/cleanup outcome. A healthy checkpoint after synchronous draining needs no
-extra publication.
+health/cleanup outcome. Successful mutation/cleanup may report maintenance
+`pending` with ready health: object changes are durable, while bounded volume
+retirement remains funded. `none` reports no maintenance outcome and does not
+certify debt absence. Checkpoint settles pool-wide volume retirement under the held
+checkpoint right, using at most two pure publications and reporting `complete`
+even when none is needed. It does not clean retained orphans or widen object rights.
+Pool/volume disposal performs no checkpoint; checkpoint before releasing its view
+when settled reclamation is required.
 
 `create-file` and `create-directory` take one UTF-8 component of 1–255 bytes,
 excluding `/`, `.` and `..`. They create an empty object owned under the parent's
@@ -509,7 +515,8 @@ fresh validated reopen must meet the backing-history preconditions above; the
 failed instance cannot retry itself healthy. Cleanup failure cannot erase already
 confirmed user progress. An unknown outcome may include additional committed
 bytes and is not automatically retryable. In a healthy writer, last-reference
-closure can finish funded orphan cleanup. Closure performs no recovery or retry
+closure finishes admitted orphan deletion and may report pending retirement.
+Named-object close reports no cleanup outcome. Closure performs no recovery or retry
 in a stopped writer. Simulator results are core protocol evidence only, not
 qualification of Linux post-error recovery.
 

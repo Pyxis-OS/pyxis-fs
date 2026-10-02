@@ -693,6 +693,9 @@ namespace_cleanup(struct pfs_view *parent, const struct pfs_object_id *victim,
       cleanup.maintenance_status : status;
     result->maintenance_completion = cleanup.maintenance_completion == PFS_MAINTENANCE_UNKNOWN ||
       cleanup.completion == PFS_UNKNOWN ? PFS_MAINTENANCE_UNKNOWN : PFS_MAINTENANCE_STOPPED;
+  } else {
+    result->maintenance_completion = cleanup.maintenance_completion;
+    result->maintenance_status = cleanup.maintenance_status;
   }
   return status;
 }

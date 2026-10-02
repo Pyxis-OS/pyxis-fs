@@ -39,10 +39,10 @@ static const char *phase_names[] = {"admission", "replacement write", "slot writ
 static const struct pfs_object_id source_id = {{6}}, victim_id = {{7}};
 static const struct pfs_volume_id volume_id = {{2}};
 static const struct pfs_rights file_rights = {
-  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE,
+  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE | PFS_FILE_CHECKPOINT,
 };
 static const struct pfs_rights parent_rights = {
-  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE,
+  .file = PFS_FILE_READ | PFS_FILE_METADATA | PFS_FILE_WRITE | PFS_FILE_RESIZE | PFS_FILE_CHECKPOINT,
   .directory = PFS_DIR_LIST | PFS_DIR_LOOKUP | PFS_DIR_METADATA | PFS_DIR_CREATE |
     PFS_DIR_REMOVE | PFS_DIR_REPLACE,
 };
@@ -687,7 +687,12 @@ discover_cuts(enum extended_operation operation)
       }
     }
   }
-  EXPECT_TRUE(operation == EXT_RENAME ? publication >= 3 : publication >= 6);
+  EXPECT_TRUE(publication > 0 && cut_count > 0);
+  struct test_failure_flush_cut flush_cuts[CUTS_MAX];
+  size_t flush_count;
+  EXPECT_STATUS(PFS_OK, test_failure_flush_cuts(&device, base_flush,
+    flush_cuts, CUTS_MAX, &flush_count));
+  EXPECT_U64(2 * publication, flush_count);
   close_handles(&device);
   EXPECT_TRUE(!device.infrastructure_failure);
   EXPECT_TRUE(test_failure_close(&device));
@@ -1017,6 +1022,9 @@ extended_retained_replacement_and_name_reuse_history(void)
     EXPECT_TRUE(!device.infrastructure_failure);
     test_failure_trace_reset(&device);
   }
+  struct pfs_write_result fence;
+  EXPECT_STATUS(PFS_OK, pfs_view_checkpoint(current, &fence));
+  EXPECT_STATUS(PFS_MAINTENANCE_COMPLETE, fence.maintenance_completion);
   close_handles(&device);
   snprintf(detail, sizeof(detail), "seed=%" PRIu64 " retained history cold manifest", workload_seed);
   EXPECT_STATUS(PFS_OK, test_failure_cold_cut(&device));

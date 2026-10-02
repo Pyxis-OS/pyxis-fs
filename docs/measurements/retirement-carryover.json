@@ -1,0 +1,7681 @@
+{
+  "date": "2026-10-02",
+  "sample_order": [
+    "before-1",
+    "before-2",
+    "after-1",
+    "after-2"
+  ],
+  "before_revision": "73a4885875af0eba4148dc2947617cb3edf4ab4b",
+  "after_revisions": [
+    "609b7016e80d0e946da7c7b54fad917f34606202",
+    "063d93c"
+  ],
+  "after_revision_note": "Samples compiled 609b701 and 063d93c. Their only production difference is the error-only funded-exhaustion classification in 7e28ad2. Later production changes route the same fence through the existing read-only mode bridge; healthy publication traffic and the workload are unchanged. Later test and documentation corrections do not change measured behavior.",
+  "command": "sudo python3 tests/ram_run.py --suite baseline",
+  "compiler": "GCC 16.2.1, -O2 -g3",
+  "vm": "Linux 6.19.10-300.fc44.x86_64 KVM VM, 16 vCPUs, 32 GiB RAM",
+  "cpu_affinity": "not pinned",
+  "caches": "not dropped",
+  "concurrency": "serial samples, no concurrent build/test/workload jobs",
+  "safety": [
+    {
+      "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-de490e601c84.service",
+      "kernel": "6.19.10-300.fc44.x86_64",
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+      "memory_max": 4294967296,
+      "memory_peak": "307085312",
+      "mount_noswap": true,
+      "scratch_bytes": 2147483648,
+      "scratch_inodes": 65536,
+      "storage_mode": "strict",
+      "swap_max": 0,
+      "worker_gid": 1000,
+      "worker_uid": 1000
+    },
+    {
+      "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-561adcbc3640.service",
+      "kernel": "6.19.10-300.fc44.x86_64",
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+      "memory_max": 4294967296,
+      "memory_peak": "306745344",
+      "mount_noswap": true,
+      "scratch_bytes": 2147483648,
+      "scratch_inodes": 65536,
+      "storage_mode": "strict",
+      "swap_max": 0,
+      "worker_gid": 1000,
+      "worker_uid": 1000
+    },
+    {
+      "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-63803918ea1e.service",
+      "kernel": "6.19.10-300.fc44.x86_64",
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+      "memory_max": 4294967296,
+      "memory_peak": "317050880",
+      "mount_noswap": true,
+      "scratch_bytes": 2147483648,
+      "scratch_inodes": 65536,
+      "storage_mode": "strict",
+      "swap_max": 0,
+      "worker_gid": 1000,
+      "worker_uid": 1000
+    },
+    {
+      "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-e6c67d9a8d10.service",
+      "kernel": "6.19.10-300.fc44.x86_64",
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+      "memory_max": 4294967296,
+      "memory_peak": "317829120",
+      "mount_noswap": true,
+      "scratch_bytes": 2147483648,
+      "scratch_inodes": 65536,
+      "storage_mode": "strict",
+      "swap_max": 0,
+      "worker_gid": 1000,
+      "worker_uid": 1000
+    }
+  ],
+  "cases": [
+    {
+      "filesystem": "pyxis",
+      "population": 32,
+      "case": "small",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        6250496,
+        6250496,
+        3014656,
+        3014656
+      ],
+      "preparation_submitted_bytes": [
+        6205440,
+        6205440,
+        2842624,
+        2842624
+      ],
+      "total_submitted_bytes": [
+        12455936,
+        12455936,
+        5857280,
+        5857280
+      ],
+      "elapsed_seconds": [
+        0.378102721,
+        0.379415385,
+        0.260787143,
+        0.260291048
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 256,
+            "metadata_blocks": 820
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 642
+          }
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 256,
+            "metadata_blocks": 820
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 642
+          }
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 16
+          },
+          "final_pool_debt_blocks": 14,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 656
+          }
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 16
+          },
+          "final_pool_debt_blocks": 14,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 656
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 356,
+            "metadata_blocks": 833
+          },
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 356,
+            "metadata_blocks": 833
+          },
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 96,
+          "map_records": 137,
+          "metadata_blocks": 8
+        },
+        {
+          "extents": 96,
+          "map_records": 137,
+          "metadata_blocks": 8
+        },
+        {
+          "extents": 96,
+          "map_records": 161,
+          "metadata_blocks": 8
+        },
+        {
+          "extents": 96,
+          "map_records": 161,
+          "metadata_blocks": 8
+        }
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "small",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1601536,
+        1601536,
+        1601536,
+        1601536
+      ],
+      "preparation_submitted_bytes": [
+        53637120,
+        53637120,
+        53637120,
+        53637120
+      ],
+      "total_submitted_bytes": [
+        55238656,
+        55238656,
+        55238656,
+        55238656
+      ],
+      "elapsed_seconds": [
+        0.003043669,
+        0.003510552,
+        0.004661538,
+        0.004912352
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        134062,
+        134062,
+        134062,
+        134062
+      ],
+      "completed_write_bytes": [
+        55238656,
+        55238656,
+        55238656,
+        55238656
+      ],
+      "flush_events": [
+        163,
+        163,
+        163,
+        163
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        55222272,
+        55222272,
+        55222272,
+        55222272
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.010721635073423386,
+        0.009315498056821525,
+        0.00873600598424673,
+        0.011328744003549218
+      ],
+      "measurement_with_teardown_seconds": [
+        0.014110559015534818,
+        0.01318294694647193,
+        0.013703470933251083,
+        0.01672966207843274
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "small",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        5021696,
+        5021696,
+        5021696,
+        5021696
+      ],
+      "preparation_submitted_bytes": [
+        15917056,
+        15917056,
+        15917056,
+        15917056
+      ],
+      "total_submitted_bytes": [
+        20938752,
+        20938752,
+        20938752,
+        20938752
+      ],
+      "elapsed_seconds": [
+        0.00648156,
+        0.00705981,
+        0.004871074,
+        0.005013369
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        278338,
+        278342,
+        278338,
+        278344
+      ],
+      "completed_write_bytes": [
+        20938752,
+        20938752,
+        20938752,
+        20938752
+      ],
+      "flush_events": [
+        207,
+        207,
+        207,
+        207
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        20938752,
+        20938752,
+        20938752,
+        20938752
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.011006262968294322,
+        0.009576080017723143,
+        0.009497159044258296,
+        0.010729314060881734
+      ],
+      "measurement_with_teardown_seconds": [
+        0.017817825078964233,
+        0.017052430077455938,
+        0.01461626507807523,
+        0.016007411992177367
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "small",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        462848,
+        462848,
+        462848,
+        450560
+      ],
+      "preparation_submitted_bytes": [
+        52031488,
+        52043776,
+        52031488,
+        52027392
+      ],
+      "total_submitted_bytes": [
+        52494336,
+        52506624,
+        52494336,
+        52477952
+      ],
+      "elapsed_seconds": [
+        0.000832557,
+        0.000544982,
+        0.000794105,
+        0.000626423
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        57779,
+        57984,
+        57771,
+        57376
+      ],
+      "completed_write_bytes": [
+        52494336,
+        52506624,
+        52494336,
+        52477952
+      ],
+      "flush_events": [
+        34,
+        34,
+        34,
+        33
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        52473856,
+        52486144,
+        52473856,
+        52457472
+      ],
+      "after_end_submitted_bytes": [
+        20480,
+        20480,
+        20480,
+        20480
+      ],
+      "after_end_seconds": [
+        0.009425511001609266,
+        0.009194676065817475,
+        0.010038300999440253,
+        0.010404144995845854
+      ],
+      "measurement_with_teardown_seconds": [
+        0.010840288014151156,
+        0.010068824980407953,
+        0.011243612971156836,
+        0.01129698904696852
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "small",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1212416,
+        1212416,
+        1212416,
+        1212416
+      ],
+      "preparation_submitted_bytes": [
+        7884800,
+        7884800,
+        7655424,
+        7655424
+      ],
+      "total_submitted_bytes": [
+        9097216,
+        9097216,
+        8867840,
+        8867840
+      ],
+      "elapsed_seconds": [
+        0.001426997,
+        0.00117016,
+        0.001158405,
+        0.001480651
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        163855,
+        163848,
+        162404,
+        162372
+      ],
+      "completed_write_bytes": [
+        9097216,
+        9097216,
+        8867840,
+        8867840
+      ],
+      "flush_events": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        9097216,
+        9097216,
+        8867840,
+        8867840
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.009846705943346024,
+        0.00941034802235663,
+        0.01017250306904316,
+        0.008861599955707788
+      ],
+      "measurement_with_teardown_seconds": [
+        0.01162609993480146,
+        0.011069148080423474,
+        0.011851230985485017,
+        0.010872081969864666
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "pyxis",
+      "population": 32,
+      "case": "large",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        5562368,
+        5562368,
+        4845568,
+        4845568
+      ],
+      "preparation_submitted_bytes": [
+        6205440,
+        6205440,
+        2842624,
+        2842624
+      ],
+      "total_submitted_bytes": [
+        11767808,
+        11767808,
+        7688192,
+        7688192
+      ],
+      "elapsed_seconds": [
+        1.108359418,
+        1.10788586,
+        1.083664545,
+        1.080950173
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 64,
+            "metadata_blocks": 186
+          },
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 148
+          }
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 64,
+            "metadata_blocks": 186
+          },
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 148
+          }
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 14
+          },
+          "final_pool_debt_blocks": 12,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 6,
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 145
+          }
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 14
+          },
+          "final_pool_debt_blocks": 12,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 6,
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 145
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 356,
+            "metadata_blocks": 833
+          },
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 356,
+            "metadata_blocks": 833
+          },
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 85,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 170,
+            "metadata_blocks": 606
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 48,
+          "map_records": 93,
+          "metadata_blocks": 6
+        },
+        {
+          "extents": 48,
+          "map_records": 93,
+          "metadata_blocks": 6
+        },
+        {
+          "extents": 48,
+          "map_records": 86,
+          "metadata_blocks": 6
+        },
+        {
+          "extents": 48,
+          "map_records": 86,
+          "metadata_blocks": 6
+        }
+      ],
+      "verification": {
+        "bytes": 4325376,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "large",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        4550656,
+        4550656,
+        4550656,
+        4550656
+      ],
+      "preparation_submitted_bytes": [
+        53637120,
+        53637120,
+        53637120,
+        53637120
+      ],
+      "total_submitted_bytes": [
+        58187776,
+        58187776,
+        58187776,
+        58187776
+      ],
+      "elapsed_seconds": [
+        0.003809196,
+        0.00348101,
+        0.004647071,
+        0.003184952
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        103998,
+        103998,
+        103998,
+        103998
+      ],
+      "completed_write_bytes": [
+        58187776,
+        58187776,
+        58187776,
+        58187776
+      ],
+      "flush_events": [
+        115,
+        115,
+        115,
+        115
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        58171392,
+        58171392,
+        58171392,
+        58171392
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.02489596395753324,
+        0.028335084905847907,
+        0.023378513986244798,
+        0.022529353038407862
+      ],
+      "measurement_with_teardown_seconds": [
+        0.02897973998915404,
+        0.032407407998107374,
+        0.02861827297601849,
+        0.026129124918952584
+      ],
+      "verification": {
+        "bytes": 4325376,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "large",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        5844992,
+        5844992,
+        5844992,
+        5844992
+      ],
+      "preparation_submitted_bytes": [
+        15917056,
+        15917056,
+        15917056,
+        15917056
+      ],
+      "total_submitted_bytes": [
+        21762048,
+        21762048,
+        21762048,
+        21762048
+      ],
+      "elapsed_seconds": [
+        0.005108175,
+        0.005262369,
+        0.005509211,
+        0.005435857
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        244702,
+        244708,
+        244702,
+        244702
+      ],
+      "completed_write_bytes": [
+        21762048,
+        21762048,
+        21762048,
+        21762048
+      ],
+      "flush_events": [
+        159,
+        159,
+        159,
+        159
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        21762048,
+        21762048,
+        21762048,
+        21762048
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.022791640018112957,
+        0.022067457088269293,
+        0.022214796976186335,
+        0.022773603908717632
+      ],
+      "measurement_with_teardown_seconds": [
+        0.028550761053338647,
+        0.027621665969491005,
+        0.028140197973698378,
+        0.028771942015737295
+      ],
+      "verification": {
+        "bytes": 4325376,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "large",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        4259840,
+        4259840,
+        4259840,
+        4259840
+      ],
+      "preparation_submitted_bytes": [
+        52031488,
+        51986432,
+        51990528,
+        52031488
+      ],
+      "total_submitted_bytes": [
+        56291328,
+        56246272,
+        56250368,
+        56291328
+      ],
+      "elapsed_seconds": [
+        0.002318667,
+        0.002691436,
+        0.002537655,
+        0.002803694
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        54129,
+        52989,
+        53116,
+        54129
+      ],
+      "completed_write_bytes": [
+        56291328,
+        56246272,
+        56250368,
+        56291328
+      ],
+      "flush_events": [
+        28,
+        25,
+        25,
+        28
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        56270848,
+        56225792,
+        56229888,
+        56270848
+      ],
+      "after_end_submitted_bytes": [
+        20480,
+        20480,
+        20480,
+        20480
+      ],
+      "after_end_seconds": [
+        0.021980096003971994,
+        0.021407202002592385,
+        0.021964901010505855,
+        0.026959156966768205
+      ],
+      "measurement_with_teardown_seconds": [
+        0.024811789975501597,
+        0.024544949061237276,
+        0.025012035970576108,
+        0.03028702305164188
+      ],
+      "verification": {
+        "bytes": 4325376,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "large",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        4562944,
+        4562944,
+        4562944,
+        4562944
+      ],
+      "preparation_submitted_bytes": [
+        7655424,
+        7655424,
+        7917568,
+        7655424
+      ],
+      "total_submitted_bytes": [
+        12218368,
+        12218368,
+        12480512,
+        12218368
+      ],
+      "elapsed_seconds": [
+        0.003614177,
+        0.003623979,
+        0.003542893,
+        0.003968467
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 85
+        }
+      ],
+      "trace_bytes": [
+        157809,
+        157705,
+        159380,
+        157809
+      ],
+      "completed_write_bytes": [
+        12218368,
+        12218368,
+        12480512,
+        12218368
+      ],
+      "flush_events": [
+        27,
+        27,
+        27,
+        27
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        12218368,
+        12218368,
+        12480512,
+        12218368
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.023321095039136708,
+        0.02096073003485799,
+        0.02288731501903385,
+        0.02310405799653381
+      ],
+      "measurement_with_teardown_seconds": [
+        0.027445405954495072,
+        0.02508548798505217,
+        0.026865649968385696,
+        0.027509802021086216
+      ],
+      "verification": {
+        "bytes": 4325376,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "pyxis",
+      "population": 32,
+      "case": "overwrite",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        3162112,
+        3162112,
+        1556480,
+        1556480
+      ],
+      "preparation_submitted_bytes": [
+        6545408,
+        6545408,
+        3137536,
+        3137536
+      ],
+      "total_submitted_bytes": [
+        9707520,
+        9707520,
+        4694016,
+        4694016
+      ],
+      "elapsed_seconds": [
+        0.242813667,
+        0.242310186,
+        0.183559928,
+        0.183072756
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 128,
+            "metadata_blocks": 404
+          },
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 314
+          }
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 128,
+            "metadata_blocks": 404
+          },
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 314
+          }
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 14
+          },
+          "final_pool_debt_blocks": 12,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 10,
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 312
+          }
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 14
+          },
+          "final_pool_debt_blocks": 12,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 10,
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 312
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 360,
+            "metadata_blocks": 844
+          },
+          "operations": 86,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 108,
+            "flushes": 172,
+            "metadata_blocks": 614
+          }
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 360,
+            "metadata_blocks": 844
+          },
+          "operations": 86,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 108,
+            "flushes": 172,
+            "metadata_blocks": 614
+          }
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 86,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 108,
+            "flushes": 172,
+            "metadata_blocks": 614
+          }
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 46,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 86,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 108,
+            "flushes": 172,
+            "metadata_blocks": 614
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 66,
+          "map_records": 117,
+          "metadata_blocks": 6
+        },
+        {
+          "extents": 66,
+          "map_records": 117,
+          "metadata_blocks": 6
+        },
+        {
+          "extents": 66,
+          "map_records": 112,
+          "metadata_blocks": 6
+        },
+        {
+          "extents": 66,
+          "map_records": 112,
+          "metadata_blocks": 6
+        }
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "overwrite",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        266240,
+        266240,
+        266240,
+        253952
+      ],
+      "preparation_submitted_bytes": [
+        53919744,
+        53919744,
+        53919744,
+        53919744
+      ],
+      "total_submitted_bytes": [
+        54185984,
+        54185984,
+        54185984,
+        54173696
+      ],
+      "elapsed_seconds": [
+        0.000740692,
+        0.000767836,
+        0.001133699,
+        0.000854562
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        }
+      ],
+      "trace_bytes": [
+        101400,
+        101400,
+        101400,
+        101187
+      ],
+      "completed_write_bytes": [
+        54185984,
+        54185984,
+        54185984,
+        54173696
+      ],
+      "flush_events": [
+        132,
+        132,
+        132,
+        132
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        54169600,
+        54169600,
+        54169600,
+        54157312
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.011494438978843391,
+        0.009252047981135547,
+        0.009597162017598748,
+        0.009752152021974325
+      ],
+      "measurement_with_teardown_seconds": [
+        0.012813961948268116,
+        0.010541397030465305,
+        0.011241763015277684,
+        0.011040642973966897
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "overwrite",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        2785280,
+        2785280,
+        2785280,
+        2785280
+      ],
+      "preparation_submitted_bytes": [
+        16146432,
+        16146432,
+        16146432,
+        16146432
+      ],
+      "total_submitted_bytes": [
+        18931712,
+        18931712,
+        18931712,
+        18931712
+      ],
+      "elapsed_seconds": [
+        0.003554995,
+        0.002602103,
+        0.003434748,
+        0.003139433
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 1,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        }
+      ],
+      "trace_bytes": [
+        254958,
+        254958,
+        254958,
+        254958
+      ],
+      "completed_write_bytes": [
+        18931712,
+        18931712,
+        18931712,
+        18931712
+      ],
+      "flush_events": [
+        175,
+        175,
+        175,
+        175
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        18931712,
+        18931712,
+        18931712,
+        18931712
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.010648815077729523,
+        0.009392796084284782,
+        0.009460328030399978,
+        0.009487582952715456
+      ],
+      "measurement_with_teardown_seconds": [
+        0.014562541036866605,
+        0.012523826095275581,
+        0.013484016992151737,
+        0.013185697956942022
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "overwrite",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        217088,
+        204800,
+        217088,
+        217088
+      ],
+      "preparation_submitted_bytes": [
+        52297728,
+        52322304,
+        52285440,
+        52310016
+      ],
+      "total_submitted_bytes": [
+        52514816,
+        52527104,
+        52502528,
+        52527104
+      ],
+      "elapsed_seconds": [
+        0.000241639,
+        0.000255109,
+        0.000230287,
+        0.000217344
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        }
+      ],
+      "trace_bytes": [
+        55065,
+        55567,
+        54759,
+        55379
+      ],
+      "completed_write_bytes": [
+        52514816,
+        52527104,
+        52502528,
+        52527104
+      ],
+      "flush_events": [
+        26,
+        29,
+        25,
+        27
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        52498432,
+        52506624,
+        52486144,
+        52510720
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        20480,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.009959674905985594,
+        0.008725784020498395,
+        0.010043397080153227,
+        0.009959029033780098
+      ],
+      "measurement_with_teardown_seconds": [
+        0.010746949934400618,
+        0.0095164809608832,
+        0.010853132000193,
+        0.010744488914497197
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "overwrite",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        659456,
+        659456,
+        659456,
+        659456
+      ],
+      "preparation_submitted_bytes": [
+        8114176,
+        8048640,
+        8048640,
+        8048640
+      ],
+      "total_submitted_bytes": [
+        8773632,
+        8708096,
+        8708096,
+        8708096
+      ],
+      "elapsed_seconds": [
+        0.00078837,
+        0.000973283,
+        0.000828584,
+        0.000939095
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        },
+        {
+          "application_bytes": 417792,
+          "barriers": 6,
+          "closes": 45,
+          "core_callbacks": null,
+          "operations": 86
+        }
+      ],
+      "trace_bytes": [
+        161540,
+        161138,
+        161114,
+        161140
+      ],
+      "completed_write_bytes": [
+        8773632,
+        8708096,
+        8708096,
+        8708096
+      ],
+      "flush_events": [
+        28,
+        28,
+        28,
+        28
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        8773632,
+        8708096,
+        8708096,
+        8708096
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.009051750996150076,
+        0.009252676973119378,
+        0.01036535995081067,
+        0.010848641977645457
+      ],
+      "measurement_with_teardown_seconds": [
+        0.010293258004821837,
+        0.010493060923181474,
+        0.011577700031921268,
+        0.012128347996622324
+      ],
+      "verification": {
+        "bytes": 393216,
+        "contents_verified": true,
+        "files": 33,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "pyxis",
+      "population": 32,
+      "case": "compiler",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        6684672,
+        6684672,
+        3129344,
+        3129344
+      ],
+      "preparation_submitted_bytes": [
+        6119424,
+        6119424,
+        2801664,
+        2801664
+      ],
+      "total_submitted_bytes": [
+        12804096,
+        12804096,
+        5931008,
+        5931008
+      ],
+      "elapsed_seconds": [
+        0.444193992,
+        0.438374062,
+        0.30510855,
+        0.303333975
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 320,
+            "metadata_blocks": 880
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 128
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 608
+          }
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 320,
+            "metadata_blocks": 880
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 128
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 608
+          }
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 128
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 608
+          }
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 128
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 608
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 352,
+            "metadata_blocks": 822
+          },
+          "operations": 84,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 168,
+            "metadata_blocks": 596
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 352,
+            "metadata_blocks": 822
+          },
+          "operations": 84,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 168,
+            "metadata_blocks": 596
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 84,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 168,
+            "metadata_blocks": 596
+          }
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 45,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 12
+          },
+          "final_pool_debt_blocks": 10,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 84,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 32
+          },
+          "user": {
+            "data_blocks": 44,
+            "flushes": 168,
+            "metadata_blocks": 596
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 32,
+          "map_records": 63,
+          "metadata_blocks": 5
+        },
+        {
+          "extents": 32,
+          "map_records": 63,
+          "metadata_blocks": 5
+        },
+        {
+          "extents": 32,
+          "map_records": 54,
+          "metadata_blocks": 5
+        },
+        {
+          "extents": 32,
+          "map_records": 54,
+          "metadata_blocks": 5
+        }
+      ],
+      "verification": {
+        "bytes": 131072,
+        "contents_verified": true,
+        "files": 32,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "compiler",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1814528,
+        1814528,
+        1814528,
+        1814528
+      ],
+      "preparation_submitted_bytes": [
+        53608448,
+        53608448,
+        53608448,
+        53608448
+      ],
+      "total_submitted_bytes": [
+        55422976,
+        55422976,
+        55422976,
+        55422976
+      ],
+      "elapsed_seconds": [
+        0.003861802,
+        0.002657512,
+        0.00247926,
+        0.003340414
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        }
+      ],
+      "trace_bytes": [
+        138690,
+        138690,
+        138690,
+        138690
+      ],
+      "completed_write_bytes": [
+        55422976,
+        55422976,
+        55422976,
+        55422976
+      ],
+      "flush_events": [
+        162,
+        162,
+        162,
+        162
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        55406592,
+        55406592,
+        55406592,
+        55406592
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.004708622000180185,
+        0.004368456895463169,
+        0.004656630917452276,
+        0.00454291794449091
+      ],
+      "measurement_with_teardown_seconds": [
+        0.008874684106558561,
+        0.007623562007211149,
+        0.0075337570160627365,
+        0.008478472009301186
+      ],
+      "verification": {
+        "bytes": 131072,
+        "contents_verified": true,
+        "files": 32,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "compiler",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        6004736,
+        6004736,
+        6004736,
+        6004736
+      ],
+      "preparation_submitted_bytes": [
+        15712256,
+        15712256,
+        15712256,
+        15712256
+      ],
+      "total_submitted_bytes": [
+        21716992,
+        21716992,
+        21716992,
+        21716992
+      ],
+      "elapsed_seconds": [
+        0.007989167,
+        0.006057894,
+        0.006528052,
+        0.006661324
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 1,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        }
+      ],
+      "trace_bytes": [
+        282182,
+        282174,
+        282174,
+        282174
+      ],
+      "completed_write_bytes": [
+        21716992,
+        21716992,
+        21716992,
+        21716992
+      ],
+      "flush_events": [
+        221,
+        221,
+        221,
+        221
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        21716992,
+        21716992,
+        21716992,
+        21716992
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.004492816980928183,
+        0.0049293230986222625,
+        0.004367618006654084,
+        0.005202781991101801
+      ],
+      "measurement_with_teardown_seconds": [
+        0.013014748925343156,
+        0.011354989022947848,
+        0.011178655084222555,
+        0.012364584021270275
+      ],
+      "verification": {
+        "bytes": 131072,
+        "contents_verified": true,
+        "files": 32,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 32,
+      "case": "compiler",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        245760,
+        245760,
+        245760,
+        245760
+      ],
+      "preparation_submitted_bytes": [
+        52031488,
+        52031488,
+        52015104,
+        52043776
+      ],
+      "total_submitted_bytes": [
+        52277248,
+        52277248,
+        52260864,
+        52289536
+      ],
+      "elapsed_seconds": [
+        0.000657478,
+        0.000542502,
+        0.000625511,
+        0.000593301
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        }
+      ],
+      "trace_bytes": [
+        58418,
+        58411,
+        57993,
+        58625
+      ],
+      "completed_write_bytes": [
+        52277248,
+        52277248,
+        52260864,
+        52289536
+      ],
+      "flush_events": [
+        29,
+        29,
+        28,
+        29
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        52260864,
+        52260864,
+        52244480,
+        52273152
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.0037733939243480563,
+        0.0033837470691651106,
+        0.003890743013471365,
+        0.0037036610301584005
+      ],
+      "measurement_with_teardown_seconds": [
+        0.004692179034464061,
+        0.004268268006853759,
+        0.004778189002536237,
+        0.004577742074616253
+      ],
+      "verification": {
+        "bytes": 131072,
+        "contents_verified": true,
+        "files": 32,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 32,
+      "case": "compiler",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1179648,
+        1179648,
+        1179648,
+        1179648
+      ],
+      "preparation_submitted_bytes": [
+        7655424,
+        7655424,
+        7655424,
+        7655424
+      ],
+      "total_submitted_bytes": [
+        8835072,
+        8835072,
+        8835072,
+        8835072
+      ],
+      "elapsed_seconds": [
+        0.001356776,
+        0.001462482,
+        0.00132803,
+        0.001661667
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        },
+        {
+          "application_bytes": 155648,
+          "barriers": 6,
+          "closes": 44,
+          "core_callbacks": null,
+          "operations": 84
+        }
+      ],
+      "trace_bytes": [
+        163385,
+        163371,
+        163377,
+        163371
+      ],
+      "completed_write_bytes": [
+        8835072,
+        8835072,
+        8835072,
+        8835072
+      ],
+      "flush_events": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        8835072,
+        8835072,
+        8835072,
+        8835072
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.0034334500087425113,
+        0.004425092949531972,
+        0.004160712007433176,
+        0.003923648968338966
+      ],
+      "measurement_with_teardown_seconds": [
+        0.005108729004859924,
+        0.006437067990191281,
+        0.005819324986077845,
+        0.006177479051984847
+      ],
+      "verification": {
+        "bytes": 131072,
+        "contents_verified": true,
+        "files": 32,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "pyxis",
+      "population": 256,
+      "case": "small",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        11341824,
+        11341824,
+        4673536,
+        4673536
+      ],
+      "preparation_submitted_bytes": [
+        63508480,
+        63508480,
+        27246592,
+        27246592
+      ],
+      "total_submitted_bytes": [
+        74850304,
+        74850304,
+        31920128,
+        31920128
+      ],
+      "elapsed_seconds": [
+        1.320712445,
+        1.319651052,
+        1.042487324,
+        1.041795283
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 256,
+            "metadata_blocks": 1649
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 1056
+          }
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 256,
+            "metadata_blocks": 1649
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 1056
+          }
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 28
+          },
+          "final_pool_debt_blocks": 26,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 1049
+          }
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 28
+          },
+          "final_pool_debt_blocks": 26,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 64,
+            "flushes": 128,
+            "metadata_blocks": 1049
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2148,
+            "metadata_blocks": 8821
+          },
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6359
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2148,
+            "metadata_blocks": 8821
+          },
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6359
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6304
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6304
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 320,
+          "map_records": 410,
+          "metadata_blocks": 22
+        },
+        {
+          "extents": 320,
+          "map_records": 410,
+          "metadata_blocks": 22
+        },
+        {
+          "extents": 320,
+          "map_records": 405,
+          "metadata_blocks": 22
+        },
+        {
+          "extents": 320,
+          "map_records": 405,
+          "metadata_blocks": 22
+        }
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "small",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1605632,
+        1605632,
+        1605632,
+        1605632
+      ],
+      "preparation_submitted_bytes": [
+        65654784,
+        65654784,
+        65646592,
+        65646592
+      ],
+      "total_submitted_bytes": [
+        67260416,
+        67260416,
+        67252224,
+        67252224
+      ],
+      "elapsed_seconds": [
+        0.003832323,
+        0.004308232,
+        0.003607705,
+        0.004354085
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        440409,
+        440409,
+        440201,
+        440201
+      ],
+      "completed_write_bytes": [
+        67260416,
+        67260416,
+        67252224,
+        67252224
+      ],
+      "flush_events": [
+        611,
+        611,
+        611,
+        611
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        67244032,
+        67244032,
+        67235840,
+        67235840
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.011200439999811351,
+        0.010863192961551249,
+        0.012513925903476775,
+        0.0125009729526937
+      ],
+      "measurement_with_teardown_seconds": [
+        0.015301153063774109,
+        0.01574702700600028,
+        0.016500495956279337,
+        0.017429044004529715
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "small",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        5120000,
+        5120000,
+        5120000,
+        5120000
+      ],
+      "preparation_submitted_bytes": [
+        90005504,
+        90005504,
+        90005504,
+        90005504
+      ],
+      "total_submitted_bytes": [
+        95125504,
+        95125504,
+        95125504,
+        95125504
+      ],
+      "elapsed_seconds": [
+        0.005933652,
+        0.005768253,
+        0.006326956,
+        0.006058596
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        899520,
+        899520,
+        899520,
+        899520
+      ],
+      "completed_write_bytes": [
+        95125504,
+        95125504,
+        95125504,
+        95125504
+      ],
+      "flush_events": [
+        879,
+        879,
+        879,
+        879
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        95125504,
+        95125504,
+        95125504,
+        95125504
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.01429109601303935,
+        0.012684943969361484,
+        0.015502586960792542,
+        0.015639716060832143
+      ],
+      "measurement_with_teardown_seconds": [
+        0.02050283900462091,
+        0.018911471008323133,
+        0.022420500055886805,
+        0.0221466610673815
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "small",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        462848,
+        462848,
+        438272,
+        462848
+      ],
+      "preparation_submitted_bytes": [
+        55107584,
+        55111680,
+        55050240,
+        55111680
+      ],
+      "total_submitted_bytes": [
+        55570432,
+        55574528,
+        55488512,
+        55574528
+      ],
+      "elapsed_seconds": [
+        0.000494602,
+        0.000690313,
+        0.000720173,
+        0.000720074
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        135600,
+        135589,
+        133395,
+        135589
+      ],
+      "completed_write_bytes": [
+        55570432,
+        55574528,
+        55488512,
+        55574528
+      ],
+      "flush_events": [
+        90,
+        90,
+        85,
+        90
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        55549952,
+        55554048,
+        55468032,
+        55554048
+      ],
+      "after_end_submitted_bytes": [
+        20480,
+        20480,
+        20480,
+        20480
+      ],
+      "after_end_seconds": [
+        0.011117073008790612,
+        0.011939343996345997,
+        0.011295340023934841,
+        0.011800052016042173
+      ],
+      "measurement_with_teardown_seconds": [
+        0.011964647914282978,
+        0.01317404699511826,
+        0.012528813094832003,
+        0.01303534593898803
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "small",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1343488,
+        1343488,
+        1343488,
+        1343488
+      ],
+      "preparation_submitted_bytes": [
+        22958080,
+        23154688,
+        23285760,
+        23416832
+      ],
+      "total_submitted_bytes": [
+        24301568,
+        24498176,
+        24629248,
+        24760320
+      ],
+      "elapsed_seconds": [
+        0.001494067,
+        0.00160427,
+        0.001568418,
+        0.001500423
+      ],
+      "measurement": [
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 262144,
+          "barriers": 5,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        285712,
+        286868,
+        287782,
+        288596
+      ],
+      "completed_write_bytes": [
+        24301568,
+        24498176,
+        24629248,
+        24760320
+      ],
+      "flush_events": [
+        58,
+        58,
+        58,
+        58
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        24301568,
+        24498176,
+        24629248,
+        24760320
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.011691050021909177,
+        0.01346327899955213,
+        0.014078627922572196,
+        0.011210739961825311
+      ],
+      "measurement_with_teardown_seconds": [
+        0.013692497974261642,
+        0.015615217969752848,
+        0.016110492986626923,
+        0.013282614992931485
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "pyxis",
+      "population": 256,
+      "case": "large",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        6877184,
+        6877184,
+        5332992,
+        5332992
+      ],
+      "preparation_submitted_bytes": [
+        63508480,
+        63508480,
+        27246592,
+        27246592
+      ],
+      "total_submitted_bytes": [
+        70385664,
+        70385664,
+        32579584,
+        32579584
+      ],
+      "elapsed_seconds": [
+        1.541062541,
+        1.536220709,
+        1.470746992,
+        1.476048509
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 64,
+            "metadata_blocks": 400
+          },
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 255
+          }
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 64,
+            "metadata_blocks": 400
+          },
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 255
+          }
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 26
+          },
+          "final_pool_debt_blocks": 24,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 6,
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 252
+          }
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 26
+          },
+          "final_pool_debt_blocks": 24,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 6,
+          "operations": 16,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 1024,
+            "flushes": 32,
+            "metadata_blocks": 252
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2148,
+            "metadata_blocks": 8821
+          },
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6359
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2148,
+            "metadata_blocks": 8821
+          },
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6359
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6304
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 533,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1066,
+            "metadata_blocks": 6304
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 272,
+          "map_records": 368,
+          "metadata_blocks": 20
+        },
+        {
+          "extents": 272,
+          "map_records": 368,
+          "metadata_blocks": 20
+        },
+        {
+          "extents": 272,
+          "map_records": 357,
+          "metadata_blocks": 20
+        },
+        {
+          "extents": 272,
+          "map_records": 357,
+          "metadata_blocks": 20
+        }
+      ],
+      "verification": {
+        "bytes": 5242880,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "large",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        4554752,
+        4554752,
+        4554752,
+        4554752
+      ],
+      "preparation_submitted_bytes": [
+        65658880,
+        65654784,
+        65654784,
+        65650688
+      ],
+      "total_submitted_bytes": [
+        70213632,
+        70209536,
+        70209536,
+        70205440
+      ],
+      "elapsed_seconds": [
+        0.00388473,
+        0.003785699,
+        0.003982804,
+        0.003507254
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        410449,
+        410345,
+        410345,
+        410241
+      ],
+      "completed_write_bytes": [
+        70213632,
+        70209536,
+        70209536,
+        70205440
+      ],
+      "flush_events": [
+        563,
+        563,
+        563,
+        563
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        70197248,
+        70193152,
+        70193152,
+        70189056
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.024634198052808642,
+        0.025893434998579323,
+        0.023888126015663147,
+        0.022916855989024043
+      ],
+      "measurement_with_teardown_seconds": [
+        0.02876243507489562,
+        0.030296309967525303,
+        0.028351336950436234,
+        0.026721071917563677
+      ],
+      "verification": {
+        "bytes": 5242880,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "large",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        5943296,
+        5943296,
+        5943296,
+        5943296
+      ],
+      "preparation_submitted_bytes": [
+        90005504,
+        90005504,
+        90005504,
+        90005504
+      ],
+      "total_submitted_bytes": [
+        95948800,
+        95948800,
+        95948800,
+        95948800
+      ],
+      "elapsed_seconds": [
+        0.006182045,
+        0.005915682,
+        0.007052856,
+        0.005445373
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        865826,
+        865794,
+        865794,
+        865834
+      ],
+      "completed_write_bytes": [
+        95948800,
+        95948800,
+        95948800,
+        95948800
+      ],
+      "flush_events": [
+        831,
+        831,
+        831,
+        831
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        95948800,
+        95948800,
+        95948800,
+        95948800
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.024858657969161868,
+        0.024155947961844504,
+        0.027854328975081444,
+        0.02674765104893595
+      ],
+      "measurement_with_teardown_seconds": [
+        0.0316009889356792,
+        0.030432005994953215,
+        0.035407348070293665,
+        0.0325808790512383
+      ],
+      "verification": {
+        "bytes": 5242880,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "large",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        4259840,
+        4259840,
+        4259840,
+        4259840
+      ],
+      "preparation_submitted_bytes": [
+        55095296,
+        55111680,
+        55111680,
+        55103488
+      ],
+      "total_submitted_bytes": [
+        59355136,
+        59371520,
+        59371520,
+        59363328
+      ],
+      "elapsed_seconds": [
+        0.002319734,
+        0.00226073,
+        0.002672037,
+        0.002191724
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        131633,
+        131948,
+        131995,
+        131835
+      ],
+      "completed_write_bytes": [
+        59355136,
+        59371520,
+        59371520,
+        59363328
+      ],
+      "flush_events": [
+        83,
+        84,
+        84,
+        84
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        59334656,
+        59351040,
+        59351040,
+        59342848
+      ],
+      "after_end_submitted_bytes": [
+        20480,
+        20480,
+        20480,
+        20480
+      ],
+      "after_end_seconds": [
+        0.024864436010830104,
+        0.02434096799697727,
+        0.02285118296276778,
+        0.023197318078018725
+      ],
+      "measurement_with_teardown_seconds": [
+        0.027690399903804064,
+        0.027242993004620075,
+        0.026119137066416442,
+        0.02591281500644982
+      ],
+      "verification": {
+        "bytes": 5242880,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "large",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        4595712,
+        4595712,
+        4595712,
+        4595712
+      ],
+      "preparation_submitted_bytes": [
+        23056384,
+        23220224,
+        23711744,
+        24268800
+      ],
+      "total_submitted_bytes": [
+        27652096,
+        27815936,
+        28307456,
+        28864512
+      ],
+      "elapsed_seconds": [
+        0.004053605,
+        0.003821247,
+        0.00359807,
+        0.004047284
+      ],
+      "measurement": [
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        },
+        {
+          "application_bytes": 4194304,
+          "barriers": 2,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 16
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 533
+        }
+      ],
+      "trace_bytes": [
+        281123,
+        281899,
+        285102,
+        288895
+      ],
+      "completed_write_bytes": [
+        27652096,
+        27815936,
+        28307456,
+        28864512
+      ],
+      "flush_events": [
+        55,
+        55,
+        55,
+        55
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        27652096,
+        27815936,
+        28307456,
+        28864512
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.024950950988568366,
+        0.027164713013917208,
+        0.025479939999058843,
+        0.023283360991626978
+      ],
+      "measurement_with_teardown_seconds": [
+        0.029430797905661166,
+        0.031459051999263465,
+        0.02959188399836421,
+        0.027789695071987808
+      ],
+      "verification": {
+        "bytes": 5242880,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "pyxis",
+      "population": 256,
+      "case": "overwrite",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        5758976,
+        5758976,
+        2486272,
+        2486272
+      ],
+      "preparation_submitted_bytes": [
+        63934464,
+        63934464,
+        27566080,
+        27566080
+      ],
+      "total_submitted_bytes": [
+        69693440,
+        69693440,
+        30052352,
+        30052352
+      ],
+      "elapsed_seconds": [
+        0.742048781,
+        0.740879989,
+        0.608506628,
+        0.607775845
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 128,
+            "metadata_blocks": 826
+          },
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 526
+          }
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 128,
+            "metadata_blocks": 826
+          },
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 526
+          }
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 28
+          },
+          "final_pool_debt_blocks": 26,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 10,
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 525
+          }
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 2,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 28
+          },
+          "final_pool_debt_blocks": 26,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 10,
+          "operations": 32,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 0,
+            "metadata_blocks": 0
+          },
+          "user": {
+            "data_blocks": 54,
+            "flushes": 64,
+            "metadata_blocks": 525
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2152,
+            "metadata_blocks": 8846
+          },
+          "operations": 534,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 332,
+            "flushes": 1068,
+            "metadata_blocks": 6374
+          }
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2152,
+            "metadata_blocks": 8846
+          },
+          "operations": 534,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 332,
+            "flushes": 1068,
+            "metadata_blocks": 6374
+          }
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 534,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 332,
+            "flushes": 1068,
+            "metadata_blocks": 6318
+          }
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 270,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 534,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 332,
+            "flushes": 1068,
+            "metadata_blocks": 6318
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 290,
+          "map_records": 394,
+          "metadata_blocks": 20
+        },
+        {
+          "extents": 290,
+          "map_records": 394,
+          "metadata_blocks": 20
+        },
+        {
+          "extents": 290,
+          "map_records": 390,
+          "metadata_blocks": 20
+        },
+        {
+          "extents": 290,
+          "map_records": 390,
+          "metadata_blocks": 20
+        }
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "overwrite",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        270336,
+        258048,
+        270336,
+        270336
+      ],
+      "preparation_submitted_bytes": [
+        65933312,
+        65929216,
+        65929216,
+        65933312
+      ],
+      "total_submitted_bytes": [
+        66203648,
+        66187264,
+        66199552,
+        66203648
+      ],
+      "elapsed_seconds": [
+        0.000763527,
+        0.000722638,
+        0.000659746,
+        0.000999609
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        }
+      ],
+      "trace_bytes": [
+        407643,
+        407326,
+        407539,
+        407643
+      ],
+      "completed_write_bytes": [
+        66203648,
+        66187264,
+        66199552,
+        66203648
+      ],
+      "flush_events": [
+        580,
+        580,
+        580,
+        580
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        66187264,
+        66170880,
+        66183168,
+        66187264
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.011889523011632264,
+        0.010852966108359396,
+        0.011441890033893287,
+        0.010915847960859537
+      ],
+      "measurement_with_teardown_seconds": [
+        0.0132407610071823,
+        0.012117874925024807,
+        0.012388902949169278,
+        0.01220390503294766
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "overwrite",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        2883584,
+        2883584,
+        2883584,
+        2883584
+      ],
+      "preparation_submitted_bytes": [
+        89939968,
+        89939968,
+        89939968,
+        89939968
+      ],
+      "total_submitted_bytes": [
+        92823552,
+        92823552,
+        92823552,
+        92823552
+      ],
+      "elapsed_seconds": [
+        0.002880018,
+        0.003560846,
+        0.003166377,
+        0.00267345
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 1,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 1,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        }
+      ],
+      "trace_bytes": [
+        874233,
+        874233,
+        874233,
+        874233
+      ],
+      "completed_write_bytes": [
+        92823552,
+        92823552,
+        92823552,
+        92823552
+      ],
+      "flush_events": [
+        847,
+        847,
+        847,
+        847
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        92823552,
+        92823552,
+        92823552,
+        92823552
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.012777719995938241,
+        0.014894575928337872,
+        0.012672859011217952,
+        0.014790748013183475
+      ],
+      "measurement_with_teardown_seconds": [
+        0.01591110194567591,
+        0.01878341904375702,
+        0.016228502965532243,
+        0.017897794023156166
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "overwrite",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        204800,
+        204800,
+        217088,
+        204800
+      ],
+      "preparation_submitted_bytes": [
+        55406592,
+        55402496,
+        55365632,
+        55406592
+      ],
+      "total_submitted_bytes": [
+        55611392,
+        55607296,
+        55582720,
+        55611392
+      ],
+      "elapsed_seconds": [
+        0.000166282,
+        0.000219332,
+        0.000225694,
+        0.000183192
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        }
+      ],
+      "trace_bytes": [
+        133490,
+        133386,
+        132653,
+        133636
+      ],
+      "completed_write_bytes": [
+        55611392,
+        55607296,
+        55582720,
+        55611392
+      ],
+      "flush_events": [
+        85,
+        85,
+        82,
+        85
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        55590912,
+        55586816,
+        55566336,
+        55590912
+      ],
+      "after_end_submitted_bytes": [
+        20480,
+        20480,
+        16384,
+        20480
+      ],
+      "after_end_seconds": [
+        0.012565091950818896,
+        0.01331460289657116,
+        0.010630372096784413,
+        0.013509009964764118
+      ],
+      "measurement_with_teardown_seconds": [
+        0.013014156953431666,
+        0.014098651940003037,
+        0.011406049015931785,
+        0.014294086024165154
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "overwrite",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        757760,
+        757760,
+        757760,
+        757760
+      ],
+      "preparation_submitted_bytes": [
+        23023616,
+        23384064,
+        23252992,
+        23384064
+      ],
+      "total_submitted_bytes": [
+        23781376,
+        24141824,
+        24010752,
+        24141824
+      ],
+      "elapsed_seconds": [
+        0.000936266,
+        0.001206368,
+        0.001011191,
+        0.00087232
+      ],
+      "measurement": [
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        },
+        {
+          "application_bytes": 32768,
+          "barriers": 3,
+          "closes": 1,
+          "core_callbacks": null,
+          "operations": 32
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        },
+        {
+          "application_bytes": 1335296,
+          "barriers": 34,
+          "closes": 269,
+          "core_callbacks": null,
+          "operations": 534
+        }
+      ],
+      "trace_bytes": [
+        282113,
+        284416,
+        283706,
+        284422
+      ],
+      "completed_write_bytes": [
+        23781376,
+        24141824,
+        24010752,
+        24141824
+      ],
+      "flush_events": [
+        56,
+        56,
+        56,
+        56
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        23781376,
+        24141824,
+        24010752,
+        24141824
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.011057146941311657,
+        0.011079343035817146,
+        0.013101501972414553,
+        0.011039671953767538
+      ],
+      "measurement_with_teardown_seconds": [
+        0.012283232994377613,
+        0.012675050995312631,
+        0.014388601994141936,
+        0.012295247055590153
+      ],
+      "verification": {
+        "bytes": 1310720,
+        "contents_verified": true,
+        "files": 257,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "pyxis",
+      "population": 256,
+      "case": "compiler",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "extent_limit": 8192,
+      "metadata_limit": 4096,
+      "batch_unit": null,
+      "submission_source": "core write callbacks",
+      "measured_submitted_bytes": [
+        13062144,
+        13062144,
+        5361664,
+        5361664
+      ],
+      "preparation_submitted_bytes": [
+        63344640,
+        63344640,
+        27181056,
+        27181056
+      ],
+      "total_submitted_bytes": [
+        76406784,
+        76406784,
+        32542720,
+        32542720
+      ],
+      "elapsed_seconds": [
+        1.202038013,
+        1.200433575,
+        0.887184415,
+        0.887427123
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 320,
+            "metadata_blocks": 1885
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 230
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 1058
+          }
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 320,
+            "metadata_blocks": 1885
+          },
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 230
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 1058
+          }
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 25
+          },
+          "final_pool_debt_blocks": 24,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 229
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 1039
+          }
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 17,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 25
+          },
+          "final_pool_debt_blocks": 24,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 8,
+          "operations": 64,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 32,
+            "metadata_blocks": 229
+          },
+          "user": {
+            "data_blocks": 16,
+            "flushes": 128,
+            "metadata_blocks": 1039
+          }
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2144,
+            "metadata_blocks": 8798
+          },
+          "operations": 532,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1064,
+            "metadata_blocks": 6342
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 2144,
+            "metadata_blocks": 8798
+          },
+          "operations": 532,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 57
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1064,
+            "metadata_blocks": 6342
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 532,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1064,
+            "metadata_blocks": 6288
+          }
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 269,
+          "drain": {
+            "data_blocks": 0,
+            "flushes": 4,
+            "metadata_blocks": 24
+          },
+          "final_pool_debt_blocks": 22,
+          "final_volume_debt_blocks": 0,
+          "maximum_boundary_volume_debt_blocks": 9,
+          "operations": 532,
+          "orphan": {
+            "data_blocks": 0,
+            "flushes": 8,
+            "metadata_blocks": 56
+          },
+          "user": {
+            "data_blocks": 268,
+            "flushes": 1064,
+            "metadata_blocks": 6288
+          }
+        }
+      ],
+      "selected_state": [
+        {
+          "extents": 256,
+          "map_records": 336,
+          "metadata_blocks": 19
+        },
+        {
+          "extents": 256,
+          "map_records": 336,
+          "metadata_blocks": 19
+        },
+        {
+          "extents": 256,
+          "map_records": 334,
+          "metadata_blocks": 19
+        },
+        {
+          "extents": 256,
+          "map_records": 334,
+          "metadata_blocks": 19
+        }
+      ],
+      "verification": {
+        "bytes": 1048576,
+        "contents_verified": true,
+        "files": 256,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "compiler",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1892352,
+        1892352,
+        1818624,
+        1892352
+      ],
+      "preparation_submitted_bytes": [
+        65617920,
+        65626112,
+        65622016,
+        65626112
+      ],
+      "total_submitted_bytes": [
+        67510272,
+        67518464,
+        67440640,
+        67518464
+      ],
+      "elapsed_seconds": [
+        0.003841112,
+        0.002926778,
+        0.003666772,
+        0.003068614
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        }
+      ],
+      "trace_bytes": [
+        446788,
+        446996,
+        444933,
+        446996
+      ],
+      "completed_write_bytes": [
+        67510272,
+        67518464,
+        67440640,
+        67518464
+      ],
+      "flush_events": [
+        611,
+        611,
+        610,
+        611
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        67489792,
+        67497984,
+        67424256,
+        67497984
+      ],
+      "after_end_submitted_bytes": [
+        20480,
+        20480,
+        16384,
+        20480
+      ],
+      "after_end_seconds": [
+        0.00633842300157994,
+        0.005728680989705026,
+        0.008528303005732596,
+        0.005999374086968601
+      ],
+      "measurement_with_teardown_seconds": [
+        0.010690320981666446,
+        0.00908752903342247,
+        0.012531577027402818,
+        0.009714189916849136
+      ],
+      "verification": {
+        "bytes": 1048576,
+        "contents_verified": true,
+        "files": 256,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "compiler",
+      "durability": "operation",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": null,
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        6037504,
+        6037504,
+        6037504,
+        6037504
+      ],
+      "preparation_submitted_bytes": [
+        89767936,
+        89767936,
+        89767936,
+        89767936
+      ],
+      "total_submitted_bytes": [
+        95805440,
+        95805440,
+        95805440,
+        95805440
+      ],
+      "elapsed_seconds": [
+        0.006895986,
+        0.006781983,
+        0.005551326,
+        0.006509886
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 1,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 1,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        }
+      ],
+      "trace_bytes": [
+        902748,
+        902748,
+        902748,
+        902748
+      ],
+      "completed_write_bytes": [
+        95805440,
+        95805440,
+        95805440,
+        95805440
+      ],
+      "flush_events": [
+        893,
+        893,
+        893,
+        893
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        95805440,
+        95805440,
+        95805440,
+        95805440
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.007505729096010327,
+        0.007668965961784124,
+        0.00950893689878285,
+        0.009115585940890014
+      ],
+      "measurement_with_teardown_seconds": [
+        0.014812321052886546,
+        0.01497377292253077,
+        0.015416029025800526,
+        0.01599183992948383
+      ],
+      "verification": {
+        "bytes": 1048576,
+        "contents_verified": true,
+        "files": 256,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "ext4",
+      "population": 256,
+      "case": "compiler",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "features": "has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum",
+        "mkfs_command": [
+          "mkfs.ext4",
+          "-q",
+          "-F",
+          "-b",
+          "4096",
+          "-E",
+          "lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        245760,
+        278528,
+        278528,
+        245760
+      ],
+      "preparation_submitted_bytes": [
+        55095296,
+        55095296,
+        55095296,
+        55111680
+      ],
+      "total_submitted_bytes": [
+        55341056,
+        55373824,
+        55373824,
+        55357440
+      ],
+      "elapsed_seconds": [
+        0.000619445,
+        0.000561969,
+        0.000657432,
+        0.000587696
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        }
+      ],
+      "trace_bytes": [
+        135812,
+        136649,
+        136668,
+        136230
+      ],
+      "completed_write_bytes": [
+        55341056,
+        55373824,
+        55373824,
+        55357440
+      ],
+      "flush_events": [
+        84,
+        85,
+        83,
+        85
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        55324672,
+        55357440,
+        55357440,
+        55341056
+      ],
+      "after_end_submitted_bytes": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "after_end_seconds": [
+        0.0060741889756172895,
+        0.006949218921363354,
+        0.006486125057563186,
+        0.00510977697558701
+      ],
+      "measurement_with_teardown_seconds": [
+        0.006955422926694155,
+        0.007828718051314354,
+        0.007721339934505522,
+        0.005983768031001091
+      ],
+      "verification": {
+        "bytes": 1048576,
+        "contents_verified": true,
+        "files": 256,
+        "oracle": "seed1-operation-ledger"
+      }
+    },
+    {
+      "filesystem": "btrfs",
+      "population": 256,
+      "case": "compiler",
+      "durability": "batch",
+      "geometry_bytes": 1073741824,
+      "block_bytes": 4096,
+      "seed": 1,
+      "batch_unit": "16 create/write/rename/remove calls",
+      "submission_source": "block_bio_queue on owned loop",
+      "profile": {
+        "feature_flags": [
+          "compat_flags\t\t0x0",
+          "compat_ro_flags\t\t0xb",
+          "incompat_flags\t\t0x361"
+        ],
+        "mkfs_command": [
+          "mkfs.btrfs",
+          "-q",
+          "-f",
+          "-K",
+          "-s",
+          "4096",
+          "-n",
+          "16384",
+          "owned-1GiB-loop"
+        ],
+        "mkfs_version": "mkfs.btrfs, part of btrfs-progs v6.19.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt",
+        "mount_options": "noatime,nodiscard"
+      },
+      "measured_submitted_bytes": [
+        1310720,
+        1310720,
+        1310720,
+        1310720
+      ],
+      "preparation_submitted_bytes": [
+        23384064,
+        23613440,
+        23482368,
+        23416832
+      ],
+      "total_submitted_bytes": [
+        24694784,
+        24924160,
+        24793088,
+        24727552
+      ],
+      "elapsed_seconds": [
+        0.002137832,
+        0.00190685,
+        0.001705584,
+        0.001709377
+      ],
+      "measurement": [
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        },
+        {
+          "application_bytes": 65536,
+          "barriers": 5,
+          "closes": 16,
+          "core_callbacks": null,
+          "operations": 64
+        }
+      ],
+      "preparation": [
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        },
+        {
+          "application_bytes": 1073152,
+          "barriers": 34,
+          "closes": 268,
+          "core_callbacks": null,
+          "operations": 532
+        }
+      ],
+      "trace_bytes": [
+        289348,
+        290821,
+        289989,
+        289645
+      ],
+      "completed_write_bytes": [
+        24694784,
+        24924160,
+        24793088,
+        24727552
+      ],
+      "flush_events": [
+        58,
+        58,
+        58,
+        58
+      ],
+      "fua_events": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discard_sectors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "phase_end_submitted_bytes": [
+        24694784,
+        24924160,
+        24793088,
+        24727552
+      ],
+      "after_end_submitted_bytes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "after_end_seconds": [
+        0.008323430083692074,
+        0.007846207008697093,
+        0.0062252889620140195,
+        0.007658213027752936
+      ],
+      "measurement_with_teardown_seconds": [
+        0.010806986945681274,
+        0.010317181004211307,
+        0.008250311017036438,
+        0.009676762041635811
+      ],
+      "verification": {
+        "bytes": 1048576,
+        "contents_verified": true,
+        "files": 256,
+        "oracle": "seed1-operation-ledger"
+      }
+    }
+  ],
+  "verification_note": "Every case completed and matched the independent seed1 operation ledger in all four samples. Totals include trailing synchronization/maintenance and native teardown. Preparation is reported separately.",
+  "validation": {
+    "quick": {
+      "compiled_revision": "a0c1c75",
+      "result": "125 Tests 0 Failures 0 Ignored",
+      "command": "sudo python3 tests/ram_run.py --suite check",
+      "safety": {
+        "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-4a1983988a3b.service",
+        "kernel": "6.19.10-300.fc44.x86_64",
+        "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+        "memory_max": 4294967296,
+        "memory_peak": "319090688",
+        "mount_noswap": true,
+        "scratch_bytes": 2147483648,
+        "scratch_inodes": 65536,
+        "storage_mode": "strict",
+        "swap_max": 0,
+        "worker_gid": 1000,
+        "worker_uid": 1000
+      }
+    },
+    "extended": {
+      "compiled_revision": "a0c1c75",
+      "result": "6 Tests 0 Failures 0 Ignored",
+      "command": "sudo python3 tests/ram_run.py --suite extended",
+      "safety": {
+        "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-9003623991f3.service",
+        "kernel": "6.19.10-300.fc44.x86_64",
+        "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+        "memory_max": 4294967296,
+        "memory_peak": "493666304",
+        "mount_noswap": true,
+        "scratch_bytes": 2147483648,
+        "scratch_inodes": 65536,
+        "storage_mode": "strict",
+        "swap_max": 0,
+        "worker_gid": 1000,
+        "worker_uid": 1000
+      }
+    },
+    "sanitizers": {
+      "status": "passed",
+      "compiled_revision": "0c1d83a",
+      "flags": "CFLAGS=-O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer; ASAN_OPTIONS=detect_leaks=1:halt_on_error=1; UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1",
+      "launch": "Temporary local wrapper adds only systemd-run --setenv options to the unchanged tests/ram_run.py launcher. All storage, worker, output, memory and swap controls remain unchanged. No wrapper or runner change is committed.",
+      "runtime_packages": "Owner authorized installing libasan and libubsan 16.2.1-2.fc44 after the original missing-runtime build; all measured runs preceded this install.",
+      "quick": {
+        "result": "125 Tests 0 Failures 0 Ignored",
+        "safety": {
+          "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-8fe86d115754.service",
+          "kernel": "6.19.10-300.fc44.x86_64",
+          "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+          "memory_max": 4294967296,
+          "memory_peak": "495562752",
+          "mount_noswap": true,
+          "scratch_bytes": 2147483648,
+          "scratch_inodes": 65536,
+          "storage_mode": "strict",
+          "swap_max": 0,
+          "worker_gid": 1000,
+          "worker_uid": 1000
+        }
+      },
+      "extended": {
+        "result": "6 Tests 0 Failures 0 Ignored",
+        "safety": {
+          "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-6f240ebc8dec.service",
+          "kernel": "6.19.10-300.fc44.x86_64",
+          "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+          "memory_max": 4294967296,
+          "memory_peak": "531259392",
+          "mount_noswap": true,
+          "scratch_bytes": 2147483648,
+          "scratch_inodes": 65536,
+          "storage_mode": "strict",
+          "swap_max": 0,
+          "worker_gid": 1000,
+          "worker_uid": 1000
+        }
+      }
+    },
+    "freestanding": {
+      "compiler": "Pyxis GCC 16.2.0",
+      "archive": "complete shared core",
+      "flags": "freestanding kernel flags and compiler headers only",
+      "read_only_link": "Kernel read-only core subset plus existing lib/memory.c primitives links with no unresolved symbols and no publisher/planner/checker objects."
+    }
+  }
+}

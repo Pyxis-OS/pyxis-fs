@@ -52,7 +52,11 @@ struct pfs_writer {
   struct pfs_runtime_object *runtime_objects;
   enum pfs_status (*cleanup)(struct pfs_volume *volume,
     const struct pfs_object_id *id, struct pfs_write_result *result);
+  /* Mode bridge remains linkable without the writable publisher. */
+  enum pfs_status (*fence)(struct pfs_pool *pool, struct pfs_write_result *result);
   struct pfs_batch batch;
+  /* Borrowed only during the active user/orphan publication; NULL for fences. */
+  const struct pfs_batch *active_batch;
   pfs_random_fn random;
   void *random_context;
   uint8_t nonce[PFS_ID_SIZE];
@@ -68,6 +72,9 @@ enum pfs_status pfs_writer_prepare(struct pfs_pool *pool, struct pfs_batch **bat
 void pfs_writer_abort(struct pfs_pool *pool);
 enum pfs_status pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch,
   struct pfs_write_result *result);
+/* Called with the serial writer gate held. Settles volume debt without orphan
+ * cleanup; preserves confirmed operation progress in the supplied result. */
+enum pfs_status pfs_writer_fence(struct pfs_pool *pool, struct pfs_write_result *result);
 /* A reserved orphan sequence cannot refuse resources as ordinary admission. */
 void pfs_writer_funded_failure(struct pfs_pool *pool, enum pfs_status status);
 

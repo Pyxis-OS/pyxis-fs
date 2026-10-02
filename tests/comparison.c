@@ -63,6 +63,7 @@ struct callback_stats {
 
 struct phase_stats {
   uint64_t operations, application_bytes, closes, barriers;
+  uint64_t maximum_boundary_volume_debt, final_volume_debt, final_pool_debt;
   struct callback_stats user, orphan, drain;
 };
 
@@ -128,10 +129,28 @@ require_status(enum pfs_status status, const char *message)
 }
 
 static void
+sample_debt(void)
+{
+  if (native || !pool.writer) {
+    return;
+  }
+  const struct pfs_admit_state *state = &pool.writer->states[pool.writer->selected];
+  phase->final_volume_debt = state->retired_volume;
+  phase->final_pool_debt = state->retired_pool;
+  if (state->retired_volume > phase->maximum_boundary_volume_debt) {
+    phase->maximum_boundary_volume_debt = state->retired_volume;
+  }
+}
+
+static void
 require_result(const struct pfs_write_result *result)
 {
   require(result->completion == PFS_COMPLETE && result->health == PFS_WRITER_READY &&
-    result->maintenance_status == PFS_OK, "incomplete operation or maintenance");
+    result->maintenance_status == PFS_OK && result->operation_status == PFS_OK &&
+    (result->maintenance_completion == PFS_MAINTENANCE_NONE ||
+     result->maintenance_completion == PFS_MAINTENANCE_PENDING ||
+     result->maintenance_completion == PFS_MAINTENANCE_COMPLETE),
+    "incomplete operation or maintenance");
 }
 
 static double
@@ -157,8 +176,9 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
   (void)adapter;
   (void)context;
   if (before) {
-    callback_phase = pool.writer->status.drain_pending ? &phase->drain :
-      pool.writer->batch.orphan_cleanup ? &phase->orphan : &phase->user;
+    const struct pfs_batch *active = pool.writer->active_batch;
+    callback_phase = !active ? &phase->drain :
+      active->orphan_cleanup ? &phase->orphan : &phase->user;
     return;
   }
   callback_failed |= event->status != PFS_OK;
@@ -171,7 +191,7 @@ observe(struct test_failure *adapter, const struct test_failure_event *event,
   for (uint64_t block = event->first; block < event->first + event->count; block++) {
     bool data = false;
     if (callback_phase != &phase->drain) {
-      const struct pfs_batch *writer_batch = &pool.writer->batch;
+      const struct pfs_batch *writer_batch = pool.writer->active_batch;
       for (size_t i = 0; i < writer_batch->add_count; i++) {
         const struct check_claim *claim = &writer_batch->add[i];
         data |= !claim->type && block >= claim->first && block - claim->first < claim->count;
@@ -195,6 +215,7 @@ sync_native(void)
 static void
 completed_operation(void)
 {
+  sample_debt();
   phase->operations++;
   if (native && batch && phase->operations % 16 == 0) {
     require(syncfs(root_fd) == 0, "batch filesystem sync");
@@ -214,6 +235,7 @@ close_file(struct comparison_file *handle)
     require_status(pfs_view_close(&handle->view, &result), "close core file");
     require(result.released, "core close did not release view");
   }
+  sample_debt();
   phase->closes++;
 }
 
@@ -547,6 +569,9 @@ final_boundary(void)
     struct pfs_write_result result;
     require_status(pfs_view_checkpoint(handle.view, &result), "checkpoint");
     require_result(&result);
+    require(result.maintenance_completion == PFS_MAINTENANCE_COMPLETE,
+      "checkpoint did not complete retirement fence");
+    sample_debt();
     close_file(&handle);
     phase->barriers++;
   }
@@ -704,6 +729,7 @@ close_core(void)
     reset_trace();
     struct pfs_view_close_result result;
     require_status(pfs_view_close(&parent, &result), "close root view");
+    sample_debt();
     require_status(pfs_volume_close(&volume), "close volume");
     require_status(pfs_pool_close(&pool), "close pool");
   }
@@ -751,6 +777,9 @@ print_phase(const char *name, const struct phase_stats *stats)
     printf(",\"core_callbacks\":null}");
     return;
   }
+  printf(",\"maximum_boundary_volume_debt_blocks\":%" PRIu64
+    ",\"final_volume_debt_blocks\":%" PRIu64 ",\"final_pool_debt_blocks\":%" PRIu64,
+    stats->maximum_boundary_volume_debt, stats->final_volume_debt, stats->final_pool_debt);
   const struct callback_stats *groups[] = {&stats->user, &stats->orphan, &stats->drain};
   const char *names[] = {"user", "orphan", "drain"};
   for (size_t i = 0; i < 3; i++) {

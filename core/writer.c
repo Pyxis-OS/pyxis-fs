@@ -13,10 +13,12 @@ enum publication_phase {
 
 struct publication {
   struct pfs_edit_workspace editor;
-  struct pfs_edit_slot catalog[PFS_PLAN_CATALOG_PATH];
-  struct pfs_reference retired[PFS_PLAN_CATALOG_PATH];
-  struct pfs_reference path[PFS_PLAN_CATALOG_PATH];
+  struct pfs_edit_slot catalog[PFS_PLAN_CATALOG_UNION];
+  struct pfs_reference retired[PFS_PLAN_CATALOG_UNION];
+  struct pfs_reference path[PFS_PLAN_CATALOG_UNION];
   size_t path_count;
+  size_t volume_indices[2];
+  size_t volume_count;
   struct pfs_map_plan map;
   uint8_t root[PFS_BLOCK_SIZE];
   uint8_t slot[PFS_BLOCK_SIZE];
@@ -263,6 +265,35 @@ claim_add(struct pfs_writer *writer, struct check_claim claim)
   return PFS_OK;
 }
 
+static bool
+same_reference(const struct pfs_reference *a, const struct pfs_reference *b)
+{
+  return a->block == b->block && a->birth == b->birth && a->type == b->type &&
+    a->version == b->version;
+}
+
+static enum pfs_status
+changed_volume(struct pfs_admit_state *candidate, struct publication *publication,
+               const struct pfs_volume_id *id)
+{
+  for (size_t i = 0; i < candidate->volume_count; i++) {
+    if (!same_id(candidate->volumes[i].record.id.bytes, id->bytes)) {
+      continue;
+    }
+    for (size_t j = 0; j < publication->volume_count; j++) {
+      if (publication->volume_indices[j] == i) {
+        return PFS_OK;
+      }
+    }
+    if (publication->volume_count == 2) {
+      return PFS_LIMIT;
+    }
+    publication->volume_indices[publication->volume_count++] = i;
+    return PFS_OK;
+  }
+  return PFS_CORRUPT;
+}
+
 static enum pfs_status
 catalog_path(struct pfs_writer *writer, struct publication *publication,
              const struct pfs_volume_id *volume)
@@ -276,8 +307,9 @@ catalog_path(struct pfs_writer *writer, struct publication *publication,
       .referring_birth = source->root.header.birth}};
   struct pfs_key key = {.length = PFS_ID_SIZE};
   pfs_bytes_copy(key.bytes, volume->bytes, PFS_ID_SIZE);
+  size_t depth = 0;
   for (;;) {
-    if (publication->path_count == PFS_PLAN_CATALOG_PATH) {
+    if (depth++ == PFS_PLAN_CATALOG_PATH) {
       return PFS_LIMIT;
     }
     context.block.reference = current;
@@ -290,7 +322,22 @@ catalog_path(struct pfs_writer *writer, struct publication *publication,
     if (status != PFS_OK) {
       return status;
     }
-    publication->path[publication->path_count++] = current;
+    bool shared = false;
+    for (size_t i = 0; i < publication->path_count; i++) {
+      if (publication->path[i].block == current.block) {
+        if (!same_reference(&publication->path[i], &current)) {
+          return PFS_CORRUPT;
+        }
+        shared = true;
+        break;
+      }
+    }
+    if (!shared) {
+      if (publication->path_count == writer->arena.limits.catalog_union) {
+        return PFS_LIMIT;
+      }
+      publication->path[publication->path_count++] = current;
+    }
     if (!tree.level) {
       return PFS_OK;
     }
@@ -402,22 +449,18 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
     return PFS_LIMIT;
   }
   publication->path_count = 0;
-  size_t volume_index = SIZE_MAX;
+  publication->volume_count = 0;
+  enum pfs_status status;
   if (batch) {
-    for (size_t i = 0; i < candidate->volume_count; i++) {
-      if (same_id(candidate->volumes[i].record.id.bytes, batch->volume.record.id.bytes)) {
-        volume_index = i;
-        candidate->volumes[i] = batch->volume;
-      }
+    status = changed_volume(candidate, publication, &batch->volume.record.id);
+    if (status != PFS_OK) {
+      return status == PFS_CORRUPT ? PFS_INVALID : status;
     }
-    if (volume_index == SIZE_MAX) {
-      return PFS_INVALID;
-    }
+    candidate->volumes[publication->volume_indices[0]] = batch->volume;
   }
   size_t changes_count = 0;
-  enum pfs_status status;
-  /* Eligible pool debt is always reclaimed. Volume debt is either all protected
-   * (advance) or all unprotected (free); both retained states remain authoritative. */
+  /* Reclaim every eligible old cohort using both input states. Newly freed
+   * blocks remain unavailable to this publication's allocation selection. */
   for (size_t i = 0; i < source->map_count; i++) {
     const struct pfs_allocation_record *record = &source->maps[i];
     if (record->state != PFS_ALLOCATION_RETIRED) {
@@ -433,19 +476,16 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
         return status;
       }
       if (volume) {
-        for (size_t j = 0; j < candidate->volume_count; j++) {
-          if (same_id(record->owner.bytes, candidate->volumes[j].record.id.bytes)) {
-            if (volume_index != SIZE_MAX && volume_index != j) {
-              return PFS_CORRUPT;
-            }
-            volume_index = j;
-          }
+        status = changed_volume(candidate, publication, &record->owner);
+        if (status != PFS_OK) {
+          return status;
         }
       }
     }
   }
-  if (volume_index != SIZE_MAX) {
-    status = catalog_path(writer, publication, &candidate->volumes[volume_index].record.id);
+  for (size_t i = 0; i < publication->volume_count; i++) {
+    const struct pfs_volume_id *id = &candidate->volumes[publication->volume_indices[i]].record.id;
+    status = catalog_path(writer, publication, id);
     if (status != PFS_OK) {
       return status;
     }
@@ -504,6 +544,9 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
   struct pfs_reusable_range *ranges = (struct pfs_reusable_range *)(ids + demand);
   status = select_free(writer, ids, demand, batch);
   if (status != PFS_OK) {
+    /* Admission guarantees H+V input blocks; excluding at most V batch blocks
+     * cannot exhaust the publisher's H-block reservation. */
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
     return status;
   }
   size_t range_count = 0;
@@ -563,27 +606,45 @@ build_publication(struct pfs_writer *writer, const struct pfs_batch *batch,
   if (status != PFS_OK) {
     return status;
   }
-  if (volume_index != SIZE_MAX) {
-    size_t length;
-    status = pfs_volume_record_encode(publication->record, sizeof(publication->record),
-      &record_context, &candidate->volumes[volume_index].record, &length);
-    if (status != PFS_OK) {
-      return status;
-    }
-    struct pfs_key key = {.length = PFS_ID_SIZE};
-    pfs_bytes_copy(key.bytes, candidate->volumes[volume_index].record.id.bytes, PFS_ID_SIZE);
+  if (publication->volume_count) {
     for (size_t i = 0; i < publication->path_count; i++) {
       publication->catalog[i] = (struct pfs_edit_slot){.block = publication->map.catalog_blocks[i]};
     }
+    /* Sequential fixed-length updates share one private candidate. Consumed
+     * private nodes are reused by the editor, never added to durable debt. */
     struct pfs_edit_candidate edit = {.reader = &writer->backing->reader,
       .context = {.block = context, .kind = PFS_INDEX_VOLUMES}, .birth = generation,
       .root = source->candidate.root.volumes, .slots = publication->catalog,
       .slot_capacity = publication->path_count, .retired = publication->retired,
-      .retired_capacity = PFS_PLAN_CATALOG_PATH};
-    struct pfs_encoded_record encoded = {publication->record, length};
-    status = pfs_edit_tree(&edit, &publication->editor, PFS_EDIT_UPDATE, &key, &encoded);
-    if (status != PFS_OK || edit.retired_count != publication->path_count) {
-      return status != PFS_OK ? status : PFS_CORRUPT;
+      .retired_capacity = publication->path_count};
+    for (size_t i = 0; i < publication->volume_count; i++) {
+      const struct pfs_volume_record *volume = &candidate->volumes[publication->volume_indices[i]].record;
+      size_t length;
+      status = pfs_volume_record_encode(publication->record, sizeof(publication->record),
+        &record_context, volume, &length);
+      if (status != PFS_OK) {
+        return status;
+      }
+      struct pfs_key key = {.length = PFS_ID_SIZE};
+      pfs_bytes_copy(key.bytes, volume->id.bytes, PFS_ID_SIZE);
+      struct pfs_encoded_record encoded = {publication->record, length};
+      status = pfs_edit_tree(&edit, &publication->editor, PFS_EDIT_UPDATE, &key, &encoded);
+      if (status != PFS_OK) {
+        return status;
+      }
+    }
+    if (edit.retired_count != publication->path_count) {
+      return PFS_CORRUPT;
+    }
+    for (size_t i = 0; i < publication->path_count; i++) {
+      bool found = false;
+      for (size_t j = 0; j < edit.retired_count; j++) {
+        found |= same_reference(&publication->path[i], &edit.retired[j]);
+      }
+      if (!found || !publication->catalog[i].active ||
+          publication->catalog[i].block != publication->map.catalog_blocks[i]) {
+        return PFS_CORRUPT;
+      }
     }
     root->volumes = edit.root;
     for (size_t i = 0; i < publication->path_count; i++) {
@@ -651,10 +712,11 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, enum publicati
 {
   struct publication *publication = (struct publication *)(writer->arena.scratch +
     PFS_PLAN_SCRATCH_BYTES / 2);
+  writer->active_batch = batch;
   *phase = PUBLICATION_PLANNING;
   enum pfs_status status = build_publication(writer, batch, publication);
   if (status != PFS_OK) {
-    return status;
+    goto done;
   }
   *phase = PUBLICATION_REPLACEMENTS;
   if (batch) {
@@ -679,7 +741,7 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, enum publicati
     status = pfs_block_flush(writer->backing);
   }
   if (status != PFS_OK) {
-    return status;
+    goto done;
   }
   struct pfs_admit_state *candidate = &writer->states[2];
   *phase = PUBLICATION_SLOT;
@@ -689,7 +751,7 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, enum publicati
     status = pfs_block_flush(writer->backing);
   }
   if (status != PFS_OK) {
-    return status;
+    goto done;
   }
   size_t target = candidate->candidate.superblock.header.block ? 1 : 0;
   struct pfs_allocation_record *previous_maps = writer->states[target].maps;
@@ -707,12 +769,26 @@ publish(struct pfs_writer *writer, const struct pfs_batch *batch, enum publicati
   writer->diagnostic.candidate[target] = writer->states[target].candidate;
   writer->diagnostic.selected = (uint16_t)target;
   writer->status.drain_pending = writer->states[target].retired_volume != 0;
-  return PFS_OK;
+done:
+  writer->active_batch = NULL;
+  return status;
 }
 
-static enum pfs_status
-drain(struct pfs_writer *writer, struct pfs_write_result *result)
+enum pfs_status
+pfs_writer_fence(struct pfs_pool *pool, struct pfs_write_result *result)
 {
+  if (!pool || !pool->writer || !result || !pool->writer_busy) {
+    return PFS_INVALID;
+  }
+  struct pfs_writer *writer = pool->writer;
+  if (writer->status.health != PFS_WRITER_READY) {
+    result->maintenance_completion = PFS_MAINTENANCE_STOPPED;
+    result->maintenance_status = PFS_RECOVERY_REQUIRED;
+    result->health = writer->status.health;
+    return PFS_RECOVERY_REQUIRED;
+  }
+  result->maintenance_completion = PFS_MAINTENANCE_COMPLETE;
+  result->maintenance_status = PFS_OK;
   for (unsigned step = 0; writer->status.drain_pending && step < 2; step++) {
     enum publication_phase phase;
     enum pfs_status status = publish(writer, NULL, &phase);
@@ -747,7 +823,7 @@ pfs_writer_prepare(struct pfs_pool *pool, struct pfs_batch **batch)
   }
   struct pfs_writer *writer = pool->writer;
   const struct pfs_admit_state *source = &writer->states[writer->selected];
-  if (writer->status.drain_pending || source->candidate.superblock.header.birth > UINT64_MAX - 3) {
+  if (source->candidate.superblock.header.birth > UINT64_MAX - 3) {
     pfs_writer_end(pool, PFS_OK);
     return PFS_LIMIT;
   }
@@ -757,8 +833,10 @@ pfs_writer_prepare(struct pfs_pool *pool, struct pfs_batch **batch)
     status = select_free(writer, writer->batch.available, PFS_PLAN_VOLUME_NEW, NULL);
   }
   if (status != PFS_OK || source->reusable_blocks < writer->arena.limits.pool_blocks + PFS_PLAN_VOLUME_NEW) {
+    status = status != PFS_OK ? status : PFS_NO_SPACE;
+    stop_writer(writer, status, PUBLICATION_PLANNING, true);
     pfs_writer_end(pool, PFS_OK);
-    return status != PFS_OK ? status : PFS_NO_SPACE;
+    return status;
   }
   writer->prepared = true;
   *batch = &writer->batch;
@@ -818,7 +896,8 @@ pfs_writer_commit(struct pfs_pool *pool, struct pfs_batch *batch, struct pfs_wri
   }
   if (status == PFS_OK) {
     result->completion = PFS_COMPLETE;
-    status = drain(writer, result);
+    result->maintenance_completion = writer->status.drain_pending ?
+      PFS_MAINTENANCE_PENDING : PFS_MAINTENANCE_NONE;
   } else {
     result->operation_status = status;
     if (status == PFS_IO || status == PFS_CORRUPT || phase == PUBLICATION_SLOT) {
@@ -869,6 +948,7 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
     pool->writer->pool = pool;
     pool->writer->backing = backing;
     pool->writer->cleanup = pfs_orphan_cleanup;
+    pool->writer->fence = pfs_writer_fence;
     pool->writer->random = options->random;
     pool->writer->random_context = options->random_context;
     status = pfs_admit_open(&backing->reader, memory, options->extent_limit, options->metadata_limit,
@@ -911,11 +991,14 @@ pfs_pool_open_writer(struct pfs_pool *pool, const struct pfs_block_builder *back
       diagnostic->recovery.completion = PFS_COMPLETE;
       status = pfs_block_flush(backing);
       if (status == PFS_OK) {
-        status = drain(writer, &diagnostic->recovery);
+        status = pfs_writer_fence(pool, &diagnostic->recovery);
         if (status == PFS_OK) {
           pool->writer_busy = false;
           status = pfs_orphan_recover(pool, &diagnostic->recovery);
           pool->writer_busy = true;
+          if (status == PFS_OK) {
+            status = pfs_writer_fence(pool, &diagnostic->recovery);
+          }
         }
       } else {
         stop_writer(writer, status, PUBLICATION_REPLACEMENTS, false);

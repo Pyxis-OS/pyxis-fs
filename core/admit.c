@@ -329,7 +329,7 @@ pfs_admit_reusable(const struct pfs_admit_state *first,
 
 static enum pfs_status
 admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
-             const struct pfs_admit_state *older, bool user_batch)
+             const struct pfs_admit_state *older, bool normal_batch)
 {
   const struct pfs_plan_limits *limits = &arena->limits;
   const struct pfs_pool_root *root = &state->candidate.root;
@@ -345,13 +345,21 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   }
   if (state->map_count > limits->records || state->claim_count > limits->claims ||
       state->file_extents > limits->extents || state->metadata_blocks > limits->metadata ||
-      state->map_nodes > limits->pool_blocks - 9 || state->live_pool > limits->permanent_pool) {
+      state->map_nodes > limits->pool_blocks - limits->catalog_union - 1 ||
+      state->live_pool > limits->permanent_pool) {
     return PFS_LIMIT;
   }
   state->retired_pool = 0;
   state->retired_volume = 0;
   uint64_t charges[4] = {0};
-  struct pfs_volume_id retired_owner = {0};
+  struct pfs_volume_id retired_owners[2] = {0};
+  size_t retired_owner_count = 0;
+  struct {
+    struct pfs_volume_id owner;
+    uint64_t blocks;
+    uint8_t charge;
+  } cohorts[2] = {0};
+  uint64_t generation = state->candidate.superblock.header.birth;
   for (size_t i = 0; i < state->map_count; i++) {
     const struct pfs_allocation_record *record = &state->maps[i];
     if (record->state != PFS_ALLOCATION_FREE) {
@@ -370,11 +378,41 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
       }
       state->retired_pool += record->count;
     } else {
-      if (!pfs_bytes_are_zero(retired_owner.bytes, PFS_ID_SIZE) &&
-          !same_id(retired_owner.bytes, record->owner.bytes)) {
-        return PFS_LIMIT;
+      if (record->charge != PFS_CHARGE_ORDINARY && record->charge != PFS_CHARGE_RECOVERY) {
+        return PFS_UNSUPPORTED;
       }
-      retired_owner = record->owner;
+      size_t owner = 0;
+      while (owner < retired_owner_count &&
+             !same_id(retired_owners[owner].bytes, record->owner.bytes)) {
+        owner++;
+      }
+      if (owner == retired_owner_count) {
+        if (retired_owner_count == 2) {
+          return PFS_LIMIT;
+        }
+        retired_owners[retired_owner_count++] = record->owner;
+      }
+      if (normal_batch) {
+        size_t cohort;
+        if (record->retirement == generation) {
+          cohort = 0;
+        } else if (record->retirement == generation - 1) {
+          cohort = 1;
+        } else {
+          return PFS_LIMIT;
+        }
+        if (cohorts[cohort].blocks &&
+            (!same_id(cohorts[cohort].owner.bytes, record->owner.bytes) ||
+             cohorts[cohort].charge != record->charge)) {
+          return PFS_LIMIT;
+        }
+        cohorts[cohort].owner = record->owner;
+        cohorts[cohort].charge = record->charge;
+        cohorts[cohort].blocks += record->count;
+        if (cohorts[cohort].blocks > PFS_PLAN_VOLUME_RETIRED) {
+          return PFS_LIMIT;
+        }
+      }
       state->retired_volume += record->count;
     }
   }
@@ -388,7 +426,9 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   protected_retirements(state, older);
   if (state->retired_pool > 2 * limits->pool_blocks ||
       state->protected_pool > limits->pool_blocks ||
-      state->retired_volume > PFS_PLAN_VOLUME_RETIRED) {
+      state->retired_volume > 2 * PFS_PLAN_VOLUME_RETIRED ||
+      state->protected_volume > (normal_batch ? PFS_PLAN_VOLUME_RETIRED :
+                                               2 * PFS_PLAN_VOLUME_RETIRED)) {
     return PFS_LIMIT;
   }
   uint64_t permanent = limits->permanent_pool;
@@ -433,9 +473,8 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   if (permanent > state->candidate.superblock.block_count - 2) {
     return PFS_NO_SPACE;
   }
-  uint64_t remaining = user_batch ? 2 : state->retired_volume ?
+  uint64_t remaining = normal_batch ? 2 : state->retired_volume ?
                        (state->protected_volume ? 2 : 1) : 0;
-  uint64_t generation = state->candidate.superblock.header.birth;
   if (orphan_work > (UINT64_MAX - remaining) / 3 ||
       generation > UINT64_MAX - remaining - 3 * orphan_work) {
     return PFS_LIMIT;
@@ -446,7 +485,8 @@ admit_limits(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   if (status != PFS_OK) {
     return status;
   }
-  return state->reusable_blocks < limits->pool_blocks ? PFS_NO_SPACE : PFS_OK;
+  return state->reusable_blocks < limits->pool_blocks + PFS_PLAN_VOLUME_NEW ?
+         PFS_NO_SPACE : PFS_OK;
 }
 
 struct opening {
@@ -543,7 +583,7 @@ borrow_state(struct check_state *out, const struct pfs_admit_state *source,
 
 enum pfs_status
 pfs_admit_candidate(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
-                    const struct pfs_admit_state *older, bool user_batch)
+                    const struct pfs_admit_state *older, bool normal_batch)
 {
   if (!arena || !arena->allocation.data || !state || !older || state == older ||
       !state->maps || !state->map_count || !state->claims || !state->claim_count ||
@@ -661,7 +701,7 @@ pfs_admit_candidate(struct pfs_plan_arena *arena, struct pfs_admit_state *state,
   if (results[0].status != PFS_OK) {
     return results[0].status;
   }
-  enum pfs_status policy = admit_limits(arena, state, older, user_batch);
+  enum pfs_status policy = admit_limits(arena, state, older, normal_batch);
   if (policy != PFS_OK) {
     return policy;
   }

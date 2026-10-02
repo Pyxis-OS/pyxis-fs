@@ -245,7 +245,10 @@ expect_complete(const struct pfs_write_result *result, bool namespace_confirmed)
   TEST_ASSERT_EQUAL(namespace_confirmed, result->namespace_confirmed);
   struct pfs_writer_status status;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
-  TEST_ASSERT_FALSE(status.drain_pending);
+  if (result->maintenance_completion == PFS_MAINTENANCE_PENDING) {
+    TEST_ASSERT_TRUE(status.drain_pending);
+  }
+  TEST_ASSERT_FALSE(status.invariant_failure);
 }
 
 static void
@@ -357,9 +360,12 @@ check_durable(uint64_t orphans, uint64_t grants)
     NULL, NULL, &check));
   for (size_t i = 0; i < 2; i++) {
     TEST_ASSERT_TRUE(check.state[i].complete);
-    TEST_ASSERT_EQUAL_UINT64(orphans, check.state[i].orphans);
-    TEST_ASSERT_EQUAL_UINT64(grants, check.state[i].grants);
   }
+  /* Logical mutation expectations describe the selected durable state; the
+   * older retained state may still protect the preceding namespace/cleanup. */
+  unsigned selected = check.state[1].generation > check.state[0].generation;
+  TEST_ASSERT_EQUAL_UINT64(orphans, check.state[selected].orphans);
+  TEST_ASSERT_EQUAL_UINT64(grants, check.state[selected].grants);
   TEST_ASSERT_TRUE(test_failure_close(&snapshot));
 }
 
@@ -655,7 +661,7 @@ live_tokens_invalidate_only_directories_whose_entries_change(void)
 }
 
 static void
-final_orphan_release_drains_data_and_grants_without_more_memory(void)
+final_orphan_release_finishes_deletion_and_fences_without_more_memory(void)
 {
   open_fixture();
   struct pfs_write_result result;
@@ -667,10 +673,18 @@ final_orphan_release_drains_data_and_grants_without_more_memory(void)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&views[1], &closing));
   TEST_ASSERT_TRUE(closing.released);
   TEST_ASSERT_NULL(views[1]);
-  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, closing.maintenance_completion);
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_PENDING, closing.maintenance_completion);
   TEST_ASSERT_EQUAL(PFS_OK, closing.maintenance_status);
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, closing.health);
   TEST_ASSERT_GREATER_THAN_UINT64(writes, device.ordinals[TEST_FAILURE_WRITE]);
+  check_durable(0, NS_VOLUMES);
+  size_t allocations = device.backing.allocation_calls;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(views[0], &result));
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, result.maintenance_completion);
+  TEST_ASSERT_EQUAL_UINT64(allocations, device.backing.allocation_calls);
+  struct pfs_writer_status health;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &health));
+  TEST_ASSERT_FALSE(health.drain_pending);
   device.backing.fail_after = SIZE_MAX;
   check_durable(0, NS_VOLUMES);
   close_fixture();
@@ -915,6 +929,7 @@ quota_filled_namespace_preserves_multiple_orphan_nodes_and_funded_release(void)
 }
 
 static struct test_failure_flush_cut cleanup_cuts[TEST_FAILURE_EVENTS_MAX];
+static size_t cleanup_cut_count;
 static uint64_t cleanup_generations[TEST_FAILURE_EVENTS_MAX];
 struct cleanup_progress {
   uint64_t orphans;
@@ -973,8 +988,19 @@ startup_cut_completion(const struct test_failure_flush_cut *cut)
 {
   const struct cleanup_progress *before = &cleanup_before[cut->ordinal - 1];
   const struct cleanup_progress *after = &cleanup_after[cut->ordinal - 1];
-  if (!before->orphans) {
-    /* Final paired deletion was confirmed; only its retained-root drain fails. */
+  bool cleanup_started = false;
+  for (size_t i = 0; i < cleanup_cut_count; i++) {
+    if (cleanup_cuts[i].publication > cut->publication) {
+      break;
+    }
+    const struct cleanup_progress *prior = &cleanup_before[cleanup_cuts[i].ordinal - 1];
+    const struct cleanup_progress *next = &cleanup_after[cleanup_cuts[i].ordinal - 1];
+    cleanup_started |= prior->orphans != next->orphans ||
+      prior->file_blocks != next->file_blocks || prior->grants != next->grants;
+  }
+  if (!cleanup_started || !before->orphans) {
+    /* Allocator fencing is independent of orphan progress: an initial fence
+     * has not begun cleanup; the trailing fence follows confirmed deletion. */
     return PFS_COMPLETE;
   }
   bool progress = before->orphans != after->orphans ||
@@ -1001,11 +1027,12 @@ finish_cleanup_trace(struct test_failure *adapter)
   struct pfs_writer_status status;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_writer_status(&pool, &status));
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, status.health);
-  TEST_ASSERT_FALSE(status.drain_pending);
+  TEST_ASSERT_FALSE(status.invariant_failure);
   size_t count;
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_flush_cuts(adapter, cleanup_flush_base,
     cleanup_cuts, TEST_FAILURE_EVENTS_MAX, &count));
   TEST_ASSERT_GREATER_THAN_UINT(0, count);
+  cleanup_cut_count = count;
   return count;
 }
 
@@ -1189,8 +1216,7 @@ interrupted_startup_preserves_confirmed_generation_and_withholds_instance(void)
     TEST_ASSERT_NULL(pool.reader);
     TEST_ASSERT_EQUAL_UINT64(0, snapshot.memory->used);
     TEST_ASSERT_EQUAL_UINT64(generation, opening.confirmed_generation);
-    enum pfs_completion expected = cut->publication == 0 ?
-      cut->publishes ? PFS_UNKNOWN : PFS_STOPPED : startup_cut_completion(cut);
+    enum pfs_completion expected = startup_cut_completion(cut);
     TEST_ASSERT_EQUAL(expected, opening.recovery.completion);
     TEST_ASSERT_EQUAL(PFS_OK, opening.recovery.operation_status);
     TEST_ASSERT_EQUAL(PFS_IO, opening.recovery.maintenance_status);
@@ -1278,12 +1304,14 @@ set_seed_generation(uint64_t generation)
 static void
 generation_promise_funds_retained_file_cleanup_at_its_boundary(void)
 {
-  /* Twelve orphan work units: four data blocks, seven grants and final
-   * object/marker deletion. Each reserves three generations, in addition to
-   * the unlink transaction and its two maintenance publications. */
+  uint64_t data_blocks = (sizeof(original) + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE;
+  uint64_t work = data_blocks + NS_FILE_GRANTS + 1;
+  uint64_t generations = 3 + 3 * work;
+  /* Conservative funding covers each orphan unit and a terminal fence at
+   * every intermediate stop, independent of the healthy publication count. */
   for (unsigned extra = 0; extra < 2; extra++) {
     build_seed(1024, 1024, 1024);
-    set_seed_generation(UINT64_MAX - 39 + extra);
+    set_seed_generation(UINT64_MAX - generations + extra);
     open_seed(64, 64);
     struct pfs_write_result result;
     uint64_t writes = device.ordinals[TEST_FAILURE_WRITE];
@@ -1300,6 +1328,8 @@ generation_promise_funds_retained_file_cleanup_at_its_boundary(void)
       expect_complete(&result, true);
       test_failure_memory_fail_after(&device, 0);
       close_view(1);
+      TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(views[0], &result));
+      TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, result.maintenance_completion);
       device.backing.fail_after = SIZE_MAX;
       check_durable(0, NS_VOLUMES);
     }
@@ -1354,6 +1384,7 @@ directory_child_handle_file_rights_are_invalid_before_publication(void)
 
 struct cleanup_charge_observation {
   enum pfs_budget_charge expected;
+  uint64_t initial_generation;
   enum pfs_status status;
   size_t retired_states;
   bool wrong_volume_charge;
@@ -1403,9 +1434,11 @@ scan_durable_charges(struct test_failure *adapter,
         const struct pfs_volume_id pool_owner = {{0}};
         if (allocation.state == PFS_ALLOCATION_RETIRED &&
             memcmp(&allocation.owner, &pool_owner, sizeof(pool_owner))) {
-          *volume_retired += allocation.count;
-          charge_observation.wrong_volume_charge |=
-            allocation.charge != charge_observation.expected;
+          if (allocation.retirement > charge_observation.initial_generation) {
+            *volume_retired += allocation.count;
+            charge_observation.wrong_volume_charge |=
+              allocation.charge != charge_observation.expected;
+          }
         }
       }
     }
@@ -1475,6 +1508,17 @@ static void
 start_charge_observation(struct test_failure *adapter, enum pfs_budget_charge expected)
 {
   charge_observation = (struct cleanup_charge_observation){.expected = expected};
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock super;
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(adapter, block, 1, bytes));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes),
+      PFS_POOL_BLOCKS_MIN, block, &super));
+    if (super.header.birth > charge_observation.initial_generation) {
+      charge_observation.initial_generation = super.header.birth;
+    }
+  }
   adapter->observer = observe_durable_cleanup_charges;
 }
 
@@ -1538,6 +1582,32 @@ static struct pfs_object_id small_id;
 static uint8_t small_bytes[2u * PFS_BLOCK_SIZE];
 static size_t small_length, small_slot_checks;
 static bool small_atomic, small_payload_violation;
+static uint64_t small_unlink_generation, small_deletion_generation;
+
+static enum pfs_status
+small_slot_generation(struct test_failure *adapter, unsigned slot, uint64_t *generation)
+{
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+  struct pfs_superblock super;
+  enum pfs_status status = test_failure_durable_read(adapter, block, 1, bytes);
+  if (status == PFS_OK) {
+    status = pfs_superblock_decode(bytes, sizeof(bytes), PFS_POOL_BLOCKS_MIN, block, &super);
+  }
+  if (status == PFS_OK) {
+    *generation = super.header.birth;
+  }
+  return status;
+}
+
+static uint64_t
+small_selected_generation(struct test_failure *adapter)
+{
+  uint64_t first, last;
+  TEST_ASSERT_EQUAL(PFS_OK, small_slot_generation(adapter, 0, &first));
+  TEST_ASSERT_EQUAL(PFS_OK, small_slot_generation(adapter, 1, &last));
+  return first > last ? first : last;
+}
 
 /* Locate records through each durable root independently. The fixture supplies
  * IDs and expected bytes, never block placements or editor/checker summaries. */
@@ -1635,14 +1705,19 @@ small_durable_object(struct test_failure *adapter, unsigned slot,
 }
 
 static bool
-small_payload_matches(struct test_failure *adapter, unsigned slot)
+small_payload_matches(struct test_failure *adapter, unsigned slot, uint64_t deletion_generation)
 {
+  uint64_t generation;
+  if (small_slot_generation(adapter, slot, &generation) != PFS_OK) {
+    return false;
+  }
+  bool expected_present = generation < deletion_generation;
   struct pfs_object_record object;
   enum pfs_status status = small_durable_object(adapter, slot, &object);
   if (status == PFS_NOT_FOUND) {
-    return true;
+    return !expected_present;
   }
-  if (status != PFS_OK || object.kind != PFS_OBJECT_FILE ||
+  if (!expected_present || status != PFS_OK || object.kind != PFS_OBJECT_FILE ||
       object.file_length > small_length ||
       (small_atomic && object.file_length != small_length)) {
     return false;
@@ -1677,11 +1752,21 @@ observe_small_cleanup(struct test_failure *adapter, const struct test_failure_ev
   observe_cleanup_generation(adapter, event, before, context);
   observe_durable_cleanup_charges(adapter, event, before, context);
   observe_first_publication(adapter, event, before, context);
+  if (!before && event->kind == TEST_FAILURE_FLUSH && event->status == PFS_OK &&
+      cleanup_trace_status == PFS_OK) {
+    size_t index = event->ordinal - cleanup_flush_base - 1;
+    if (index < TEST_FAILURE_EVENTS_MAX && cleanup_before[index].orphans == 1 &&
+        cleanup_after[index].orphans == 0) {
+      /* Marker removal identifies the confirmed paired deletion independently
+       * of the payload/object decoder. Earlier allocator fences do not do so. */
+      small_deletion_generation = cleanup_generations[index] + 1;
+    }
+  }
   if (before && event->kind == TEST_FAILURE_WRITE &&
       (event->first == 0 || event->first == adapter->builder.reader.geometry.block_count - 1)) {
     small_slot_checks++;
-    small_payload_violation |= !small_payload_matches(adapter, 0) ||
-                               !small_payload_matches(adapter, 1);
+    small_payload_violation |= !small_payload_matches(adapter, 0, small_deletion_generation) ||
+                               !small_payload_matches(adapter, 1, small_deletion_generation);
   }
 }
 
@@ -1689,11 +1774,13 @@ static void
 start_small_cleanup(struct test_failure *adapter, bool atomic)
 {
   start_cleanup_trace(adapter);
+  small_unlink_generation = small_selected_generation(adapter);
+  small_deletion_generation = UINT64_MAX;
   small_atomic = atomic;
   small_slot_checks = 0;
   small_payload_violation = false;
   publication_observed = false;
-  charge_observation = (struct cleanup_charge_observation){.expected = PFS_CHARGE_RECOVERY};
+  start_charge_observation(adapter, PFS_CHARGE_RECOVERY);
   adapter->observer = observe_small_cleanup;
 }
 
@@ -1727,8 +1814,22 @@ create_small_file(size_t length)
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_write(views[2], 0, small_bytes, length, &result));
   expect_complete(&result, false);
   expect_bytes(views[2], small_bytes, length);
+  uint8_t bytes[PFS_BLOCK_SIZE];
+  uint64_t generation = 0;
+  unsigned selected = 0;
+  for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t block = slot ? PFS_POOL_BLOCKS_MIN - 1 : 0;
+    struct pfs_superblock super;
+    TEST_ASSERT_EQUAL(PFS_OK, test_failure_durable_read(&device, block, 1, bytes));
+    TEST_ASSERT_EQUAL(PFS_OK, pfs_superblock_decode(bytes, sizeof(bytes),
+      PFS_POOL_BLOCKS_MIN, block, &super));
+    if (super.header.birth > generation) {
+      generation = super.header.birth;
+      selected = slot;
+    }
+  }
   struct pfs_object_record object;
-  TEST_ASSERT_EQUAL(PFS_OK, small_durable_object(&device, 0, &object));
+  TEST_ASSERT_EQUAL(PFS_OK, small_durable_object(&device, selected, &object));
   TEST_ASSERT_EQUAL(PFS_STORAGE_INLINE, object.storage_kind);
   TEST_ASSERT_EQUAL_UINT64((length + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE,
     object.inline_extent.count);
@@ -1744,6 +1845,7 @@ unlink_small_file(void)
   struct pfs_write_result result;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_remove(views[0], (const uint8_t *)"small", 5, &result));
   expect_complete(&result, true);
+  small_unlink_generation = small_selected_generation(&device);
   expect_missing(0, "small");
   expect_fresh_id_denied(&small_id);
   expect_bytes(views[2], small_bytes, small_length);
@@ -1757,22 +1859,23 @@ expect_small_durable(struct test_failure *adapter, uint64_t generation, bool cle
     NULL, NULL, &check));
   TEST_ASSERT_TRUE(check.cross_complete);
   for (unsigned slot = 0; slot < 2; slot++) {
+    uint64_t slot_generation;
+    TEST_ASSERT_EQUAL(PFS_OK, small_slot_generation(adapter, slot, &slot_generation));
+    bool expected_present = !cleaned && slot_generation < small_deletion_generation;
+    bool expected_orphan = expected_present && slot_generation >= small_unlink_generation;
     struct pfs_object_record object;
     enum pfs_status status = small_durable_object(adapter, slot, &object);
-    TEST_ASSERT_TRUE(status == PFS_OK || status == PFS_NOT_FOUND);
-    bool present = status == PFS_OK;
+    TEST_ASSERT_EQUAL(expected_present ? PFS_OK : PFS_NOT_FOUND, status);
     TEST_ASSERT_TRUE(check.state[slot].complete);
-    TEST_ASSERT_EQUAL_UINT64(present, check.state[slot].orphans);
-    TEST_ASSERT_EQUAL_UINT64((sizeof(original) + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE + present,
+    TEST_ASSERT_EQUAL_UINT64(expected_orphan, check.state[slot].orphans);
+    TEST_ASSERT_EQUAL_UINT64((sizeof(original) + PFS_BLOCK_SIZE - 1) / PFS_BLOCK_SIZE + expected_present,
       check.state[slot].file_blocks);
     TEST_ASSERT_EQUAL_UINT64(NS_GRANTS, check.state[slot].grants);
-    TEST_ASSERT_TRUE(small_payload_matches(adapter, slot));
-    if (present) {
-      const struct pfs_object_id parent = {{0}};
-      TEST_ASSERT_EQUAL_MEMORY(&parent, &object.parent, sizeof(parent));
-    }
-    if (cleaned) {
-      TEST_ASSERT_FALSE(present);
+    TEST_ASSERT_TRUE(small_payload_matches(adapter, slot, cleaned ? 0 : small_deletion_generation));
+    if (expected_present) {
+      const struct pfs_object_id no_parent = {{0}};
+      TEST_ASSERT_EQUAL_MEMORY(expected_orphan ? &no_parent : &root_id,
+        &object.parent, sizeof(root_id));
     }
   }
   if (generation) {
@@ -1815,10 +1918,13 @@ small_orphan_close_and_startup_preserve_retained_payload_and_recovery_accounting
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&views[2], &closing));
   TEST_ASSERT_TRUE(closing.released);
   TEST_ASSERT_NULL(views[2]);
-  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, closing.maintenance_completion);
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_PENDING, closing.maintenance_completion);
   TEST_ASSERT_EQUAL(PFS_OK, closing.maintenance_status);
   TEST_ASSERT_EQUAL(PFS_WRITER_READY, closing.health);
   finish_small_cleanup(&device);
+  struct pfs_write_result fence;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(views[0], &fence));
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, fence.maintenance_completion);
   device.backing.fail_after = SIZE_MAX;
   close_handles();
   expect_small_durable(&device, 0, true);
@@ -1956,6 +2062,7 @@ small_cleanup_planning_reads_stop_access_without_fallback(void)
   uint64_t read_base = device.ordinals[TEST_FAILURE_READ];
   test_failure_trace_reset(&device);
   close_view(2);
+  small_deletion_generation = small_selected_generation(&device);
   size_t count = 0;
   /* Every healthy pre-write read is a planning cut, including the eligibility
    * grant probe. No physical address or saved callback ordinal is required. */
@@ -2080,6 +2187,9 @@ small_orphan_near_minimum_profile_and_quota_fund_last_release(void)
   test_failure_memory_fail_after(&device, 0);
   close_view(2);
   finish_small_cleanup(&device);
+  struct pfs_write_result fence;
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(views[0], &fence));
+  TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, fence.maintenance_completion);
   device.backing.fail_after = SIZE_MAX;
   close_handles();
   expect_small_durable(&device, 0, true);
@@ -2097,7 +2207,7 @@ run_namespace_tests(void)
   RUN_TEST(namespace_authority_precedes_names_and_noops_do_not_publish);
   RUN_TEST(rename_refuses_volume_crossing_and_directory_replacement);
   RUN_TEST(live_tokens_invalidate_only_directories_whose_entries_change);
-  RUN_TEST(final_orphan_release_drains_data_and_grants_without_more_memory);
+  RUN_TEST(final_orphan_release_finishes_deletion_and_fences_without_more_memory);
   RUN_TEST(failed_final_release_consumes_handle_and_startup_drains_abandoned_orphan);
   RUN_TEST(durable_restart_loses_runtime_retention_and_cleans_validated_orphans);
   RUN_TEST(minimum_quota_profile_and_computed_recovery_fund_final_release);

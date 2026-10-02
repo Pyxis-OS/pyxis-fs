@@ -9,9 +9,9 @@ standalone sparse images from source directories and provide diagnostic `info`,
 partition selection belongs to the host adapter. See [host-tool usage](host-tools.md).
 Private canonical validators, COW tree editors and allocation-map planners are
 also implemented. Explicit writable open adds retained-state validation, bounded
-admission, ordered publication and synchronous reclamation. File and namespace
-mutation APIs remain unimplemented; a private editor interface exercises real
-content replacement in the maintained host suite.
+admission, individually durable publication and bounded retirement carryover.
+Held-authority file and namespace mutation APIs use the private COW editor and
+publisher; checkpoints settle pool-wide volume retirement.
 
 ## Build
 
@@ -347,10 +347,10 @@ Protection and valid retire/free transitions require separate caller evidence.
 
 `pfs_plan_map_build` takes a canonical base after volume changes, old pool/map/
 catalog retirements and eligible frees, with no live pool allocation born in the
-candidate. For base count `R` and catalog path count `C <= 8`, it chooses
-`S = ceil(23*(R + 2*C + 4)/21)`, then `ceil(S/46)` map leaves and successive
+candidate. For base count `R` and catalog union node count `c <= 16`, it chooses
+`S = ceil(23*(R + 2*c + 4)/21)`, then `ceil(S/46)` map leaves and successive
 `ceil(previous/65)` internal levels. If `F(S)` counts those nodes, it reserves
-exactly `N = F(S) + C + 1` reusable blocks before overlaying their allocations.
+exactly `N = F(S) + c + 1` reusable blocks before overlaying their allocations.
 Arbitrary placement adds at most `2*N` records; the selected `S` bounds the final
 count without iterating allocation or allocating unused live padding.
 Every map node is reachable and nonempty; internal groups have at least two
@@ -364,17 +364,39 @@ further allocation, and its borrowed output expires on the next plan or destroy.
 
 `pfs_plan_limits` computes envelopes from explicit extent capacity `E`, volume
 metadata capacity `M` and volume count `v`; it chooses no defaults or admission
-policy. With `V=128`, `D=256`, and `Pcat=4*v-2`:
+policy. With `V=128`, `D=256`, `Pcat=4*v-2` and `C=min(Pcat,16)`:
 
 ```text
-K = 1 + 2*(E + M + D)
-S(H) = ceil(23*(K + 2*Pcat + 6*H + 20)/21)
-Hclosed = ceil((K + 2*Pcat + 231)/15)
+K = 1 + 2*(E + M + 2*D)
+Rbase(H) = K + 2*Pcat + 6*H
+S(H) = ceil(23*(Rbase(H) + 2*C + 4)/21)
+Hclosed = ceil((K + 2*Pcat + 23*C + 47)/15)
 ```
 
-It scans `H=10..Hclosed` for the first `F(S(H)) + 9 <= H`, subject to record
-and depth limits. Permanent pool capacity is `Pmax=Pcat+H`; recovery capacity is
-`3*H+V+D`. One capped arena reserves three S-entry map vectors at 80 bytes per
+It scans `H=C+2..Hclosed` for the first `F(S(H)) + C + 1 <= H`, subject to
+record and depth limits. Both retained opening states and every candidate require
+map-node count at most `H-C-1` and live pool blocks at most `Pmax=Pcat+H`;
+imported maps need not have the planner's compact shape. C is the conservative
+catalog union ceiling; actual shared nodes are counted and replaced once.
+Recovery capacity is at least `3*H+2*D+V`, also honoring the formatter's 256-block
+floor. Ordinary workspace is at least `max(1024,2*D+V)`; migration remains empty
+and keeps its formatter floor. The workspace envelope guarantees `H+V` reusable
+input blocks without allocation from same-publication frees.
+
+The normal selected state at generation g carries at most D volume retirement
+from each of retirement generations g and g-1, for at most 2D total and at most two owner volumes. Pool retirement
+remains bounded by 2H, with at most H protected. Checked writable opening accepts
+up to 2D protected volume blocks and two owners without imposing a runtime debt-age
+rule. Its initial fence establishes empty volume debt before orphan batching;
+normal candidates then preserve the stronger two-cohort shape.
+
+Generation funding from confirmed g requires `g+a+3*T <= UINT64_MAX`, where T is
+remaining orphan work and a is zero with no volume debt, one for entirely eligible
+debt and two if any is protected. An ordinary candidate additionally funds its one
+publication, two terminal fence generations and `3*T_projected`. Each orphan batch
+reduces T by at least one; generation increments remain exactly one without wrap.
+
+One capped arena reserves three S-entry map vectors at 80 bytes per
 slot, three `(E+M+Pmax)`-entry claim vectors at 96 bytes, 48 bytes per possible
 object (`min(1048576,29*M)`), `(H+V)` block buffers, `8*(H+V+D)` delta slots at
 128 bytes, and 8 MiB scratch. Opening validation and live handles are additional
@@ -547,8 +569,9 @@ states, canonical metadata, the namespace occupancy profile, unchanged volume
 identities/promises, permanent deletion headroom and the computed workspace
 reserves. It rejects degraded states, live workspace charges, occupied migration
 charges. Opening reserves the three map/claim vectors and commit/drain arena,
-drains selected volume retirement, and cleans abandoned orphans before exposing
-the writer. Views cannot consume that reservation. The first unlink may enable
+fences selected volume retirement, cleans abandoned orphans, and performs a final
+retirement fence before exposing the writer. Views cannot consume that reservation.
+The first unlink may enable
 the existing volume ORPHANS feature; each retained state is checked using its own
 feature mask, including the older state without that feature.
 
@@ -564,8 +587,13 @@ editors. Those editors establish semantic changes and complete changed-path
 claims; the publisher independently reconciles physical maps/claims, counts,
 limits, charges and retained protection. It does not rescan unchanged file trees
 for each transaction. `prepare` holds the serial operation gate until `commit` or
-`abort`; candidate refusal performs no device writes and leaves a healthy writer
-usable. There is no public test transaction interface. File mutation uses this
+`abort`; ordinary quota/profile/capacity admission refusal performs no device writes
+and leaves a healthy writer usable. Failure to obtain publication workspace already
+guaranteed by writable-state admission is an admission/editor invariant failure,
+even during preparation or planning before any device write. It stops mutation
+with `READABLE_STOPPED`, escalating to `ACCESS_STOPPED` if integrity or publication
+certainty is lost; that instance cannot retry itself healthy. There is no public
+test transaction interface. File mutation uses this
 same private path; it does not introduce an alternate publisher.
 
 Volume preparation prefers the first physically contiguous eligible run covering
@@ -579,13 +607,21 @@ fragmentation and different publication births can still prevent extent coalesci
 
 Every admitted publication writes its complete replacement blocks, flushes,
 attempts the older slot once, then flushes again. No short/failed write is retried.
-All map nodes, pool root and changed catalog path are included in allocation
+All map nodes, pool root and changed catalog paths are included in allocation
 accounting. Only the final successful flush rotates the confirmed in-memory
-state. A user batch retiring volume blocks runs up to two maintenance publications:
-advance the older slot, then durably free eligible volume debt. Startup drains
-selected-state volume debt before successful opening. Maintenance frees eligible
-pool debt on every publication and leaves the bounded, recovery-charged remainder;
-it does not chase zero retired metadata.
+state. User and orphan batches may carry bounded volume retirement across
+publications. Each publication frees eligible input debt, including debt owned by
+another volume, while replacements allocate only from already-reusable input
+space. A candidate changing one volume and freeing another updates their catalog
+paths together. The normal pipeline retains at most two volume cohorts; the most
+recent remains protected until the older slot advances. Admission funds terminal
+reclamation independently of another application mutation.
+
+An explicit retirement fence uses at most two pure publications to advance retained
+protection and durably free selected volume debt. Writable startup fences before
+and after abandoned-orphan cleanup. Every publication also frees eligible pool
+debt and leaves the bounded, recovery-charged remainder; no fence chases zero
+retired pool metadata.
 
 Free/reuse decisions use both complete retained summaries and ended synchronous
 operation/I/O borrows. A selected free record must already be durably published
@@ -599,12 +635,17 @@ read-only-mode facilities. Callback reentry into ordinary/lifetime operations is
 `PFS_BUSY`; in-memory health reporting remains available.
 
 `pfs_view_checkpoint` requires the held `file.checkpoint` or `dir.checkpoint`
-right independently of read/lookup rights. Existing grants are unchanged. With
-synchronous funded drains complete it performs no publication. A stopped instance
-cannot use checkpoint, reopening its handles or close to retry maintenance.
+right independently of read/lookup rights. Existing grants are unchanged. Its
+fence settles pool-wide volume debt, including other volumes, without changing
+object authority or cleaning retained orphans. It reports maintenance `COMPLETE`
+even when no publication is needed. A fence error is both the checkpoint operation
+error and a stopped/unknown maintenance outcome; replacement/pre-slot failures
+remain `READABLE_STOPPED`. A stopped instance cannot use checkpoint, reopening its
+handles or close to retry maintenance.
 Pool/volume close releases runtime resources without writes or an implicit flush.
-Last-view close on a healthy writer completes funded orphan cleanup as described
-below; stopped close only releases runtime references.
+Last-view close on a healthy writer completes funded orphan deletion as described
+below and may leave retirement pending; stopped close only releases runtime
+references.
 
 | Failure | Confirmed state and subsequent access |
 | --- | --- |
@@ -612,7 +653,7 @@ below; stopped close only releases runtime references.
 | Replacement write or pre-slot flush error | `STOPPED`, `READABLE_STOPPED`; confirmed-state reads remain authorized |
 | Slot-write attempt or final flush error | `UNKNOWN`, `ACCESS_STOPPED`; no ordinary access |
 | Cleanup error after confirmed user publication | User remains `COMPLETE`; cleanup reports stopped/unknown independently with the corresponding health |
-| Unexpected resource failure during admitted drain | Admission/editor invariant failure; mutation remains stopped and cannot retry itself healthy |
+| Failure to obtain already-guaranteed publication workspace, or unexpected resource failure during funded cleanup/fence | Admission/editor invariant failure; `READABLE_STOPPED`, escalating if integrity or publication certainty is lost; that instance cannot retry itself healthy |
 | Integrity failure or any backing read failure during an ordinary operation, publication planning or maintenance | `ACCESS_STOPPED`, pool-wide, even for a transient read error |
 
 The initial writer deliberately uses this conservative read-error policy. Even a
@@ -620,12 +661,39 @@ transient backing read failure requires a fresh validated reopen under the
 adapter recovery preconditions; clearing the error does not restore this instance.
 A read error during maintenance preserves all already confirmed user progress.
 
-`PFS_NO_SPACE`, `PFS_QUOTA` and `PFS_LIMIT` distinguish capacity/profile refusal.
+`PFS_NO_SPACE`, `PFS_QUOTA` and `PFS_LIMIT` identify capacity/profile errors, but
+the status alone does not establish a healthy admission refusal: failure to obtain
+already-guaranteed workspace stops mutation and sets writer `invariant_failure`.
 `PFS_RECOVERY_REQUIRED` refuses operations prohibited by stopped health. Unknown
 outcomes may include additional committed bytes and are not automatically
 retryable. The result's confirmed bytes/length/namespace fields are independent of
 health; private batches do not acknowledge application bytes. Public mutation
 operations populate these fields according to their confirmed progress.
+
+Maintenance `PENDING` means completed healthy mutation/cleanup left funded selected
+volume retirement: maintenance status is `OK` and health is `READY`. `COMPLETE`
+confirms an explicitly requested retirement fence. `NONE` reports no maintenance
+outcome and does not certify debt absence; rejected calls and named-object or
+stopped release-only closes may report it while debt remains. Writer status
+`drain_pending` independently reports last-confirmed selected volume debt; it no
+longer prohibits the next mutation. Idle healthy writers may retain bounded debt
+indefinitely; there is no timer or background worker. After uncertainty it does not certify the
+actual durable image. Ordinary successful mutation stays `COMPLETE` with its
+confirmed progress even when maintenance is `PENDING`.
+
+After earlier batches confirm partial progress, a later ordinary admission refusal
+may leave health `READY` and report maintenance `PENDING` or `NONE`, depending on
+the refusal stage. Planning can retain the earlier `PENDING`; commit-time admission
+can replace it with `NONE`. Neither changes confirmed progress or establishes that
+debt was settled. `NONE` reports no maintenance outcome; `drain_pending` separately
+reports last-confirmed selected volume debt.
+
+A later user-batch failure retains the confirmed call prefix and reports its own
+operation error/uncertainty and resulting health, without inventing maintenance
+failure. If required orphan cleanup instead fails after namespace confirmation,
+that confirmation remains true and maintenance reports `STOPPED` or `UNKNOWN`.
+The latest actual maintenance failure takes precedence over earlier healthy
+pending/complete outcomes.
 
 Recovery is an adapter/operator precondition, not a core history detector. The
 adapter must establish an appropriate durable backing state and quiesce I/O;
@@ -637,8 +705,10 @@ clear. See [healthy host operation](host-tools.md#healthy-writer-sessions).
 
 Whole-map rebuilding is the initial correctness implementation. Each publication
 rewrites the complete planned allocation map, even for a small useful update;
-a retiring batch can require three maps and six flushes. These are calculated
-protocol costs, not desired performance. Record metadata bytes per useful data
+each uses the two-flush publication protocol. Later user/orphan publications
+can absorb retirement stages, while an explicit fence can add at most two tail
+maps and four flushes. These are calculated protocol costs, not measured savings.
+Record metadata bytes per useful data
 byte, latency and throughput on populated images with write history before
 selecting the later incremental strategy. Current bounded measurements and test
 limits are in [testing](testing.md). Private writer/planner/encoder stack use
@@ -667,17 +737,18 @@ backing; an actual backing-read failure retains the pool-wide access-stop policy
 The optional child-handle request requires parent subtree scope, lookup and every
 requested right within the held masks. Creation validates these requirements and
 reserves the view before publication. No returned view implies no added authority.
-A confirmed creation returns its reserved view even when cleanup fails; an unknown
-creation returns none. Identity output does not require separate metadata rights.
+A confirmed creation returns its reserved view; an unknown creation returns none.
+Identity output does not require separate metadata rights.
 
 Writes edit only affected mappings and object paths, preserving untouched storage.
 Within a call, compatible logical/physical runs born in the same transaction
 coalesce. A separately committed append has a new birth and cannot merge with
 an older run merely because it is adjacent. The planner adds slices until the
-actual staged edit reaches its fixed transaction bounds, then publishes and
-funds the drain before starting another batch. No delayed acknowledgement or
-batching across completed calls is introduced. Extent lookup uses the admitted
-claim summary with a bounded private overlay rather than a whole-file rewrite.
+actual staged edit reaches its fixed transaction bounds, then publishes an
+individually durable batch. Funded retirement can carry into later batches or an
+explicit checkpoint. No delayed acknowledgement or batching across completed calls
+is introduced. Extent lookup uses the admitted claim summary with a bounded
+private overlay rather than a whole-file rewrite.
 
 Sparse growth exposes zeros. Partial-block writes preserve bytes outside their
 range; extending writes and growth clear any previously hidden partial-EOF suffix
@@ -695,15 +766,16 @@ file length or replace the separately admitted E/M profile.
 
 Mutation staging uses the final 2 MiB of the already reserved 8 MiB scratch arena;
 compile-time bounds separate it from admission and publication storage. Changed
-claims, blocks and volume counts feed the existing publisher. No allocation is
-needed by the subsequent funded drain. The whole-map rebuild and kernel-stack
-prerequisite remain limitations; this code is not linked into Caelum.
+claims, blocks and volume counts feed the existing publisher. Publication and
+funded retirement fences need no further heap allocation. The whole-map rebuild
+and kernel-stack prerequisite remain limitations; this code is not linked into Caelum.
 
 Results preserve the confirmed write prefix or resize length independently of
-cleanup and health. An uncertain batch may have committed additional bytes or a
-shorter length; it is not automatically retryable. A fully confirmed request
-remains `COMPLETE` on cleanup failure. If more batches remain, cleanup failure
-stops the request with its confirmed prefix/length and maintenance error intact.
+retirement maintenance and health. A fully confirmed request remains `COMPLETE`
+with healthy `PENDING` retirement. If a later user batch fails, the request retains
+its confirmed prefix/length and reports that batch's operation error or uncertainty;
+it does not invent a maintenance failure. An uncertain batch may have committed
+additional bytes or a shorter length and is not automatically retryable.
 Creation sets `namespace_confirmed` only after both user-publication flushes.
 
 ### Live directory tokens
@@ -771,8 +843,11 @@ arena.
 `pfs_view_close(view, result)` consumes an accepted view and clears its pointer
 before final cleanup. `released=true` remains true if cleanup fails; `PFS_BUSY`
 leaves the view live with `released=false`. The result reports maintenance
-completion/status and pool health separately. A stopped instance only releases
-runtime state. Pool close requires all volume handles/views/active operations to
+completion/status and pool health separately. Healthy `PENDING` means deletion
+finished durably and its retired storage remains to be reclaimed, not that deletion
+needs another application mutation. A named-object close performs no cleanup and
+reports `NONE`. A stopped instance only releases runtime state. Pool close requires
+all volume handles/views/active operations to
 end and never retries stopped cleanup.
 
 After the last view/operation ends, cleanup removes at most six tail mappings or
@@ -784,10 +859,13 @@ object-specific grants combines the final data retirement with paired deletion,
 without publishing an intermediate empty object. Eligibility is established
 before edits; other shapes retain their existing path. The
 [complete transaction proof](small-orphan-cleanup.md) covers metadata repair,
-accounting, publication/drains and scratch within unchanged limits and reserves.
+accounting and scratch for the combined path. Its volume-edit bounds remain
+unchanged; rolling retirement uses the expanded admission/workspace envelope.
 Empty sparse files can proceed directly to grant/final cleanup. Each batch reduces
-remaining orphan work, and its usual retained-root drain finishes before the next
-batch. Cleanup volume retirements charge recovery workspace; user mutations,
+remaining orphan work and may carry funded volume retirement into the next batch.
+Final release completes all admitted data, grant and paired-record deletion without
+another application mutation. Cleanup volume retirements charge recovery workspace;
+user mutations,
 including writes through retained orphan handles, charge ordinary workspace.
 Last release and startup recovery use the reserved arena for tree reads and edits,
 with no further heap allocation. Unexpected resource failure is an admission/editor
