@@ -42,7 +42,9 @@ workload pass. Setup, preparation, successive windows and final maintenance have
 separate diagnostics, and native verification/handoff/unmount writes remain in
 the total. The existing small baseline and quick/extended suites retain their
 coverage and storage guards. This adds comparison instrumentation, not new quick
-or extended groups or authorization for the larger recovery command.
+or extended groups or authorization for the larger recovery command. Scoped quick
+and extended builds compile the comparison binary too; CI does not run the
+sustained measurement matrix.
 
 `make check` builds `build/pyxis-fs-tests` and runs `--suite pr`. It links the same
 freestanding `libpyxis-fs.a` as the ordinary tools, with no alternate core or

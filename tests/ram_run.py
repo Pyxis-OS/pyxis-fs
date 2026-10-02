@@ -658,7 +658,7 @@ def inner(suite, name, ci_quick=False, identity=None, result_socket=None,
         connect_result(result_socket)
     runner = build / 'pyxis-fs-tests'
     comparison = build / 'pyxis-fs-compare'
-    targets = ['all', str(runner)] + ([str(comparison)] if suite in ('baseline', 'safety', 'sustained') else [])
+    targets = ['all', str(runner), str(comparison)]
     if suite == 'preflight':
         return {'safety': evidence, 'status': 'preflight-only'}
     build_output, _ = capture(['make', '-j16', f'BUILD={build}', *targets], identity=identity)

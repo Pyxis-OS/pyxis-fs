@@ -100,8 +100,6 @@ Reclaimed filesystem blocks also need not release the backing file's tmpfs pages
 40-case matrix. `--population`, `--case`, `--durability` and `--filesystem` select
 a subset; for example, `--population 256 --case compiler --durability operation`
 runs the individually durable Pyxis/ext4/Btrfs triplet. Pyxis has no batch profile.
-
-
 Each case starts fresh at 1 GiB logical geometry, with 32 or 256 populated files.
 Each population file receives 4 KiB; preparation then performs eight partial
 1 KiB overwrites and four create/write/close/replacement histories. The measured
@@ -113,7 +111,8 @@ The Pyxis profile remains E=8192, M=4096 with the existing 128 MiB core-owner ca
 ordinary/migration/recovery reserves are each 8192 blocks. This is populated
 history coverage, not evidence for the maximum profile or a large empty image.
 
-Pyxis completes and drains each mutation under its existing contract. Native
+Pyxis completes each mutation durably under its existing contract. Reclamation
+may carry over until the explicit final checkpoint. Native
 operation mode synchronizes a written file before returning; creation synchronizes
 file and parent, rename synchronizes both affected parents (the same directory
 in this matrix), and deletion synchronizes the parent. Close alone is not a

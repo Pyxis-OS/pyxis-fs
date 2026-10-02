@@ -34,7 +34,8 @@ See [host-tool usage and limits](docs/host-tools.md),
 `sudo python3 tests/ram_run.py --suite check` in the
 [bounded RAM setup](docs/ram-validation.md). The same launcher provides
 `--suite extended`, the small comparative `--suite baseline`, and a configurable
-`--suite sustained` comparison. See the [sustained configuration and accounting](docs/ram-validation.md#sustained-comparison)
+`--suite sustained` comparison. See the
+[sustained configuration and accounting](docs/ram-validation.md#sustained-comparison)
 before collecting serial runs. The larger recovery workload remains suspended
 pending a separately approved RAM execution plan.
 
