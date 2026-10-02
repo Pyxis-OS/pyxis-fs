@@ -83,6 +83,9 @@ redistribution additions, chosen path and fallback reasons. The comparison
 aggregates these over preparation and measurement, including trailing maintenance
 and final checkpoints. Fallback reason counts can overlap. It reports the last
 exhausted run's l/r, emitted map nodes and local cost categories.
+These aggregates do not establish the measurement-window local/bulk split.
+The nearly constant fallback totals may reflect preparation, but the current
+record cannot attribute them to that phase.
 
 Optional reference counting reconstructs the bulk preclaim base for the same
 immutable input and logical work, using only dead raw-delta storage. Canonical
@@ -99,3 +102,19 @@ are not exact CPU-only planning timings or NVMe performance. There is no product
 clock dependency. Source traversal and full map/claim validation remain
 population-sized; global closure remains possible. General structural editing,
 CPU/locality improvements and deployment qualification require separate tasks.
+
+The current retirement-membership lookup scans all J source descriptors. Each
+accounting pass performs it for J allocation-map claims, contributing O(J²) work
+per pass and O(J³) over at most J growth passes plus the final decision. Sealing
+also reconstructs claims with an O(J²) lookup contribution. These are calculated
+worst-case lookup costs, not measured timings or a complete planning-cost bound;
+source validation, canonical map editing and admission add other work.
+
+A proposed focused follow-up would separate preparation and measurement plan
+diagnostics and replace repeated linear membership searches with a block-sorted
+source-node index. Its storage and construction must fit the existing reserved
+workspace, preserving source topology and the single authoritative set of marks.
+It would change neither placement nor closure, funding or durability policy.
+This follow-up remains separate from the current implementation. Larger-map
+qualification follows it: the matched histories reach only J=10 and cannot
+establish how replacement size or planning time scales with unrelated population.

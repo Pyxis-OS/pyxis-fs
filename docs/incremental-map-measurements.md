@@ -79,6 +79,10 @@ maintenance. These are observations, never required publication counts. The
 reference is the current bulk builder for the same immutable input/logical work,
 using its preclaim record count and conservative shape; it is not a second write
 execution. Local plans with equal or higher cost remain permitted and reported.
+Preparation and measurement plan counters are not separated, so these aggregates
+cannot establish steady-state hit rates. The nearly constant 171–172 global
+fallbacks at 256 files suggest a preparation contribution; that attribution is
+unverified until phase-specific diagnostics exist.
 
 | Files | Case | Local / all plans | Global fallbacks | Source J max | Closure q max | Growth passes | Redistributed nodes | Local less/equal/more than bulk | Map nodes emitted / bulk reference |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
@@ -98,6 +102,13 @@ record includes closure/source sums, largest additions, signed local cost and
 fallback frequencies; reasons can overlap. The unchanged 32-file compiler
 traffic demonstrates that a topology-preserving attempt can provide no write
 saving when global closure is routine.
+
+Source maps reach at most ten nodes in this matrix. The reductions do not establish
+how closure size grows with larger maps. Qualification must include substantially
+larger populated maps, with configuration proposed separately under the existing
+RAM/no-swap safeguards; a node-count target is not a filesystem contract. Before
+those runs, the [planning follow-up](incremental-map.md#diagnostics-and-limits)
+should address repeated linear retirement lookups and phase attribution.
 
 The observed planning interval is first backing read inside the publisher through
 first replacement-write callback. It includes source/adapter reads and optional
