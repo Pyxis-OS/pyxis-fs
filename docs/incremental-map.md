@@ -130,3 +130,6 @@ planning bound. Source-load duplicate detection remains O(J²) once; full source
 validation, canonical editing and admission retain other population-sized costs.
 Larger-map qualification remains separate: the existing matched histories reach
 only J=10 and cannot establish scaling with unrelated population.
+The [matched planning report](map-planning-measurements.md) records unchanged
+submitted bytes, newly separated fallback costs and modest instrumented timing
+increases; it establishes no speedup on these small maps.

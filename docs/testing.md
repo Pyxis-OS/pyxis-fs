@@ -779,3 +779,6 @@ These cases bring the quick suite to 135 groups. The unchanged comparison checks
 each phase's diagnostic attribution against actual slot writes, the deliberate
 two-flush protocol and the adapter's monotonic flush counts. It retains the
 independent application ledger and read-only content/namespace verification.
+The [matched planning report](map-planning-measurements.md) records unchanged
+submitted bytes, phase-specific fallback costs, instrumented timing and storage
+evidence. Larger-map and writable-deployment qualification remain open.
