@@ -98,6 +98,10 @@ pfs_incremental_map_init(struct pfs_plan_arena *arena, struct pfs_incremental_ma
     return PFS_LIMIT;
   }
   layout.source_capacity = (size_t)m;
+  layout.source_by_block = (size_t *)(arena->deltas + offset);
+  if (!region(capacity, &offset, m, 8u)) {
+    return PFS_LIMIT;
+  }
   layout.leaves = (size_t *)(arena->deltas + offset);
   if (!region(capacity, &offset, m, 8u)) {
     return PFS_LIMIT;
@@ -118,6 +122,9 @@ pfs_incremental_map_init(struct pfs_plan_arena *arena, struct pfs_incremental_ma
   if (!region(capacity, &offset, h, 16u)) {
     return PFS_LIMIT;
   }
+  /* With m <= H, raw deltas, 176m source/work bytes and 152H output bytes
+   * total at most 840H + 384D + 128V, within 1024(H + D + V). The block
+   * index sorts in place with constant extra storage. */
   *map = layout;
   return PFS_OK;
 }
@@ -175,6 +182,47 @@ source_append(struct pfs_incremental_map *map, struct pfs_reference reference,
     .replacement = SIZE_MAX,
   };
   return PFS_OK;
+}
+
+static void
+sift_source_index(struct pfs_incremental_map *map, size_t root, size_t count)
+{
+  size_t *index = map->source_by_block;
+  while (root < count / 2) {
+    size_t child = 2 * root + 1;
+    if (child + 1 < count &&
+        map->source[index[child + 1]].reference.block >
+        map->source[index[child]].reference.block) {
+      child++;
+    }
+    if (map->source[index[root]].reference.block >=
+        map->source[index[child]].reference.block) {
+      return;
+    }
+    size_t temporary = index[root];
+    index[root] = index[child];
+    index[child] = temporary;
+    root = child;
+  }
+}
+
+static void
+build_source_index(struct pfs_incremental_map *map)
+{
+  /* Sort descriptor identities, retaining BFS topology and its single set of
+   * marks. No index is exposed until the complete source load succeeds. */
+  for (size_t i = 0; i < map->source_count; i++) {
+    map->source_by_block[i] = i;
+  }
+  for (size_t i = map->source_count / 2; i; i--) {
+    sift_source_index(map, i - 1, map->source_count);
+  }
+  for (size_t remaining = map->source_count; remaining > 1; remaining--) {
+    size_t temporary = map->source_by_block[0];
+    map->source_by_block[0] = map->source_by_block[remaining - 1];
+    map->source_by_block[remaining - 1] = temporary;
+    sift_source_index(map, 0, remaining - 1);
+  }
 }
 
 enum pfs_status
@@ -317,6 +365,7 @@ pfs_incremental_map_load(struct pfs_incremental_map *map,
       map->source[0].record_count != source_count) {
     return PFS_CORRUPT;
   }
+  build_source_index(map);
   map->loaded = true;
   return PFS_OK;
 }
@@ -327,9 +376,17 @@ pfs_incremental_map_retired(const struct pfs_incremental_map *map, uint64_t bloc
   if (!map || !map->loaded) {
     return false;
   }
-  for (size_t i = 0; i < map->source_count; i++) {
-    if (map->source[i].reference.block == block) {
-      return map->source[i].marked;
+  size_t low = 0, high = map->source_count;
+  while (low < high) {
+    size_t middle = low + (high - low) / 2;
+    const struct pfs_incremental_source *source =
+      &map->source[map->source_by_block[middle]];
+    if (source->reference.block < block) {
+      low = middle + 1;
+    } else if (source->reference.block > block) {
+      high = middle;
+    } else {
+      return source->marked;
     }
   }
   return false;

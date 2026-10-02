@@ -44,6 +44,8 @@ struct pfs_incremental_map {
   struct pfs_incremental_source *source;
   size_t source_capacity;
   size_t source_count;
+  /* Descriptor indexes sorted by block after load; marks remain in source. */
+  size_t *source_by_block;
   size_t marked_count;
   size_t *leaves;
   size_t leaf_count;

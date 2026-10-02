@@ -26,6 +26,7 @@ static struct pfs_allocation_record preserved_source[RECORDS_MAX];
 static struct pfs_map_change logical[16];
 static size_t source_count, logical_count;
 static size_t leaf_first[SOURCE_LEAVES], leaf_count[SOURCE_LEAVES];
+static size_t source_blocks[SOURCE_NODES];
 static uint8_t original[SOURCE_NODES][PFS_BLOCK_SIZE];
 static uint8_t record_bytes[46][PFS_ALLOCATION_RECORD_SIZE];
 static struct pfs_encoded_record encoded[46];
@@ -67,7 +68,7 @@ check_record(const struct pfs_allocation_record *expected,
 static struct pfs_reference
 source_reference(size_t index)
 {
-  return (struct pfs_reference){SOURCE_FIRST + index, 1,
+  return (struct pfs_reference){SOURCE_FIRST + source_blocks[index], 1,
     PFS_BLOCK_TREE, PFS_FORMAT_VERSION};
 }
 
@@ -120,6 +121,9 @@ start_case(const size_t counts[SOURCE_LEAVES])
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_limits(PFS_POOL_BLOCKS_MIN, 512, 128, 1, &limits));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_plan_arena_create(&fixture.memory, &limits, &arena));
   TEST_ASSERT_EQUAL(PFS_OK, pfs_incremental_map_init(&arena, &incremental));
+  for (size_t i = 0; i < SOURCE_NODES; i++) {
+    source_blocks[i] = i;
+  }
   source_count = logical_count = 0;
   uint64_t next = 1;
   for (size_t leaf = 0; leaf < SOURCE_LEAVES; leaf++) {
@@ -264,7 +268,11 @@ walk_result(struct pfs_reference ref, uint64_t referring_birth,
     memcpy(bytes, plan.blocks + emitted * PFS_BLOCK_SIZE, PFS_BLOCK_SIZE);
   } else {
     TEST_ASSERT_TRUE(ref.block >= SOURCE_FIRST && ref.block < SOURCE_FIRST + SOURCE_NODES);
-    size_t index = ref.block - SOURCE_FIRST;
+    size_t index = 0;
+    while (index < SOURCE_NODES && source_reference(index).block != ref.block) {
+      index++;
+    }
+    TEST_ASSERT_LESS_THAN_UINT(SOURCE_NODES, index);
     TEST_ASSERT_FALSE(pfs_incremental_map_retired(&incremental, ref.block));
     shared_seen[index] = true;
     TEST_ASSERT_EQUAL_UINT64(1, ref.birth);
@@ -347,7 +355,8 @@ check_local_result(void)
   TEST_ASSERT_EQUAL_UINT(candidate_count, walked_records);
   TEST_ASSERT_EQUAL_UINT(plan.node_count, walked_emitted);
   for (size_t i = 0; i < SOURCE_NODES; i++) {
-    TEST_ASSERT_EQUAL(!pfs_incremental_map_retired(&incremental, SOURCE_FIRST + i), shared_seen[i]);
+    TEST_ASSERT_EQUAL(!pfs_incremental_map_retired(&incremental,
+      source_reference(i).block), shared_seen[i]);
   }
 }
 
@@ -413,6 +422,34 @@ check_funded_bulk_result(void)
   walk_result(plan.root, 4, 0, 0);
   TEST_ASSERT_EQUAL_UINT(plan.record_count, walked_records);
   TEST_ASSERT_EQUAL_UINT(plan.node_count, walked_emitted);
+}
+
+static void
+shuffled_source_blocks_preserve_retirement_and_shared_topology(void)
+{
+  const size_t counts[] = {3, 6, 6, 6, 6, 6, 6, 6, 6};
+  const size_t blocks[] = {12, 7, 4, 9, 2, 10, 1, 6, 11, 5, 8, 3, 0};
+  const uint64_t absent[] = {0, SOURCE_FIRST - 1, OLD_POOL_ROOT,
+    OLD_CATALOG, FREE_FIRST, UINT64_MAX};
+  start_case(counts);
+  memcpy(source_blocks, blocks, sizeof(source_blocks));
+  change_range(0, 1, 2, false);
+  load_source();
+  for (size_t i = 0; i < SOURCE_NODES; i++) {
+    TEST_ASSERT_FALSE(pfs_incremental_map_retired(&incremental,
+      source_reference(i).block));
+  }
+  close_candidate();
+  for (size_t i = 0; i < SOURCE_NODES; i++) {
+    bool retired = i == 0 || i == SOURCE_LEAVES || i == SOURCE_NODES - 1;
+    TEST_ASSERT_EQUAL(retired, pfs_incremental_map_retired(&incremental,
+      source_reference(i).block));
+  }
+  for (size_t i = 0; i < sizeof(absent) / sizeof(*absent); i++) {
+    TEST_ASSERT_FALSE(pfs_incremental_map_retired(&incremental, absent[i]));
+  }
+  check_local_result();
+  finish_case();
 }
 
 static void
@@ -580,7 +617,8 @@ adapter_read_error_is_not_an_optimization_miss(void)
   uint64_t read_cut = 0;
   for (size_t i = 0; i < failed_reader.event_count; i++) {
     const struct test_failure_event *event = &failed_reader.events[i];
-    if (event->kind == TEST_FAILURE_READ && event->status == PFS_OK) {
+    if (event->kind == TEST_FAILURE_READ && event->status == PFS_OK &&
+        event->first == source_reference(0).block) {
       read_cut = event->ordinal - read_base;
       break;
     }
@@ -599,6 +637,17 @@ adapter_read_error_is_not_an_optimization_miss(void)
   TEST_ASSERT_TRUE(failed_reader.triggered);
   TEST_ASSERT_FALSE(failed_reader.infrastructure_failure);
   TEST_ASSERT_EQUAL_UINT(0, incremental.fallback);
+  for (size_t i = 0; i < SOURCE_NODES; i++) {
+    TEST_ASSERT_FALSE(pfs_incremental_map_retired(&incremental,
+      source_reference(i).block));
+  }
+  TEST_ASSERT_FALSE(pfs_incremental_map_retired(&incremental, UINT64_MAX));
+  /* Failed loading leaves the planner reusable; the one-shot read fault has
+   * already fired, so this retry must establish a complete source again. */
+  TEST_ASSERT_EQUAL(PFS_OK, pfs_incremental_map_load(&incremental,
+    &failed_reader.builder.reader, &context, source, source_count, &workspace));
+  close_candidate();
+  check_local_result();
   TEST_ASSERT_TRUE(test_failure_close(&failed_reader));
   finish_case();
 }
@@ -607,6 +656,7 @@ void
 run_incremental_tests(void)
 {
   Unity.TestFile = __FILE__;
+  RUN_TEST(shuffled_source_blocks_preserve_retirement_and_shared_topology);
   RUN_TEST(local_change_shares_remote_subtree_and_fixed_input_prefix);
   RUN_TEST(overflow_redistributes_across_parent_boundary);
   RUN_TEST(underflow_redistributes_across_parent_boundary);
