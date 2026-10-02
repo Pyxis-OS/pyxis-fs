@@ -109,10 +109,16 @@ cross-compiles with Pyxis GCC 16.2.0, kernel flags and compiler headers only; th
 kernel's read-only subset plus its existing memory primitives links without any
 publisher/planner/checker object or unresolved symbol.
 
-The instrumented build could not link because this VM's GCC sanitizer links refer
-to missing `libasan.so.8.0.0` and `libubsan.so.1.0.0`. No sanitizer tests executed;
-no packages, runner configuration or budgets were changed. Exact-head repository
-CI is reported on the filesystem and dependent Pyxis PRs.
+The first instrumented build could not link missing GCC sanitizer runtimes. After
+the owner authorized installing `libasan`/`libubsan` 16.2.1-2.fc44, all 125 quick
+and six extended groups pass under ASan/UBSan at `0c1d83a`. A temporary local
+wrapper supplies only the scoped service's build/instrumentation environment:
+`CFLAGS=-O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer`, leak detection
+and halt-on-error enabled. The existing launcher, storage/worker controls, output
+bounds and budgets stay unchanged; no wrapper or runner change is committed.
+Memory peaks are 495,562,752 / 531,259,392 bytes, with zero max/OOM events and no
+swap. The runtime installation happened after all measured samples. Exact-head
+repository CI is reported on the filesystem and dependent Pyxis PRs.
 
 Tests cover independently expected rolling/cross-volume retained payloads, durable
 free transitions, nonadjacent opening, interrupted fences/recovery, checkpoint and

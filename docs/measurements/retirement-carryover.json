@@ -7631,8 +7631,45 @@
       }
     },
     "sanitizers": {
-      "status": "unavailable",
-      "reason": "Instrumented build could not link: host GCC sanitizer links reference missing /usr/lib64/libasan.so.8.0.0 and /usr/lib64/libubsan.so.1.0.0. No sanitizer tests executed; no packages, runner configuration or budgets changed."
+      "status": "passed",
+      "compiled_revision": "0c1d83a",
+      "flags": "CFLAGS=-O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer; ASAN_OPTIONS=detect_leaks=1:halt_on_error=1; UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1",
+      "launch": "Temporary local wrapper adds only systemd-run --setenv options to the unchanged tests/ram_run.py launcher. All storage, worker, output, memory and swap controls remain unchanged. No wrapper or runner change is committed.",
+      "runtime_packages": "Owner authorized installing libasan and libubsan 16.2.1-2.fc44 after the original missing-runtime build; all measured runs preceded this install.",
+      "quick": {
+        "result": "125 Tests 0 Failures 0 Ignored",
+        "safety": {
+          "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-8fe86d115754.service",
+          "kernel": "6.19.10-300.fc44.x86_64",
+          "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+          "memory_max": 4294967296,
+          "memory_peak": "495562752",
+          "mount_noswap": true,
+          "scratch_bytes": 2147483648,
+          "scratch_inodes": 65536,
+          "storage_mode": "strict",
+          "swap_max": 0,
+          "worker_gid": 1000,
+          "worker_uid": 1000
+        }
+      },
+      "extended": {
+        "result": "6 Tests 0 Failures 0 Ignored",
+        "safety": {
+          "cgroup": "/sys/fs/cgroup/system.slice/pyxis-fs-ram-6f240ebc8dec.service",
+          "kernel": "6.19.10-300.fc44.x86_64",
+          "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+          "memory_max": 4294967296,
+          "memory_peak": "531259392",
+          "mount_noswap": true,
+          "scratch_bytes": 2147483648,
+          "scratch_inodes": 65536,
+          "storage_mode": "strict",
+          "swap_max": 0,
+          "worker_gid": 1000,
+          "worker_uid": 1000
+        }
+      }
     },
     "freestanding": {
       "compiler": "Pyxis GCC 16.2.0",
