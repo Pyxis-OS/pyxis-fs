@@ -816,12 +816,9 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
       .file_length = PFS_BLOCK_SIZE},
   };
   struct pfs_build_volume specs[ROLLING_VOLUMES];
-  char names[ROLLING_VOLUMES][2];
   for (size_t i = 0; i < ROLLING_VOLUMES; i++) {
-    names[i][0] = (char)('a' + i);
-    names[i][1] = 0;
     specs[i] = (struct pfs_build_volume){.id = {{(uint8_t)(10 + i)}}, .root_object = {{3}},
-      .name = {1, names[i]}, .owner = {{5}}, .guarantee_set = true, .quota_set = true,
+      .name = {.length = 1, .bytes = {(uint8_t)('a' + i)}}, .owner = {{5}}, .guarantee_set = true, .quota_set = true,
       .quota = 64, .object_count = 2, .objects = objects};
   }
   options = (struct pfs_write_options){.extent_limit = ROLLING_VOLUMES,
