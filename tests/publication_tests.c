@@ -974,8 +974,6 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
   rolling_violation = false;
   device.observer = observe_rolling_payloads;
   test_failure_trace_reset(&device);
-  size_t allocations = device.backing.allocation_calls;
-  test_failure_memory_fail_after(&device, 0);
   /* A/B/C/A/C/B exercises old-owner frees with both catalog relationships.
    * No volume switch is a fence; all grants and identities remain local. */
   const unsigned order[] = {0, 1, 2, 0, 2, 1};
@@ -1001,7 +999,10 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
   /* Reopening from these durable bytes must establish its startup fence while
    * independently comparing both preceding volume payload states before slots. */
   TEST_ASSERT_EQUAL(PFS_OK, test_failure_clone_durable(&recovered, &device, 0));
+  size_t allocations = device.backing.allocation_calls;
+  test_failure_memory_fail_after(&device, 0);
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_checkpoint(checkpoint_view, &result));
+  TEST_ASSERT_EQUAL_UINT64(allocations, device.backing.allocation_calls);
   TEST_ASSERT_EQUAL(PFS_MAINTENANCE_COMPLETE, result.maintenance_completion);
   TEST_ASSERT_FALSE(writer_status().drain_pending);
   TEST_ASSERT_FALSE(rolling_violation);
@@ -1009,6 +1010,7 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
   size_t length = 99;
   TEST_ASSERT_EQUAL(PFS_DENIED, pfs_view_read(checkpoint_view, 0, data, 1, &length));
   TEST_ASSERT_EQUAL_UINT(0, length);
+  device.backing.fail_after = SIZE_MAX;
   TEST_ASSERT_EQUAL(PFS_OK, pfs_view_close(&checkpoint_view, &(struct pfs_view_close_result){0}));
   device.observer = NULL;
   for (size_t i = 0; i < 3; i++) {
@@ -1016,7 +1018,6 @@ run_cross_volume_rolling_history(bool restore_seed_slot)
     TEST_ASSERT_EQUAL(PFS_OK, pfs_volume_close(&rolling_volumes[i]));
   }
   TEST_ASSERT_EQUAL(PFS_OK, pfs_pool_close(&pool));
-  TEST_ASSERT_EQUAL_UINT64(allocations, device.backing.allocation_calls);
   if (restore_seed_slot) {
     /* The two real mutations leave the seed's allocations protected until the
      * next publication. Restore its encoded root as the older durable state:
