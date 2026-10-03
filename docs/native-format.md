@@ -192,5 +192,7 @@ reference lifetime and cache policy. Cleanup removes pointers and bitmap bits in
 one transaction without allocating new blocks, and frees highest mappings first.
 Shrink stalls further writes/resizes of that inode; reads use the smaller length.
 Growth orders newly exposed data/tail zeros before size publication. No whole-file
-content atomicity is promised. These contracts are encoded/checked here; task 2
-supplies no running writer, cleanup worker or kernel mount for this format.
+content atomicity is promised. The codecs encode cleanup state and fsck checks
+its structural consistency; ordering, tail-zeroing and live-reference rules remain
+contracts for task 3. Task 2 supplies no running writer, cleanup worker or kernel
+mount for this format.
