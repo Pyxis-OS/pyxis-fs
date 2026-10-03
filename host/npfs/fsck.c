@@ -6,7 +6,7 @@
 static int
 usage(void)
 {
-  fputs("usage: pyxisfs-native-fsck --image PATH [--replay]\n", stderr);
+  fputs("usage: fsck.npfs --image PATH [--replay]\n", stderr);
   return 2;
 }
 
@@ -25,20 +25,20 @@ main(int argc, char **argv)
   }
   if (!path)
     return usage();
-  struct native_image image;
-  enum pnf_status status = native_image_open(&image, path, replay, replay);
-  if (status != PNF_OK)
-    return native_report("open", status, &image);
+  struct npfs_image image;
+  enum npfs_status status = npfs_image_open(&image, path, replay, replay);
+  if (status != NPFS_OK)
+    return npfs_report("open", status, &image);
   if (image.degraded_header)
     fputs("warning: only one valid pool header; header redundancy is degraded\n", stderr);
   if (replay)
-    status = native_replay(&image);
-  if (status == PNF_OK)
-    status = native_check_image(&image);
-  int result = status == PNF_OK ? 0 : native_report("check", status, &image);
-  enum pnf_status close_status = native_image_close(&image);
-  if (!result && close_status != PNF_OK)
-    result = native_report("close", close_status, &image);
+    status = npfs_replay(&image);
+  if (status == NPFS_OK)
+    status = npfs_check_image(&image);
+  int result = status == NPFS_OK ? 0 : npfs_report("check", status, &image);
+  enum npfs_status close_status = npfs_image_close(&image);
+  if (!result && close_status != NPFS_OK)
+    result = npfs_report("close", close_status, &image);
   if (!result)
     puts("structural check passed");
   return result;

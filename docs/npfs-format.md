@@ -1,12 +1,15 @@
-# Native format
+# npfs format
 
-Implemented by `include/pyxis_fs/native.h` and `format/`. This is the simple native
+Implemented by `include/pyxis_fs/npfs.h` and `format/`. npfs is the simple native
 format adopted by Caelum's native backend. The old `pfs_*` core and format are
 retired. The archive contains codecs, CRC32C, geometry, timestamp conversion and
 mapping arithmetic; it contains no I/O, allocator, cache, mount state or writer.
-Consumers provide `pnf_memory_copy` and `pnf_memory_zero` at link time. There are
+Consumers provide `npfs_memory_copy` and `npfs_memory_zero` at link time. There are
 no environment callback tables. GNU C23 and compiler support for `__int128` are
 required. Decoded C structures are not disk layouts.
+
+The npfs name replaces the former API and tool names. Disk magic bytes, field
+layouts and encoded values are unchanged; existing pools use the same format.
 
 ## Geometry and compatibility
 
@@ -114,7 +117,7 @@ linked directories and inode files are dense. Detached directory cleanup may
 leave holes as blocks are reclaimed while retaining the old length. An empty directory may have length zero.
 
 Flags bit 0 and bit 1 mark creation and modification times valid. Unknown payloads
-are zero; a known epoch-zero or clamped endpoint remains valid. `pnf_timestamp`
+are zero; a known epoch-zero or clamped endpoint remains valid. `npfs_timestamp`
 converts signed Unix seconds plus a normalized 0–999,999,999 nanosecond fraction
 using wide arithmetic and saturates at `INT64_MIN`/`INT64_MAX`. An unavailable
 clock leaves the affected timestamp unknown. Times are wall time, not unique

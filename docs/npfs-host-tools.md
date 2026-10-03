@@ -1,8 +1,9 @@
-# Native host tools
+# npfs host tools
 
-`make -j16` builds the format-only `build/libpyxis-fs-format.a` and Linux tools
-`mkpyxisfs-native`, `pyxisfs-native-fsck`, `pyxisfs-native-inspect`. From Pyxis use `make -j16 fs-tools` (`build/fs-tools/`). No
-compiler-container rebuild is needed. See the [encoding contract](native-format.md).
+`make -j16` builds the format-only `build/libnpfs-format.a` and Linux tools
+`mkfs.npfs`, `fsck.npfs`, `npfs-inspect`. From Pyxis use `make -j16 fs-tools`
+(`build/fs-tools/`). No compiler-container rebuild is needed. See the
+[encoding contract](npfs-format.md).
 The existing filesystem CI job builds these outputs only. Structural/recovery
 behavior is checked through ordinary manual tool use, not by the retired COW
 suite; successful compilation is not a behavior proof.
@@ -10,15 +11,15 @@ suite; successful compilation is not a behavior proof.
 ## Formatting
 
 ```sh
-build/mkpyxisfs-native --image /tmp/native.raw --size 256MiB --journal 8MiB \
+build/mkfs.npfs --image /tmp/npfs.raw --size 256MiB --journal 8MiB \
   --volume home --source /path/to/unchanging/source --volume scratch
-build/pyxisfs-native-fsck --image /tmp/native.raw
-build/pyxisfs-native-inspect --image /tmp/native.raw info
-build/pyxisfs-native-inspect --image /tmp/native.raw volumes
-build/pyxisfs-native-inspect --image /tmp/native.raw list --volume home
-build/pyxisfs-native-inspect --image /tmp/native.raw stat --volume home --path file
-build/pyxisfs-native-inspect --image /tmp/native.raw cat --volume home --path file
-build/pyxisfs-native-inspect --image /tmp/native.raw extract \
+build/fsck.npfs --image /tmp/npfs.raw
+build/npfs-inspect --image /tmp/npfs.raw info
+build/npfs-inspect --image /tmp/npfs.raw volumes
+build/npfs-inspect --image /tmp/npfs.raw list --volume home
+build/npfs-inspect --image /tmp/npfs.raw stat --volume home --path file
+build/npfs-inspect --image /tmp/npfs.raw cat --volume home --path file
+build/npfs-inspect --image /tmp/npfs.raw extract \
   --volume home --path file --output /tmp/extracted-file
 ```
 
@@ -52,7 +53,7 @@ format depth limit.
 
 ## Checking and replay
 
-`pyxisfs-native-fsck --image PATH` opens read-only, refuses COMMITTED journals,
+`fsck.npfs --image PATH` opens read-only, refuses COMMITTED journals,
 and reconciles every allocated block with fixed regions and inode-file, indirect,
 directory and file ownership. It checks dense metadata, unique block ownership,
 bitmap padding, root/slot zero, names, namespace references, parent backlinks,
@@ -60,7 +61,7 @@ cycles and exact persistent cleanup membership. Regular-file holes are permitted
 Detached directory cleanup may have holes in its remaining mapping.
 Pending cleanup can be structurally valid; fsck does not reclaim it.
 
-`pyxisfs-native-fsck --image PATH --replay` opens writable and permits COMMITTED.
+`fsck.npfs --image PATH --replay` opens writable and permits COMMITTED.
 It validates the entire staged journal before home writes, checkpoints and clears
 it durably, then runs structural checking. An EMPTY pool receives no replay writes.
 Fsck warns on stderr when only one header is valid, including on a writable
@@ -98,7 +99,7 @@ those results. The public format decoders publish only validated copied results.
 
 On 2026-10-03, ordinary `make -j16` built both archives and both tool families
 with host GCC 16.2.1. Pyxis GCC 16.2.0 compiled the new freestanding archive;
-`nm -u` showed only internal `pnf_*` references and its two memory-provider
+`nm -u` showed only internal format references and its two memory-provider
 symbols, without libc dependencies. GDB confirmed CRC32C of `123456789` is
 `0xe3069283`, timestamp saturation at both signed limits and negative fractional
 conversion, plus double/triple mapping boundaries and rejection beyond the limit.
@@ -107,7 +108,7 @@ A 128 MiB sparse pool with a 1 MiB journal imported this repository's `include`
 tree and the eight existing Go tool binaries from
 `/usr/lib/golang/pkg/tool/linux_amd64`, plus an empty volume. Formatting took
 0.20 s wall time, 0.12 s system time and 1,724 KiB peak RSS. Structural checking
-passed; extraction of `native.h` and the 25,779,081-byte `compile` binary matched
+passed; extraction of the then-named `native.h` and the 25,779,081-byte `compile` binary matched
 sources with `cmp`. Binary extraction took 0.01 s. GDB observed logical block
 524 using the double-indirect root. An actual Go bin-tree import containing a
 symlink failed and removed its incomplete output.
