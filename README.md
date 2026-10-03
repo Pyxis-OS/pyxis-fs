@@ -2,6 +2,20 @@
 
 Shared Pyxis filesystem core. Requires GNU Make and a GNU C23 compiler.
 
+The new [native format](docs/native-format.md) is available beside the old core.
+Build and create a standalone pool with an explicit journal size:
+
+```sh
+make -j16
+build/mkpyxisfs-native --image /tmp/native.raw --size 256MiB --journal 8MiB \
+  --volume home --source /path/to/source --volume scratch
+build/pyxisfs-native-fsck --image /tmp/native.raw
+build/pyxisfs-native-inspect --image /tmp/native.raw list --volume home
+```
+
+See [native host-tool usage and limits](docs/native-host-tools.md). Caelum still
+mounts the old format; use the old tools below for those mounts.
+
 ```sh
 make -j16
 build/mkpyxisfs --image /tmp/pool.raw --size 256MiB \
