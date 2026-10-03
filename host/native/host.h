@@ -33,6 +33,8 @@ enum pnf_status native_read_volumes(struct native_image *image,
 enum pnf_status native_map_block(struct native_image *image,
                                  const uint64_t pointers[PNF_POINTER_COUNT],
                                  uint64_t logical, uint64_t *physical);
+/* A missing mapping succeeds with physical zero. Metadata callers must reject
+ * holes where dense storage is required; regular-file readers synthesize zeros. */
 enum pnf_status native_read_inode(struct native_image *image,
                                   const struct pnf_volume *volume, uint64_t number,
                                   struct pnf_inode *inode);

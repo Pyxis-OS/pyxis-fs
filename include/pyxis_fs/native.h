@@ -179,6 +179,9 @@ enum pnf_status pnf_control_encode(const struct pnf_header *header,
                                   const struct pnf_control *control, void *block);
 enum pnf_status pnf_control_decode(const struct pnf_header *header, const void *block,
                                   struct pnf_control *control);
+/* A checksum-valid but structurally invalid control must not be discarded as a
+ * torn copy when selecting journal state. */
+bool pnf_control_checksum_valid(const void *block);
 enum pnf_status pnf_descriptor_encode(const struct pnf_header *header,
                                      const struct pnf_descriptor *descriptor, void *record);
 enum pnf_status pnf_descriptor_decode(const struct pnf_header *header, const void *record,

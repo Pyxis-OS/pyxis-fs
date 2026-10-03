@@ -286,7 +286,9 @@ check_one_volume(struct check_state *state, struct pnf_volume *record)
     }
     struct check_directory directory = { .volume = &volume, .number = number };
     bool is_directory = inode->kind == PNF_INODE_DIRECTORY;
-    status = check_mapping(state, inode->pointers, inode->size, is_directory,
+    /* Detached directories may already have reclaimed their highest blocks.
+     * Their remaining records must still be empty, but size is not progress. */
+    status = check_mapping(state, inode->pointers, inode->size, is_directory && !detached,
                            !is_directory && inode->cleanup != 0,
                            is_directory ? read_directory_block : NULL, &directory);
     if (status == PNF_OK && directory.count > 1) {
@@ -414,7 +416,15 @@ check_log_image(struct native_image *image, const struct pnf_descriptor *descrip
                 const uint8_t bytes[PNF_BLOCK_SIZE])
 {
   enum pnf_status status;
-  if (descriptor->kind == PNF_METADATA_VOLUMES) {
+  if (descriptor->kind == PNF_METADATA_BITMAP) {
+    uint64_t base = (descriptor->home - image->header.bitmap_start) * PNF_BITMAP_BITS;
+    for (unsigned bit = 0; bit < PNF_BITMAP_BITS; bit++) {
+      uint64_t number = base + bit;
+      if ((number >= image->header.pool_blocks || fixed_block(&image->header, number)) &&
+          !bit_get(bytes, bit))
+        return check_error(image, "journal bitmap clears permanent allocation bit");
+    }
+  } else if (descriptor->kind == PNF_METADATA_VOLUMES) {
     for (unsigned i = 0; i < PNF_BLOCK_SIZE / PNF_VOLUME_SIZE; i++) {
       struct pnf_volume volume;
       status = pnf_volume_decode(&image->header, bytes + i * PNF_VOLUME_SIZE, &volume);

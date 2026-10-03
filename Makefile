@@ -11,12 +11,17 @@ SOURCES := mutate file writer writer_access admit plan incremental_map edit cano
 OBJECTS := $(addprefix $(BUILD)/core/,$(addsuffix .o,$(SOURCES)))
 ARCHIVE := $(BUILD)/libpyxis-fs.a
 HOST_OBJECTS := $(addprefix $(BUILD)/host/,write.o host.o gpt.o source.o mkpyxisfs.o inspect.o inspect_options.o inspect_objects.o inspect_check.o extract.o)
+FORMAT_SOURCES := base header record journal
+FORMAT_OBJECTS := $(addprefix $(BUILD)/format/,$(addsuffix .o,$(FORMAT_SOURCES)))
+FORMAT_ARCHIVE := $(BUILD)/libpyxis-fs-format.a
+NATIVE_HOST_OBJECTS := $(addprefix $(BUILD)/host/native/,host.o mkfs.o mkfs_source.o check.o fsck.o inspect.o)
+NATIVE_TOOLS := $(BUILD)/mkpyxisfs-native $(BUILD)/pyxisfs-native-fsck $(BUILD)/pyxisfs-native-inspect
 TOOLS := $(BUILD)/mkpyxisfs $(BUILD)/pyxisfs-inspect $(BUILD)/pyxisfs-write
 
 .DEFAULT_GOAL := all
 .PHONY: all clean check check-extended
 
-all: $(ARCHIVE) $(TOOLS)
+all: $(ARCHIVE) $(TOOLS) $(FORMAT_ARCHIVE) $(NATIVE_TOOLS)
 
 TEST_SOURCES := ram_guard recovery_workload extended_tests namespace_failure_tests namespace_tests file_workloads file_tests publication_tests live_tests failure failure_tests admit_tests main support baseline_tests build_tests plan_tests incremental_tests codec_tests edit_tests
 TEST_HOST_OBJECTS := $(addprefix $(BUILD)/host/,source.o host.o gpt.o)
@@ -61,6 +66,23 @@ $(BUILD)/host/%.o: $(SOURCE)/host/%.c
 	@mkdir -p $(@D)
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include $(CFLAGS) -std=gnu23 $(WARNINGS) -MMD -MP -c $< -o $@
 
+$(BUILD)/mkpyxisfs-native: $(addprefix $(BUILD)/host/native/,mkfs.o mkfs_source.o host.o) $(FORMAT_ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+$(BUILD)/pyxisfs-native-fsck: $(addprefix $(BUILD)/host/native/,fsck.o check.o host.o) $(FORMAT_ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+$(BUILD)/pyxisfs-native-inspect: $(addprefix $(BUILD)/host/native/,inspect.o host.o) $(FORMAT_ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+$(FORMAT_ARCHIVE): $(FORMAT_OBJECTS)
+	$(RM) $@
+	$(HOST_AR) rcs $@ $^
+
+$(BUILD)/format/%.o: $(SOURCE)/format/%.c
+	@mkdir -p $(@D)
+	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include $(CFLAGS) $(CORE_FLAGS) $(WARNINGS) -MMD -MP -c $< -o $@
+
 $(ARCHIVE): $(OBJECTS)
 	$(RM) $@
 	$(HOST_AR) rcs $@ $(OBJECTS)
@@ -70,6 +92,6 @@ $(BUILD)/core/%.o: $(SOURCE)/core/%.c
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include -I$(SOURCE)/core $(CFLAGS) $(CORE_FLAGS) $(WARNINGS) -MMD -MP -c $< -o $@
 
 clean:
-	$(RM) $(OBJECTS) $(OBJECTS:.o=.d) $(ARCHIVE) $(HOST_OBJECTS) $(HOST_OBJECTS:.o=.d) $(TOOLS) $(TEST_OBJECTS) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT) $(UNITY_OBJECT:.o=.d) $(TEST_RUNNER) $(COMPARE_OBJECTS) $(COMPARE_OBJECTS:.o=.d) $(COMPARE_RUNNER)
+	$(RM) $(FORMAT_OBJECTS) $(FORMAT_OBJECTS:.o=.d) $(FORMAT_ARCHIVE) $(NATIVE_HOST_OBJECTS) $(NATIVE_HOST_OBJECTS:.o=.d) $(NATIVE_TOOLS) $(OBJECTS) $(OBJECTS:.o=.d) $(ARCHIVE) $(HOST_OBJECTS) $(HOST_OBJECTS:.o=.d) $(TOOLS) $(TEST_OBJECTS) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT) $(UNITY_OBJECT:.o=.d) $(TEST_RUNNER) $(COMPARE_OBJECTS) $(COMPARE_OBJECTS:.o=.d) $(COMPARE_RUNNER)
 
--include $(OBJECTS:.o=.d) $(HOST_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT:.o=.d) $(COMPARE_OBJECTS:.o=.d)
+-include $(FORMAT_OBJECTS:.o=.d) $(NATIVE_HOST_OBJECTS:.o=.d) $(OBJECTS:.o=.d) $(HOST_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d) $(UNITY_OBJECT:.o=.d) $(COMPARE_OBJECTS:.o=.d)
