@@ -9,26 +9,26 @@ WARNINGS := -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wer
 FORMAT_FLAGS := -std=gnu23 -ffreestanding -fno-builtin -fno-stack-protector
 FORMAT_SOURCES := base header record journal
 FORMAT_OBJECTS := $(addprefix $(BUILD)/format/,$(addsuffix .o,$(FORMAT_SOURCES)))
-FORMAT_ARCHIVE := $(BUILD)/libpyxis-fs-format.a
-NATIVE_HOST_OBJECTS := $(addprefix $(BUILD)/host/native/,host.o mkfs.o mkfs_source.o check.o fsck.o inspect.o)
-NATIVE_TOOLS := $(BUILD)/mkpyxisfs-native $(BUILD)/pyxisfs-native-fsck $(BUILD)/pyxisfs-native-inspect
+FORMAT_ARCHIVE := $(BUILD)/libnpfs-format.a
+NPFS_HOST_OBJECTS := $(addprefix $(BUILD)/host/npfs/,host.o mkfs.o mkfs_source.o check.o fsck.o inspect.o)
+NPFS_TOOLS := $(BUILD)/mkfs.npfs $(BUILD)/fsck.npfs $(BUILD)/npfs-inspect
 
 .DEFAULT_GOAL := all
 .PHONY: all clean
 
-all: $(FORMAT_ARCHIVE) $(NATIVE_TOOLS)
+all: $(FORMAT_ARCHIVE) $(NPFS_TOOLS)
 
 $(BUILD)/host/%.o: $(SOURCE)/host/%.c
 	@mkdir -p $(@D)
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include $(CFLAGS) -std=gnu23 $(WARNINGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/mkpyxisfs-native: $(addprefix $(BUILD)/host/native/,mkfs.o mkfs_source.o host.o) $(FORMAT_ARCHIVE)
+$(BUILD)/mkfs.npfs: $(addprefix $(BUILD)/host/npfs/,mkfs.o mkfs_source.o host.o) $(FORMAT_ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-$(BUILD)/pyxisfs-native-fsck: $(addprefix $(BUILD)/host/native/,fsck.o check.o host.o) $(FORMAT_ARCHIVE)
+$(BUILD)/fsck.npfs: $(addprefix $(BUILD)/host/npfs/,fsck.o check.o host.o) $(FORMAT_ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-$(BUILD)/pyxisfs-native-inspect: $(addprefix $(BUILD)/host/native/,inspect.o host.o) $(FORMAT_ARCHIVE)
+$(BUILD)/npfs-inspect: $(addprefix $(BUILD)/host/npfs/,inspect.o host.o) $(FORMAT_ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(FORMAT_ARCHIVE): $(FORMAT_OBJECTS)
@@ -40,6 +40,6 @@ $(BUILD)/format/%.o: $(SOURCE)/format/%.c
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include $(CFLAGS) $(FORMAT_FLAGS) $(WARNINGS) -MMD -MP -c $< -o $@
 
 clean:
-	$(RM) $(FORMAT_OBJECTS) $(FORMAT_OBJECTS:.o=.d) $(FORMAT_ARCHIVE) $(NATIVE_HOST_OBJECTS) $(NATIVE_HOST_OBJECTS:.o=.d) $(NATIVE_TOOLS)
+	$(RM) $(FORMAT_OBJECTS) $(FORMAT_OBJECTS:.o=.d) $(FORMAT_ARCHIVE) $(NPFS_HOST_OBJECTS) $(NPFS_HOST_OBJECTS:.o=.d) $(NPFS_TOOLS)
 
--include $(FORMAT_OBJECTS:.o=.d) $(NATIVE_HOST_OBJECTS:.o=.d)
+-include $(FORMAT_OBJECTS:.o=.d) $(NPFS_HOST_OBJECTS:.o=.d)

@@ -16,5 +16,5 @@ jobs:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Build native format library and host tools
+      - name: Build npfs format library and host tools
         run: make -j16

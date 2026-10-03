@@ -1,6 +1,6 @@
 # pyxis-fs development
 
-- Read `docs/native-format.md` for the format and `docs/native-host-tools.md`
+- Read `docs/npfs-format.md` for the format and `docs/npfs-host-tools.md`
   for host-tool interfaces and limits. Coordinate scope with the Pyxis OS filesystem milestone.
 - Check branch, worktrees and local changes before editing. Fetch main and use
   focused task branches; publish commits and open Forgejo PRs with `fj`. The owner
@@ -24,6 +24,6 @@
   unless explicitly requested. Report checks actually run and their limits.
 - CI builds the format library and host tools. It does not prove structural
   behavior, recovery or kernel mutation correctness. The retired COW tests are
-  not coverage for the native format; do not preserve obsolete test targets.
+  not coverage for npfs; do not preserve obsolete test targets.
 - Preserve MPL-2.0 coverage and any future upstream provenance/notices. Do not
   duplicate authoritative format definitions in the parent repository.
