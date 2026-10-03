@@ -1,7 +1,7 @@
 # Licensing
 
-Except for the third-party material identified below and files with their own
-license notices, original Pyxis source code, build/configuration files and
+Except for files with their own license notices, original Pyxis source code,
+build/configuration files and
 project documentation in this repository are licensed under the Mozilla Public
 License, version 2.0. The complete, unmodified license is in [LICENSE](LICENSE).
 
@@ -13,11 +13,10 @@ This directory-level notice applies to the original material described above;
 it does not replace third-party notices. No Exhibit B incompatibility notice is
 applied: MPL's standard secondary-license provisions remain available.
 
-## Third-party material
+## Provenance
 
-The host test executable uses [Unity](third_party/unity/README.md), licensed under
-the [MIT license](third_party/unity/LICENSE.txt). Its pinned source subset retains
-upstream notices and formatting. Unity is not part of the freestanding core.
+The retired COW test suite and its Unity dependency are no longer distributed in
+this tree. Their original source and license notices remain in Git history.
 
 Imported code or data must retain its license, attribution and provenance. Do not
 replace an upstream notice with the project's default MPL notice.

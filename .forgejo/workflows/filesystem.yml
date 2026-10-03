@@ -16,5 +16,5 @@ jobs:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Verify RAM boundary, build and test
-        run: python3 tests/ram_run.py --inside --suite check --ci-quick
+      - name: Build native format library and host tools
+        run: make -j16

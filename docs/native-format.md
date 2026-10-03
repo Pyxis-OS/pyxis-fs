@@ -1,8 +1,8 @@
 # Native format
 
 Implemented by `include/pyxis_fs/native.h` and `format/`. This is the simple native
-format from Pyxis task 2, beside the old `pfs_*` core. Caelum still mounts the old
-format. The new archive contains codecs, CRC32C, geometry, timestamp conversion and
+format adopted by Caelum's native backend. The old `pfs_*` core and format are
+retired. The archive contains codecs, CRC32C, geometry, timestamp conversion and
 mapping arithmetic; it contains no I/O, allocator, cache, mount state or writer.
 Consumers provide `pnf_memory_copy` and `pnf_memory_zero` at link time. There are
 no environment callback tables. GNU C23 and compiler support for `__int128` are

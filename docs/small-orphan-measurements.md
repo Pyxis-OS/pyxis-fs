@@ -1,5 +1,12 @@
 # Small-orphan cleanup: matched RAM measurements
 
+**Historical: retired COW filesystem.** The implementation, host tools and test
+suite described here were removed when Caelum adopted the native format. Commands
+and APIs below are obsolete; they are not current validation or interfaces. The
+[source snapshot](https://git.internal/PyxisOS/pyxis-fs/src/commit/810d2af66d0281e2d8a3e8a396a041f4232f2ce9)
+preserves the original implementation. Use the [native format](native-format.md)
+and [native host tools](native-host-tools.md) for current behavior.
+
 Two serial unchanged baseline matrices per revision completed on 2026-10-02:
 before `87d2f20`, after production commit `9d9a347`. All 40 cases per sample
 completed and every final payload/namespace matched the independent ledger.

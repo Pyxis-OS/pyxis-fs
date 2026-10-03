@@ -1,5 +1,12 @@
 # Retirement carryover: matched RAM measurements
 
+**Historical: retired COW filesystem.** The implementation, host tools and test
+suite described here were removed when Caelum adopted the native format. Commands
+and APIs below are obsolete; they are not current validation or interfaces. The
+[source snapshot](https://git.internal/PyxisOS/pyxis-fs/src/commit/810d2af66d0281e2d8a3e8a396a041f4232f2ce9)
+preserves the original implementation. Use the [native format](native-format.md)
+and [native host tools](native-host-tools.md) for current behavior.
+
 Two serial unchanged 40-case matrices per revision completed on 2026-10-02.
 Before was filesystem `73a4885`; after sample 1 compiled `609b701`, and sample 2
 compiled `063d93c`. Their only production difference is defensive classification

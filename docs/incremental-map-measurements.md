@@ -1,5 +1,12 @@
 # Incremental allocation-map matched RAM observations
 
+**Historical: retired COW filesystem.** The implementation, host tools and test
+suite described here were removed when Caelum adopted the native format. Commands
+and APIs below are obsolete; they are not current validation or interfaces. The
+[source snapshot](https://git.internal/PyxisOS/pyxis-fs/src/commit/810d2af66d0281e2d8a3e8a396a041f4232f2ce9)
+preserves the original implementation. Use the [native format](native-format.md)
+and [native host tools](native-host-tools.md) for current behavior.
+
 Two unchanged 40-case matrices were captured before implementation at published
 `5e44d6f` (tree identical to merged filesystem `e5b76c5`), after Pyxis #313 was
 confirmed merged. Two serial after matrices used `6b95138`. Later documentation
