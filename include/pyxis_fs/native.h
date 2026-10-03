@@ -34,6 +34,7 @@
 #define PNF_MAPPING_POINTERS 1u
 #define PNF_TIME_CREATED_VALID (UINT32_C(1) << 0)
 #define PNF_TIME_MODIFIED_VALID (UINT32_C(1) << 1)
+#define PNF_INODE_FLAGS (PNF_TIME_CREATED_VALID | PNF_TIME_MODIFIED_VALID)
 #define PNF_CLEANUP_DETACHED (UINT32_C(1) << 0)
 #define PNF_CLEANUP_SHRINK (UINT32_C(1) << 1)
 #define PNF_CLEANUP_FLAGS (PNF_CLEANUP_DETACHED | PNF_CLEANUP_SHRINK)
@@ -172,8 +173,10 @@ enum pnf_status pnf_inode_encode(const struct pnf_header *header,
                                 const struct pnf_inode *inode, void *record);
 enum pnf_status pnf_inode_decode(const struct pnf_header *header, const void *record,
                                 struct pnf_inode *inode);
-enum pnf_status pnf_dirent_encode(const struct pnf_dirent *entry, void *record);
-enum pnf_status pnf_dirent_decode(const void *record, size_t available,
+enum pnf_status pnf_dirent_encode(const struct pnf_header *header,
+                                 const struct pnf_dirent *entry, void *record);
+enum pnf_status pnf_dirent_decode(const struct pnf_header *header,
+                                 const void *record, size_t available,
                                  struct pnf_dirent *entry);
 enum pnf_status pnf_control_encode(const struct pnf_header *header,
                                   const struct pnf_control *control, void *block);

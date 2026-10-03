@@ -77,6 +77,14 @@ pnf_put_u64(void *bytes, uint64_t value)
 }
 
 bool
+pnf_flags_valid(const struct pnf_header *header, uint32_t flags, uint32_t known)
+{
+  /* Ignorable pool extensions may define flags unknown to this reader. */
+  return (flags & ~known) == 0 || header->compatible != 0 ||
+         header->read_only_compatible != 0;
+}
+
+bool
 pnf_bytes_zero(const void *bytes, size_t length)
 {
   const uint8_t *p = bytes;

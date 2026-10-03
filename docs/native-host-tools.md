@@ -61,7 +61,10 @@ Pending cleanup can be structurally valid; fsck does not reclaim it.
 `pyxisfs-native-fsck --image PATH --replay` opens writable and permits COMMITTED.
 It validates the entire staged journal before home writes, checkpoints and clears
 it durably, then runs structural checking. An EMPTY pool receives no replay writes.
-No arbitrary repair, rollback, header-copy repair or content verification exists.
+Fsck warns on stderr when only one header is valid, including on a writable
+opening. A structurally valid pool still exits zero with that warning, following
+the one-valid-copy opening rule. No arbitrary repair, rollback, header-copy repair
+or content verification exists.
 A structural error after replay remains an error, even though recovery writes have
 already happened. Replay memory holds the full payload, a target bitset and
 selected descriptors; checking holds a pool ownership bitset and decoded inode/

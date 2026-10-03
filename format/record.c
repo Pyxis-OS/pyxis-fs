@@ -27,7 +27,8 @@ volume_validate(const struct pnf_header *header, const struct pnf_volume *volume
   if (volume->state != PNF_VOLUME_LIVE || volume->mapping != PNF_MAPPING_POINTERS) {
     return PNF_UNSUPPORTED;
   }
-  if (!pnf_id_valid(volume->id) || !pnf_name_valid(volume->name, volume->name_length) ||
+  if (!pnf_flags_valid(header, volume->flags, 0) ||
+      !pnf_id_valid(volume->id) || !pnf_name_valid(volume->name, volume->name_length) ||
       volume->root_inode != 1 || volume->inode_bytes < 2 * PNF_INODE_SIZE ||
       volume->inode_bytes > PNF_FILE_SIZE_MAX || volume->inode_bytes % PNF_INODE_SIZE != 0 ||
       volume->cleanup_head >= volume->inode_bytes / PNF_INODE_SIZE ||
@@ -53,7 +54,8 @@ inode_validate(const struct pnf_header *header, const struct pnf_inode *inode)
       inode->mapping != PNF_MAPPING_POINTERS) {
     return PNF_UNSUPPORTED;
   }
-  if (inode->size > PNF_FILE_SIZE_MAX ||
+  if (!pnf_flags_valid(header, inode->flags, PNF_INODE_FLAGS) ||
+      inode->size > PNF_FILE_SIZE_MAX ||
       (inode->cleanup & ~PNF_CLEANUP_FLAGS) != 0 ||
       (inode->cleanup == 0 && inode->cleanup_next != 0) ||
       ((inode->cleanup & PNF_CLEANUP_SHRINK) != 0 && inode->shrink_target != inode->size) ||
@@ -186,9 +188,10 @@ pnf_inode_decode(const struct pnf_header *header, const void *record,
 }
 
 static bool
-entry_valid(const struct pnf_dirent *entry)
+entry_valid(const struct pnf_header *header, const struct pnf_dirent *entry)
 {
-  if (entry == NULL || entry->record_length < PNF_DIRENT_HEADER_SIZE ||
+  if (header == NULL || entry == NULL || !pnf_flags_valid(header, entry->flags, 0) ||
+      entry->record_length < PNF_DIRENT_HEADER_SIZE ||
       entry->record_length > PNF_BLOCK_SIZE || entry->record_length % 8 != 0 ||
       entry->name_length > entry->record_length - PNF_DIRENT_HEADER_SIZE) {
     return false;
@@ -198,9 +201,10 @@ entry_valid(const struct pnf_dirent *entry)
 }
 
 enum pnf_status
-pnf_dirent_encode(const struct pnf_dirent *entry, void *record)
+pnf_dirent_encode(const struct pnf_header *header, const struct pnf_dirent *entry,
+                  void *record)
 {
-  if (record == NULL || !entry_valid(entry)) {
+  if (record == NULL || !entry_valid(header, entry)) {
     return PNF_INVALID;
   }
   uint8_t bytes[PNF_BLOCK_SIZE];
@@ -215,9 +219,10 @@ pnf_dirent_encode(const struct pnf_dirent *entry, void *record)
 }
 
 enum pnf_status
-pnf_dirent_decode(const void *record, size_t available, struct pnf_dirent *entry)
+pnf_dirent_decode(const struct pnf_header *header, const void *record, size_t available,
+                  struct pnf_dirent *entry)
 {
-  if (record == NULL || entry == NULL) {
+  if (header == NULL || record == NULL || entry == NULL) {
     return PNF_INVALID;
   }
   if (available < PNF_DIRENT_HEADER_SIZE) {
@@ -236,7 +241,7 @@ pnf_dirent_decode(const void *record, size_t available, struct pnf_dirent *entry
     return PNF_CORRUPT;
   }
   pnf_memory_copy(result.name, bytes + PNF_DIRENT_HEADER_SIZE, result.name_length);
-  if (!entry_valid(&result)) {
+  if (!entry_valid(header, &result)) {
     return PNF_CORRUPT;
   }
   pnf_memory_copy(entry, &result, sizeof(result));

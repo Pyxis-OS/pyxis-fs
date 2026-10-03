@@ -29,6 +29,16 @@ written zero and ignored by decoders. New semantics require a feature bit whose
 class accounts for both reading and updates. Codec output creates fresh records;
 it does not preserve opaque extension bytes for future read/modify/write consumers.
 
+With no compatible or read-only-compatible extension declared, undefined record
+flag bits are corrupt: inode flags permit only the two timestamp-valid bits;
+volume, directory-entry and journal-descriptor flags are zero. Unknown ignorable
+pool features may define further flags, so older decoders tolerate unknown flag
+bits when either of those feature masks is nonzero. They cannot associate unknown
+flags with a particular unknown feature. Required features still refuse opening.
+Free inodes and unused volume records still require zero flags in all cases.
+The directory-entry codecs take the pool header for this contextual validation.
+Reserved byte areas remain ignored, distinct from undeclared flag bits.
+
 Headers and journal controls/payload have CRC32C. Home metadata and file contents
 have no checksums in v1. Structural checking cannot detect arbitrary content damage.
 CRC32C uses reflected polynomial `0x82f63b78`, initial and final XOR `0xffffffff`.

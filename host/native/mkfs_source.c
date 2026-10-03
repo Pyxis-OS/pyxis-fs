@@ -232,7 +232,7 @@ append_entry(struct mkfs_context *context, struct source_directory *directory,
                               .record_length = (uint16_t)record_length,
                               .name_length = (uint16_t)length };
   memcpy(entry.name, name, length);
-  enum pnf_status status = pnf_dirent_encode(&entry,
+  enum pnf_status status = pnf_dirent_encode(&context->image.header, &entry,
                                              directory->bytes + directory->used);
   if (status != PNF_OK) {
     return status;
@@ -242,7 +242,8 @@ append_entry(struct mkfs_context *context, struct source_directory *directory,
     struct pnf_dirent free_entry = {
       .record_length = (uint16_t)(PNF_BLOCK_SIZE - directory->used),
     };
-    status = pnf_dirent_encode(&free_entry, directory->bytes + directory->used);
+    status = pnf_dirent_encode(&context->image.header, &free_entry,
+                               directory->bytes + directory->used);
   }
   return status;
 }

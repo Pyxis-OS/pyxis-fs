@@ -29,6 +29,8 @@ main(int argc, char **argv)
   enum pnf_status status = native_image_open(&image, path, replay, replay);
   if (status != PNF_OK)
     return native_report("open", status, &image);
+  if (image.degraded_header)
+    fputs("warning: only one valid pool header; header redundancy is degraded\n", stderr);
   if (replay)
     status = native_replay(&image);
   if (status == PNF_OK)

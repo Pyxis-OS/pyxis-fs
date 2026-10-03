@@ -105,6 +105,9 @@ descriptor_validate(const struct pnf_header *header, const struct pnf_descriptor
   if (header == NULL || descriptor == NULL) {
     return PNF_INVALID;
   }
+  if (!pnf_flags_valid(header, descriptor->flags, 0)) {
+    return PNF_CORRUPT;
+  }
   switch (descriptor->kind) {
   case PNF_METADATA_BITMAP:
     return descriptor->home >= header->bitmap_start &&

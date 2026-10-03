@@ -205,7 +205,8 @@ read_directory_block(void *context, uint64_t logical, uint64_t physical)
   size_t offset = 0;
   while (offset < PNF_BLOCK_SIZE) {
     struct pnf_dirent entry;
-    status = pnf_dirent_decode(block + offset, PNF_BLOCK_SIZE - offset, &entry);
+    status = pnf_dirent_decode(&image->header, block + offset,
+                               PNF_BLOCK_SIZE - offset, &entry);
     if (status != PNF_OK)
       return check_error(image, "invalid directory record in inode %llu",
                          (unsigned long long)directory->number);
@@ -442,7 +443,8 @@ check_log_image(struct native_image *image, const struct pnf_descriptor *descrip
     size_t offset = 0;
     while (offset < PNF_BLOCK_SIZE) {
       struct pnf_dirent entry;
-      status = pnf_dirent_decode(bytes + offset, PNF_BLOCK_SIZE - offset, &entry);
+      status = pnf_dirent_decode(&image->header, bytes + offset,
+                                 PNF_BLOCK_SIZE - offset, &entry);
       if (status != PNF_OK)
         return status;
       offset += entry.record_length;

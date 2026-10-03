@@ -71,7 +71,8 @@ inspect_directory(struct native_image *image, const struct pnf_volume *volume,
     size_t offset = 0;
     while (offset < PNF_BLOCK_SIZE) {
       struct pnf_dirent entry;
-      status = pnf_dirent_decode(block + offset, PNF_BLOCK_SIZE - offset, &entry);
+      status = pnf_dirent_decode(&image->header, block + offset,
+                                 PNF_BLOCK_SIZE - offset, &entry);
       if (status != PNF_OK)
         return status;
       offset += entry.record_length;
