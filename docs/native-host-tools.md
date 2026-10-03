@@ -76,8 +76,10 @@ images can exhaust host memory and fail, rather than evade checking.
 ## Inspection and image authority
 
 Inspector paths are relative to a selected volume; omitted path or `.` selects
-its root. Empty components, leading/trailing slash and `..` are invalid. `extract`
-copies one regular file into a new output, without replacement; it does not extract
+its root. An absolute `--path` is rejected with `paths are relative to the volume
+root`; use `--path directory/file` rather than `--path /directory/file`.
+Empty components, leading/trailing slash and `..` are invalid. `extract` copies
+one regular file into a new output, without replacement; it does not extract
 a whole directory. Names print with byte escapes. `stat` prints signed nanoseconds
 or `unknown`, including cleanup fields. Inspector verifies the records traversed
 and rejects duplicate lookup names/backlink errors; it does not run whole-pool

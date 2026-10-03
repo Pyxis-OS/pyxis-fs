@@ -123,8 +123,10 @@ resolve_path(struct native_image *image, const struct pnf_volume *volume, const 
     return status;
   if (!strcmp(path, ".") || !*path)
     return PNF_OK;
-  if (*path == '/')
+  if (*path == '/') {
+    snprintf(image->error, sizeof(image->error), "paths are relative to the volume root");
     return PNF_INVALID;
+  }
   const char *component = path;
   while (*component) {
     const char *end = strchr(component, '/');
