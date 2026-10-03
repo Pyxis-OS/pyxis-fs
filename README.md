@@ -16,8 +16,8 @@ The build produces `libpyxis-fs-format.a`, `mkpyxisfs-native`,
 `pyxisfs-native-fsck` and `pyxisfs-native-inspect` under `build/`.
 See the [format contract](docs/native-format.md) and
 [host-tool usage and limits](docs/native-host-tools.md).
-The retired COW implementation and its test suite remain in Git; older documents
-and measurement records are marked historical.
+The retired COW implementation, tests and historical documentation remain in the
+[last old-core snapshot](https://git.internal/PyxisOS/pyxis-fs/src/commit/810d2af66d0281e2d8a3e8a396a041f4232f2ce9).
 
 ## License
 
