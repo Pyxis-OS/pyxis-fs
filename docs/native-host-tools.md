@@ -1,9 +1,11 @@
 # Native host tools
 
 `make -j16` builds the format-only `build/libpyxis-fs-format.a` and Linux tools
-`mkpyxisfs-native`, `pyxisfs-native-fsck`, `pyxisfs-native-inspect`, alongside the
-old core and tools. From Pyxis use `make -j16 fs-tools` (`build/fs-tools/`). No
+`mkpyxisfs-native`, `pyxisfs-native-fsck`, `pyxisfs-native-inspect`. From Pyxis use `make -j16 fs-tools` (`build/fs-tools/`). No
 compiler-container rebuild is needed. See the [encoding contract](native-format.md).
+The existing filesystem CI job builds these outputs only. Structural/recovery
+behavior is checked through ordinary manual tool use, not by the retired COW
+suite; successful compilation is not a behavior proof.
 
 ## Formatting
 
