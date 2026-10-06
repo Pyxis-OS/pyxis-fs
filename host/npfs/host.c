@@ -7,9 +7,11 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <linux/fs.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -109,9 +111,9 @@ npfs_image_close(struct npfs_image *image)
   return NPFS_OK;
 }
 
-enum npfs_status
-npfs_image_open(struct npfs_image *image, const char *path,
-                    bool writable, bool allow_committed)
+static enum npfs_status
+open_source(struct npfs_image *image, const char *path,
+            bool writable, bool allow_committed, bool allow_device)
 {
   if (image == NULL || path == NULL) {
     return NPFS_INVALID;
@@ -124,15 +126,31 @@ npfs_image_open(struct npfs_image *image, const char *path,
   image->fd = fd;
   struct stat info;
   enum npfs_status status = NPFS_IO;
-  if (fstat(fd, &info) != 0 || flock(fd, (writable ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0) {
-    status = io_error(image, "stat/lock", 0);
+  if (fstat(fd, &info) != 0) {
+    status = io_error(image, "stat", 0);
     goto fail;
   }
-  if (!S_ISREG(info.st_mode) || info.st_size < 2 * NPFS_BLOCK_SIZE) {
+  uint64_t bytes;
+  if (S_ISREG(info.st_mode)) {
+    if (flock(fd, (writable ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0) {
+      status = io_error(image, "lock", 0);
+      goto fail;
+    }
+    bytes = info.st_size < 0 ? 0 : (uint64_t)info.st_size;
+  } else if (allow_device && S_ISBLK(info.st_mode)) {
+    if (ioctl(fd, BLKGETSIZE64, &bytes) != 0) {
+      status = io_error(image, "device size", 0);
+      goto fail;
+    }
+  } else {
     status = NPFS_INVALID;
     goto fail;
   }
-  image->block_count = (uint64_t)info.st_size / NPFS_BLOCK_SIZE;
+  if (bytes < 2 * NPFS_BLOCK_SIZE || bytes > INT64_MAX) {
+    status = NPFS_INVALID;
+    goto fail;
+  }
+  image->block_count = bytes / NPFS_BLOCK_SIZE;
   uint8_t blocks[2][NPFS_BLOCK_SIZE];
   struct npfs_header headers[2];
   enum npfs_status states[2];
@@ -203,6 +221,19 @@ npfs_image_open(struct npfs_image *image, const char *path,
 fail:
   npfs_image_close(image);
   return status;
+}
+
+enum npfs_status
+npfs_image_open(struct npfs_image *image, const char *path,
+                bool writable, bool allow_committed)
+{
+  return open_source(image, path, writable, allow_committed, false);
+}
+
+enum npfs_status
+npfs_source_open(struct npfs_image *image, const char *path)
+{
+  return open_source(image, path, false, false, true);
 }
 
 enum npfs_status

@@ -4,7 +4,8 @@
 `mkfs.npfs`, `fsck.npfs`, `npfs-inspect`. From Pyxis use `make -j16 fs-tools`
 (`build/fs-tools/`). No compiler-container rebuild is needed. See the
 [encoding contract](npfs-format.md).
-The existing filesystem CI job builds these outputs only. Structural/recovery
+The optional libfuse3-dependent `npfs-fuse` tool is described below.
+The existing filesystem CI job builds the outputs available in its builder. Structural/recovery
 behavior is checked through ordinary manual tool use, not by the retired COW
 suite; successful compilation is not a behavior proof.
 
@@ -86,7 +87,9 @@ or `unknown`, including cleanup fields. Inspector verifies the records traversed
 and rejects duplicate lookup names/backlink errors; it does not run whole-pool
 fsck on each command. Run fsck separately for global consistency.
 
-All tools use standalone regular pool image files, not GPT selection or raw disks.
+`mkfs.npfs`, `fsck.npfs` and `npfs-inspect` use standalone regular pool image
+files, not GPT selection or raw disks. The read-only mount also accepts partition
+devices, through a separate opening interface.
 Open validates both headers, features and control selection before reading homes.
 Shared read/exclusive write nonblocking `flock` coordinates cooperating tools.
 Files must remain unchanged/exclusive externally: locks do not constrain programs
@@ -94,6 +97,58 @@ that ignore them. No read-only RAM recovery overlay is provided. Unknown require
 features refuse all use; unknown read-only-compatible features prevent replay.
 The private host read APIs may partially fill buffers on failure; callers discard
 those results. The public format decoders publish only validated copied results.
+
+## Read-only Linux mounts
+
+Install `pkg-config`, the `fuse3` runtime (including `fusermount3`), and the
+libfuse3 development package (`fuse3-devel` on Fedora, `libfuse3-dev` on Debian). `make -j16` includes `build/npfs-fuse` when
+that dependency is available; `make npfs-fuse` explicitly requires it. Other
+outputs remain available without libfuse3.
+
+```sh
+mkdir /tmp/pyxis-volume
+build/npfs-fuse /path/to/pool.raw /tmp/pyxis-volume
+ls /tmp/pyxis-volume/system
+cp /tmp/pyxis-volume/system/file /path/to/checkout/
+fusermount3 -u /tmp/pyxis-volume
+```
+
+SOURCE can also be a readable npfs partition device, such as `/dev/sdb2`, with
+no GPT selection. Supply the actual partition, not the whole disk. Symlink
+sources are refused; resolve a device alias first. The source is opened read-only
+and must remain unchanged for the entire mount. Regular images take the same
+shared nonblocking `flock` as inspection. Devices do not have a writer-exclusion
+protocol: do not mount while Pyxis or another program can change that pool.
+`-f` keeps the daemon in the foreground. Normal unmount releases the source and
+image lock. The mount is private to its mounting user, owns entries with that
+user's UID/GID, and presents directories as 0555 and files as 0444. No write
+operations or `allow_other` option are supplied.
+
+Every live volume appears under the synthetic root with its native name.
+The host opener validates both headers, features and selected control state.
+Catalog, reserved inode zero and attached directory roots are checked before
+mounting. A committed journal refuses the mount before reading home metadata:
+boot Pyxis once to recover it, or run `fsck.npfs --image COPY --replay` on a copy
+of the image. The mount performs no replay, repair or source writes.
+
+Native creation and modification times are readable xattrs
+`user.npfs.created_ns` and `user.npfs.modified_ns`: decimal signed nanoseconds
+since the Unix epoch, or the literal `unknown`. Known zero is distinct from
+unknown. Linux mtime uses native modification time with nanosecond precision;
+unknown mtime has a documented zero fallback. Linux atime/ctime also use that
+mtime, since npfs has no access/POSIX change timestamps. Creation time is only
+exposed through its xattr. The synthetic root has unknown timestamps.
+Use `getfattr -d FILE` to display native times. No timestamps change on reads.
+
+File reads support sparse holes, partial reads and EOF. Namespace operations
+validate traversed records and directory backlinks. Opening a directory builds
+one sorted metadata snapshot, rejects duplicate names and holds it until close;
+array-index cookies support resumed listings. Memory use scales with open
+directories, not file contents. Callbacks are serialized because the host reader
+owns a shared diagnostic buffer. Linux may cache unchanged file data.
+The mount is not whole-pool fsck: global allocation ownership, duplicate inode
+references and disconnected cycles still require `fsck.npfs`. Allocation-block
+counts are not synthesized from logical size, so `du` is not a disk-usage report.
 
 ## Task-2 validation
 

@@ -22,6 +22,10 @@ struct npfs_image {
  * Image owns fd until close. File locks exclude cooperating tools, not outsiders. */
 enum npfs_status npfs_image_open(struct npfs_image *image, const char *path,
                                   bool writable, bool allow_committed);
+/* Readonly mount sources: regular pool images or Linux partition devices.
+ * Shares image admission; regular images retain a shared lock until close.
+ * Devices have no protection from external writers. No GPT selection/replay. */
+enum npfs_status npfs_source_open(struct npfs_image *image, const char *path);
 enum npfs_status npfs_image_close(struct npfs_image *image);
 enum npfs_status npfs_read_blocks(struct npfs_image *image, uint64_t first,
                                    uint32_t count, void *bytes);
