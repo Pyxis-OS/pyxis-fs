@@ -526,7 +526,8 @@ int main(int argc, char **argv)
   };
   /* Serialize callbacks: the host reader owns one diagnostic buffer. Fixed
    * readonly/private mount options do not grant other users access. */
-  char *arguments[] = {argv[0], mountpoint, "-s", "-o", "ro,default_permissions", "-f"};
+  char *arguments[] = {argv[0], mountpoint, "-s", "-o", "ro,default_permissions",
+      foreground ? "-f" : NULL, NULL};
   int result = fuse_main(foreground ? 6 : 5, arguments, &operations, &mount);
   status = npfs_image_close(&mount.image);
   if (status != NPFS_OK) {
