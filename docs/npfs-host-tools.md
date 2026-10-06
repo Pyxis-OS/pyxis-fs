@@ -93,7 +93,8 @@ devices, through a separate opening interface.
 Open validates both headers, features and control selection before reading homes.
 Shared read/exclusive write nonblocking `flock` coordinates cooperating tools.
 Files must remain unchanged/exclusive externally: locks do not constrain programs
-that ignore them. No read-only RAM recovery overlay is provided. Unknown required
+that ignore them. Image-only inspection/checking without `--replay` still refuses committed
+journals; the FUSE mount has a separate read-only RAM recovery view. Unknown required
 features refuse all use; unknown read-only-compatible features prevent replay.
 The private host read APIs may partially fill buffers on failure; callers discard
 those results. The public format decoders publish only validated copied results.
@@ -153,9 +154,20 @@ Running the mount through `sudo` makes it private to root.
 Every live volume appears under the synthetic root with its native name.
 The host opener validates both headers, features and selected control state.
 Catalog, reserved inode zero and attached directory roots are checked before
-mounting. A committed journal refuses the mount before reading home metadata:
-boot Pyxis once to recover it, or run `fsck.npfs --image COPY --replay` on a copy
-of the image. The mount performs no replay, repair or source writes.
+mounting. A committed journal is validated completely before publishing a RAM
+overlay: counts and pool binding, descriptor bounds/zero padding/unique targets,
+local metadata-image encodings and the contextual payload CRC use the same
+validator as writable fsck. Replaced blocks are served from the indexed overlay;
+untouched blocks are read from the original source. The logical journal becomes
+EMPTY for namespace reading, without changing its on-disk state or incrementing
+the sequence. Invalid logs and allocation failures refuse the mount.
+
+The mount uses read-only feature admission; writable fsck retains its writable
+feature and sequence-increment checks. All validated journal images and an index
+are held until unmount, with a temporary target bitset during validation. Large
+journals can exhaust RAM. The mount never checkpoints homes, clears source
+controls, repairs or writes the source. To persist recovery, boot Pyxis once or
+use `fsck.npfs --image COPY --replay` on an independently made image copy.
 
 Native creation and modification times are readable xattrs
 `user.npfs.created_ns` and `user.npfs.modified_ns`: decimal signed nanoseconds
@@ -167,7 +179,9 @@ exposed through its xattr. The synthetic root has unknown timestamps.
 Use `getfattr -d FILE` to display native times. No timestamps change on reads.
 
 File reads support sparse holes, partial reads and EOF. Namespace operations
-validate traversed records and directory backlinks. Opening a directory builds
+decode directory records and validate the selected inode/backlink. Lookup reads
+inodes only for matching names while still scanning for duplicate matches.
+Opening a directory validates every listed child and builds
 one sorted metadata snapshot, rejects duplicate names and holds it until close;
 array-index cookies support resumed listings. Memory use scales with open
 directories, not file contents. Callbacks are serialized because the host reader
