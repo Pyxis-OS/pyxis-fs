@@ -100,8 +100,8 @@ those results. The public format decoders publish only validated copied results.
 
 ## Read-only Linux mounts
 
-Install `pkg-config` and the libfuse3 development package (`fuse3-devel` on
-Fedora, `libfuse3-dev` on Debian). `make -j16` includes `build/npfs-fuse` when
+Install `pkg-config`, the `fuse3` runtime (including `fusermount3`), and the
+libfuse3 development package (`fuse3-devel` on Fedora, `libfuse3-dev` on Debian). `make -j16` includes `build/npfs-fuse` when
 that dependency is available; `make npfs-fuse` explicitly requires it. Other
 outputs remain available without libfuse3.
 
