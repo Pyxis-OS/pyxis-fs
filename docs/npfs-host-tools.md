@@ -95,7 +95,7 @@ Shared read/exclusive write nonblocking `flock` coordinates cooperating tools.
 Files must remain unchanged/exclusive externally: locks do not constrain programs
 that ignore them. Image-only inspection/checking without `--replay` still refuses committed
 journals; the FUSE mount has a separate read-only RAM recovery view. Unknown required
-features refuse all use; unknown read-only-compatible features prevent replay.
+features refuse all use; unknown read-only-compatible features prevent writable replay.
 The private host read APIs may partially fill buffers on failure; callers discard
 those results. The public format decoders publish only validated copied results.
 
