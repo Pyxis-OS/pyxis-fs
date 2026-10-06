@@ -16,7 +16,8 @@ The build produces `libnpfs-format.a`, `mkfs.npfs`,
 `fsck.npfs` and `npfs-inspect` under `build/`.
 When libfuse3 development files are installed, it also builds the optional
 read-only Linux mount `npfs-fuse SOURCE MOUNTPOINT`, exposing each live volume
-as a directory. See the [format contract](docs/npfs-format.md) and
+as a directory. Use `cp -r --no-preserve=mode MOUNTPOINT/VOLUME DESTINATION`
+to copy a writable tree. See the [format contract](docs/npfs-format.md) and
 [host-tool usage and limits](docs/npfs-host-tools.md).
 The retired COW implementation, tests and historical documentation remain in the
 [last old-core snapshot](https://git.internal/PyxisOS/pyxis-fs/src/commit/810d2af66d0281e2d8a3e8a396a041f4232f2ce9).

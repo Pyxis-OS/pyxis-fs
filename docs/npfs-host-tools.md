@@ -109,7 +109,7 @@ outputs remain available without libfuse3.
 mkdir /tmp/pyxis-volume
 build/npfs-fuse /path/to/pool.raw /tmp/pyxis-volume
 ls /tmp/pyxis-volume/system
-cp /tmp/pyxis-volume/system/file /path/to/checkout/
+cp -r --no-preserve=mode /tmp/pyxis-volume/system /path/to/checkout/
 fusermount3 -u /tmp/pyxis-volume
 ```
 
@@ -123,6 +123,32 @@ protocol: do not mount while Pyxis or another program can change that pool.
 image lock. The mount is private to its mounting user, owns entries with that
 user's UID/GID, and presents directories as 0555 and files as 0444. No write
 operations or `allow_other` option are supplied.
+
+Plain `cp -r` preserves the read-only modes. `--no-preserve=mode` gives the
+copied files and directories normal writable modes, subject to your umask.
+
+To read a device as your normal user, install the host `acl` package if needed.
+Select the actual npfs partition after identifying the disk; `/dev/sdb2` below
+is only an example. Save its existing ACL outside the mount before granting
+yourself read access, then run the mount as yourself:
+
+```sh
+device=/dev/sdb2
+acl_backup=$(mktemp /tmp/npfs-device-acl.XXXXXX)
+getfacl --absolute-names "$device" > "$acl_backup"
+sudo setfacl -m "u:$(id -un):r" "$device"
+mkdir /tmp/pyxis-device
+build/npfs-fuse "$device" /tmp/pyxis-device
+cp -r --no-preserve=mode /tmp/pyxis-device/system /path/to/checkout/
+fusermount3 -u /tmp/pyxis-device
+sudo setfacl --restore="$acl_backup"
+rm "$acl_backup"
+```
+
+Keep the pool unchanged throughout the mount. The read grant remains after
+unmount until restored or the device node is recreated on replug. Restore the
+saved ACL after unmount, before replugging, to preserve any previous grants.
+Running the mount through `sudo` makes it private to root.
 
 Every live volume appears under the synthetic root with its native name.
 The host opener validates both headers, features and selected control state.
