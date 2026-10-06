@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
-#include "host.h"
+#include "journal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -43,7 +43,8 @@ transfer(struct npfs_image *image, uint64_t first, uint32_t count,
 {
   if (image == NULL || image->fd < 0 || bytes == NULL || count == 0 ||
       first >= image->block_count || count > image->block_count - first ||
-      (uint64_t)count * NPFS_BLOCK_SIZE > SIZE_MAX || (writing && !image->writable)) {
+      (uint64_t)count * NPFS_BLOCK_SIZE > SIZE_MAX ||
+      (writing && (!image->writable || image->overlay))) {
     return NPFS_INVALID;
   }
   uint64_t offset = first * NPFS_BLOCK_SIZE;
@@ -72,7 +73,24 @@ transfer(struct npfs_image *image, uint64_t first, uint32_t count,
 enum npfs_status
 npfs_read_blocks(struct npfs_image *image, uint64_t first, uint32_t count, void *bytes)
 {
-  return transfer(image, first, count, bytes, false);
+  if (!image || !image->overlay)
+    return transfer(image, first, count, bytes, false);
+  if (image->fd < 0 || !bytes || !count || first >= image->block_count ||
+      count > image->block_count - first || (uint64_t)count * NPFS_BLOCK_SIZE > SIZE_MAX)
+    return NPFS_INVALID;
+  uint8_t *cursor = bytes;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t *replacement = npfs_overlay_block(image->overlay, first + i);
+    if (replacement) {
+      memcpy(cursor, replacement, NPFS_BLOCK_SIZE);
+    } else {
+      enum npfs_status status = transfer(image, first + i, 1, cursor, false);
+      if (status != NPFS_OK)
+        return status;
+    }
+    cursor += NPFS_BLOCK_SIZE;
+  }
+  return NPFS_OK;
 }
 
 enum npfs_status
@@ -100,6 +118,8 @@ npfs_image_close(struct npfs_image *image)
   if (image == NULL) {
     return NPFS_INVALID;
   }
+  npfs_overlay_free(image->overlay);
+  image->overlay = NULL;
   if (image->fd < 0) {
     return NPFS_OK;
   }
@@ -212,7 +232,7 @@ open_source(struct npfs_image *image, const char *path,
   }
   image->control = controls[selected];
   image->control_slot = selected;
-  if (image->control.state == NPFS_JOURNAL_COMMITTED && (!writable || !allow_committed)) {
+  if (image->control.state == NPFS_JOURNAL_COMMITTED && !allow_committed) {
     status = NPFS_RECOVERY_REQUIRED;
     goto fail;
   }
@@ -227,13 +247,19 @@ enum npfs_status
 npfs_image_open(struct npfs_image *image, const char *path,
                 bool writable, bool allow_committed)
 {
-  return open_source(image, path, writable, allow_committed, false);
+  return open_source(image, path, writable, writable && allow_committed, false);
 }
 
 enum npfs_status
 npfs_source_open(struct npfs_image *image, const char *path)
 {
-  return open_source(image, path, false, false, true);
+  enum npfs_status status = open_source(image, path, false, true, true);
+  if (status == NPFS_OK) {
+    status = npfs_memory_replay(image);
+    if (status != NPFS_OK)
+      npfs_image_close(image);
+  }
+  return status;
 }
 
 enum npfs_status

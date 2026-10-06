@@ -93,8 +93,9 @@ devices, through a separate opening interface.
 Open validates both headers, features and control selection before reading homes.
 Shared read/exclusive write nonblocking `flock` coordinates cooperating tools.
 Files must remain unchanged/exclusive externally: locks do not constrain programs
-that ignore them. No read-only RAM recovery overlay is provided. Unknown required
-features refuse all use; unknown read-only-compatible features prevent replay.
+that ignore them. Image-only inspection/checking without `--replay` still refuses committed
+journals; the FUSE mount has a separate read-only RAM recovery view. Unknown required
+features refuse all use; unknown read-only-compatible features prevent writable replay.
 The private host read APIs may partially fill buffers on failure; callers discard
 those results. The public format decoders publish only validated copied results.
 
@@ -109,7 +110,7 @@ outputs remain available without libfuse3.
 mkdir /tmp/pyxis-volume
 build/npfs-fuse /path/to/pool.raw /tmp/pyxis-volume
 ls /tmp/pyxis-volume/system
-cp /tmp/pyxis-volume/system/file /path/to/checkout/
+cp -r --no-preserve=mode /tmp/pyxis-volume/system /path/to/checkout/
 fusermount3 -u /tmp/pyxis-volume
 ```
 
@@ -124,12 +125,49 @@ image lock. The mount is private to its mounting user, owns entries with that
 user's UID/GID, and presents directories as 0555 and files as 0444. No write
 operations or `allow_other` option are supplied.
 
+Plain `cp -r` preserves the read-only modes. `--no-preserve=mode` gives the
+copied files and directories normal writable modes, subject to your umask.
+
+To read a device as your normal user, install the host `acl` package if needed.
+Select the actual npfs partition after identifying the disk; `/dev/sdb2` below
+is only an example. Save its existing ACL outside the mount before granting
+yourself read access, then run the mount as yourself:
+
+```sh
+device=/dev/sdb2
+acl_backup=$(mktemp /tmp/npfs-device-acl.XXXXXX)
+getfacl --absolute-names "$device" > "$acl_backup"
+sudo setfacl -m "u:$(id -un):r" "$device"
+mkdir /tmp/pyxis-device
+build/npfs-fuse "$device" /tmp/pyxis-device
+cp -r --no-preserve=mode /tmp/pyxis-device/system /path/to/checkout/
+fusermount3 -u /tmp/pyxis-device
+sudo setfacl --restore="$acl_backup"
+rm "$acl_backup"
+```
+
+Keep the pool unchanged throughout the mount. The read grant remains after
+unmount until restored or the device node is recreated on replug. Restore the
+saved ACL after unmount, before replugging, to preserve any previous grants.
+Running the mount through `sudo` makes it private to root.
+
 Every live volume appears under the synthetic root with its native name.
 The host opener validates both headers, features and selected control state.
 Catalog, reserved inode zero and attached directory roots are checked before
-mounting. A committed journal refuses the mount before reading home metadata:
-boot Pyxis once to recover it, or run `fsck.npfs --image COPY --replay` on a copy
-of the image. The mount performs no replay, repair or source writes.
+mounting. A committed journal is validated completely before publishing a RAM
+overlay: counts and pool binding, descriptor bounds/zero padding/unique targets,
+local metadata-image encodings and the contextual payload CRC use the same
+validator as writable fsck. Replaced blocks are served from the indexed overlay;
+untouched blocks are read from the original source. The logical journal becomes
+EMPTY for namespace reading, without changing its on-disk state or incrementing
+the sequence. Invalid logs and allocation failures refuse the mount.
+
+The mount uses read-only feature admission; writable fsck retains its writable
+feature and sequence-increment checks. All validated journal images and an index
+are held until unmount, with a temporary target bitset during validation. Large
+journals can exhaust RAM. The mount never checkpoints homes, clears source
+controls, repairs or writes the source. To persist recovery, boot Pyxis once or
+use `fsck.npfs --image COPY --replay` on an independently made image copy.
 
 Native creation and modification times are readable xattrs
 `user.npfs.created_ns` and `user.npfs.modified_ns`: decimal signed nanoseconds
@@ -141,7 +179,9 @@ exposed through its xattr. The synthetic root has unknown timestamps.
 Use `getfattr -d FILE` to display native times. No timestamps change on reads.
 
 File reads support sparse holes, partial reads and EOF. Namespace operations
-validate traversed records and directory backlinks. Opening a directory builds
+decode directory records and validate the selected inode/backlink. Lookup reads
+inodes only for matching names while still scanning for duplicate matches.
+Opening a directory validates every listed child and builds
 one sorted metadata snapshot, rejects duplicate names and holds it until close;
 array-index cookies support resumed listings. Memory use scales with open
 directories, not file contents. Callbacks are serialized because the host reader

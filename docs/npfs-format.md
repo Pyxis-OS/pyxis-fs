@@ -192,10 +192,16 @@ blocks remain unavailable until EMPTY is durable. `fsync`/`sync` may complete at
 durable COMMITTED after required ordered data; background checkpoint finishes
 before another commit. Work spanning batches waits for every covering commit.
 
-Read-only opening requires EMPTY. Writable `fsck --replay` validates all counts,
+Caelum read-only mounts and image-only inspection require EMPTY. The Linux
+FUSE mount can present a read-only RAM replay of COMMITTED. Writable
+`fsck --replay` and that RAM view share validation of all counts,
 pool binding, checksums, descriptors, unique targets and local image encodings
-before the first home write. It stages the payload in memory, replays it, flushes
-homes, publishes next EMPTY, flushes, then checks the complete resulting image.
+before the first home write or overlay publication. The RAM view retains the
+validated images, serves their home blocks from memory and makes no source
+writes or sequence changes. Writable fsck stages the payload in memory, replays
+it, flushes homes, publishes next EMPTY, flushes, then checks the complete
+resulting image. Feature admission follows the selected read/write operation;
+only writable checkpointing needs room to increment the sequence.
 It does not traverse partially checkpointed homes to authenticate log ownership.
 Interrupted replay is repeatable. Invalid committed payload is an error; it is
 never silently discarded. An uncertain write/flush failure stops the operation.

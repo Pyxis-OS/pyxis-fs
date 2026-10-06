@@ -5,6 +5,8 @@
 #include <pyxis_fs/npfs.h>
 #include <stdio.h>
 
+struct npfs_overlay;
+
 struct npfs_image {
   int fd;
   bool writable;
@@ -13,6 +15,7 @@ struct npfs_image {
   struct npfs_header header;
   struct npfs_control control;
   unsigned control_slot;
+  struct npfs_overlay *overlay;
   char error[192];
 };
 
@@ -24,7 +27,8 @@ enum npfs_status npfs_image_open(struct npfs_image *image, const char *path,
                                   bool writable, bool allow_committed);
 /* Readonly mount sources: regular pool images or Linux partition devices.
  * Shares image admission; regular images retain a shared lock until close.
- * Devices have no protection from external writers. No GPT selection/replay. */
+ * Devices have no protection from external writers. Committed metadata is fully
+ * validated and replayed in RAM before returning. No GPT selection/source writes. */
 enum npfs_status npfs_source_open(struct npfs_image *image, const char *path);
 enum npfs_status npfs_image_close(struct npfs_image *image);
 enum npfs_status npfs_read_blocks(struct npfs_image *image, uint64_t first,

@@ -30,6 +30,8 @@ struct directory_cursor {
   uint64_t offset;
   uint64_t block;
   uint8_t bytes[NPFS_BLOCK_SIZE];
+  const char *wanted_name;
+  size_t wanted_length;
 };
 
 struct directory_entry {
@@ -105,6 +107,10 @@ static int next_entry(struct mount_state *mount, const struct mount_node *direct
     if (!entry->inode) {
       continue;
     }
+    if (cursor->wanted_name && (entry->name_length != cursor->wanted_length ||
+        memcmp(entry->name, cursor->wanted_name, cursor->wanted_length))) {
+      continue;
+    }
     error = read_node(mount, directory->volume, entry->inode, node);
     if (error || entry->inode == 1 ||
         (node->inode.kind == NPFS_INODE_DIRECTORY && node->inode.parent != directory->number)) {
@@ -121,7 +127,7 @@ static int lookup_child(struct mount_state *mount, const struct mount_node *dire
   if (directory->inode.kind != NPFS_INODE_DIRECTORY) {
     return -ENOTDIR;
   }
-  struct directory_cursor cursor = {.block = UINT64_MAX};
+  struct directory_cursor cursor = {.block = UINT64_MAX, .wanted_name = name, .wanted_length = length};
   struct npfs_dirent entry;
   struct mount_node candidate;
   bool found = false;
@@ -482,16 +488,14 @@ int main(int argc, char **argv)
   struct mount_state mount = {.uid = getuid(), .gid = getgid()};
   enum npfs_status status = npfs_source_open(&mount.image, source);
   if (status != NPFS_OK) {
-    if (status == NPFS_RECOVERY_REQUIRED) {
-      fputs("npfs-fuse: committed journal; boot Pyxis once to recover it, or run\n"
-          "fsck.npfs --image COPY --replay on a copy of the image. Nothing was written.\n", stderr);
-    } else {
-      npfs_report("npfs-fuse open", status, &mount.image);
-    }
+    npfs_report("npfs-fuse open", status, &mount.image);
     return 1;
   }
   if (mount.image.degraded_header) {
     fputs("npfs-fuse: warning: only one pool header is valid\n", stderr);
+  }
+  if (mount.image.overlay) {
+    fputs("npfs-fuse: using an in-memory journal replay; source remains read-only\n", stderr);
   }
   status = npfs_read_volumes(&mount.image, mount.volumes);
   bool valid = status == NPFS_OK;
