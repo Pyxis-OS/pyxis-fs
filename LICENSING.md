@@ -15,6 +15,11 @@ applied: MPL's standard secondary-license provisions remain available.
 
 ## Provenance
 
+The optional Linux mount links the system-provided
+[libfuse3](https://github.com/libfuse/libfuse), under its GNU LGPL 2.1 terms
+([upstream license](https://github.com/libfuse/libfuse/blob/master/LGPL2.txt)).
+No libfuse implementation or headers are vendored in this tree.
+
 The retired COW test suite and its Unity dependency are no longer distributed in
 this tree. Their original source and license notices remain in Git history.
 
