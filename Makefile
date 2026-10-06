@@ -11,7 +11,7 @@ FORMAT_FLAGS := -std=gnu23 -ffreestanding -fno-builtin -fno-stack-protector
 FORMAT_SOURCES := base header record journal
 FORMAT_OBJECTS := $(addprefix $(BUILD)/format/,$(addsuffix .o,$(FORMAT_SOURCES)))
 FORMAT_ARCHIVE := $(BUILD)/libnpfs-format.a
-NPFS_HOST_OBJECTS := $(addprefix $(BUILD)/host/npfs/,host.o mkfs.o mkfs_source.o check.o fsck.o inspect.o)
+NPFS_HOST_OBJECTS := $(addprefix $(BUILD)/host/npfs/,host.o journal.o mkfs.o mkfs_source.o check.o fsck.o inspect.o)
 NPFS_TOOLS := $(BUILD)/mkfs.npfs $(BUILD)/fsck.npfs $(BUILD)/npfs-inspect
 FUSE_AVAILABLE := $(shell $(PKG_CONFIG) --exists fuse3 2>/dev/null && echo yes)
 ifeq ($(FUSE_AVAILABLE),yes)
@@ -31,7 +31,7 @@ npfs-fuse: $(BUILD)/npfs-fuse
 
 $(BUILD)/host/npfs/fuse.o: CPPFLAGS += $(FUSE_CFLAGS)
 
-$(BUILD)/npfs-fuse: $(addprefix $(BUILD)/host/npfs/,fuse.o host.o) $(FORMAT_ARCHIVE)
+$(BUILD)/npfs-fuse: $(addprefix $(BUILD)/host/npfs/,fuse.o host.o journal.o) $(FORMAT_ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) $(FUSE_LIBS) -o $@
 else
 npfs-fuse:
@@ -43,13 +43,13 @@ $(BUILD)/host/%.o: $(SOURCE)/host/%.c
 	@mkdir -p $(@D)
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include $(CFLAGS) -std=gnu23 $(WARNINGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/mkfs.npfs: $(addprefix $(BUILD)/host/npfs/,mkfs.o mkfs_source.o host.o) $(FORMAT_ARCHIVE)
+$(BUILD)/mkfs.npfs: $(addprefix $(BUILD)/host/npfs/,mkfs.o mkfs_source.o host.o journal.o) $(FORMAT_ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-$(BUILD)/fsck.npfs: $(addprefix $(BUILD)/host/npfs/,fsck.o check.o host.o) $(FORMAT_ARCHIVE)
+$(BUILD)/fsck.npfs: $(addprefix $(BUILD)/host/npfs/,fsck.o check.o host.o journal.o) $(FORMAT_ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-$(BUILD)/npfs-inspect: $(addprefix $(BUILD)/host/npfs/,inspect.o host.o) $(FORMAT_ARCHIVE)
+$(BUILD)/npfs-inspect: $(addprefix $(BUILD)/host/npfs/,inspect.o host.o journal.o) $(FORMAT_ARCHIVE)
 	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(FORMAT_ARCHIVE): $(FORMAT_OBJECTS)
