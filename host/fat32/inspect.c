@@ -51,34 +51,39 @@ usage(void)
 static bool
 parse_number(const char *text, bool size, uint64_t *value)
 {
-  if (*text < '0' || *text > '9')
+  if (*text < '0' || *text > '9') {
     return false;
+  }
   errno = 0;
   char *end;
   unsigned long long number = strtoull(text, &end, 10);
-  if (errno == ERANGE || number > UINT64_MAX)
+  if (errno == ERANGE || number > UINT64_MAX) {
     return false;
+  }
   uint64_t multiplier = 1;
   if (*end) {
-    if (!size)
+    if (!size) {
       return false;
-    if (!strcmp(end, "KiB"))
+    }
+    if (!strcmp(end, "KiB")) {
       multiplier = 1024;
-    else if (!strcmp(end, "MiB"))
+    } else if (!strcmp(end, "MiB")) {
       multiplier = 1024 * 1024;
-    else if (!strcmp(end, "GiB"))
+    } else if (!strcmp(end, "GiB")) {
       multiplier = 1024ull * 1024 * 1024;
-    else if (!strcmp(end, "KB"))
+    } else if (!strcmp(end, "KB")) {
       multiplier = 1000;
-    else if (!strcmp(end, "MB"))
+    } else if (!strcmp(end, "MB")) {
       multiplier = 1000 * 1000;
-    else if (!strcmp(end, "GB"))
+    } else if (!strcmp(end, "GB")) {
       multiplier = 1000ull * 1000 * 1000;
-    else
+    } else {
       return false;
+    }
   }
-  if (!number || number > UINT64_MAX / multiplier)
+  if (!number || number > UINT64_MAX / multiplier) {
     return false;
+  }
   *value = number * multiplier;
   return true;
 }
@@ -95,43 +100,51 @@ parse_options(int argc, char **argv, struct inspect_options *options)
   int i = 1;
   for (; i < argc && !strncmp(argv[i], "--", 2); i++) {
     const char *option = argv[i];
-    if (++i == argc)
+    if (++i == argc) {
       return false;
+    }
     if (!strcmp(option, "--image")) {
-      if (options->image)
+      if (options->image) {
         return false;
+      }
       options->image = argv[i];
       continue;
     }
     uint64_t value;
-    if (!parse_number(argv[i], !strcmp(option, "--memory-budget"), &value))
+    if (!parse_number(argv[i], !strcmp(option, "--memory-budget"), &value)) {
       return false;
+    }
     if (!strcmp(option, "--gpt-partition")) {
-      if (options->gpt_partition || value > UINT32_MAX)
+      if (options->gpt_partition || value > UINT32_MAX) {
         return false;
+      }
       options->gpt_partition = (uint32_t)value;
     } else if (!strcmp(option, "--memory-budget")) {
-      if (value > SIZE_MAX)
+      if (value > SIZE_MAX) {
         return false;
+      }
       options->memory_budget = (size_t)value;
     } else if (!strcmp(option, "--step-budget")) {
       options->step_budget = value;
     } else if (!strcmp(option, "--sector-budget")) {
       options->sector_budget = value;
     } else if (!strcmp(option, "--depth")) {
-      if (value > UINT32_MAX)
+      if (value > UINT32_MAX) {
         return false;
+      }
       options->depth = (uint32_t)value;
     } else {
       return false;
     }
   }
-  if (!options->image || !options->gpt_partition || i == argc)
+  if (!options->image || !options->gpt_partition || i == argc) {
     return false;
+  }
   options->command = argv[i++];
   if (!strcmp(options->command, "list") || !strcmp(options->command, "read")) {
-    if (i == argc || argv[i][0] != '/')
+    if (i == argc || argv[i][0] != '/') {
       return false;
+    }
     options->path = argv[i++];
   } else if (strcmp(options->command, "info") && strcmp(options->command, "check")) {
     return false;
@@ -203,8 +216,9 @@ read_sectors(void *context, uint64_t first_sector, uint32_t sector_count, void *
   while (remaining) {
     ssize_t got = pread(source->fd, cursor, remaining, (off_t)offset);
     if (got < 0) {
-      if (errno == EINTR)
+      if (errno == EINTR) {
         continue;
+      }
       source->error = errno;
       goto fail;
     }
@@ -258,12 +272,14 @@ write_entry(void *context, const struct fat32_entry *entry)
   if (fprintf(output, "%s\t%" PRIu32 "\t",
               entry->attributes & FAT32_ATTR_DIRECTORY ? "directory" : "file",
               entry->file_bytes) < 0 ||
-      fwrite(entry->name, 1, entry->name_bytes, output) != entry->name_bytes)
+      fwrite(entry->name, 1, entry->name_bytes, output) != entry->name_bytes) {
     return false;
+  }
   if (entry->alias_ascii && entry->alias_bytes) {
     if (fputs("\talias=", output) == EOF ||
-        fwrite(entry->alias, 1, entry->alias_bytes, output) != entry->alias_bytes)
+        fwrite(entry->alias, 1, entry->alias_bytes, output) != entry->alias_bytes) {
       return false;
+    }
   }
   return fputc('\n', output) != EOF;
 }
@@ -297,16 +313,18 @@ int
 main(int argc, char **argv)
 {
   struct inspect_options options;
-  if (!parse_options(argc, argv, &options))
+  if (!parse_options(argc, argv, &options)) {
     return usage();
+  }
   if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
     fprintf(stderr, "fat32-inspect: configure stdout signal handling: %s\n", strerror(errno));
     return 1;
   }
   struct inspect_source source;
   if (!open_source(options.image, &source)) {
-    if (source.fd >= 0)
+    if (source.fd >= 0) {
       close(source.fd);
+    }
     return 1;
   }
   struct fat32_source input = {
@@ -326,21 +344,25 @@ main(int argc, char **argv)
     goto finish;
   }
   workspace.memory = malloc(workspace.bytes);
-  if (!workspace.memory)
+  if (!workspace.memory) {
     goto finish;
+  }
   struct fat32_volume volume;
   status = fat32_open(&input, options.gpt_partition, &workspace, &volume);
-  if (status != FAT32_OK)
+  if (status != FAT32_OK) {
     goto finish;
+  }
   if (!strcmp(options.command, "info")) {
-    if (!write_info(&volume))
+    if (!write_info(&volume)) {
       status = FAT32_OUTPUT;
+    }
     goto finish;
   }
   size_t bytes;
   status = fat32_workspace_size(&volume, options.depth, &bytes);
-  if (status != FAT32_OK)
+  if (status != FAT32_OK) {
     goto finish;
+  }
   if (bytes > options.memory_budget) {
     fprintf(stderr, "fat32-inspect: operation requires %zu workspace bytes; budget is %zu\n",
             bytes, options.memory_budget);
@@ -359,8 +381,9 @@ main(int argc, char **argv)
   if (!strcmp(options.command, "check")) {
     struct fat32_check_report report;
     status = fat32_check(&volume, &workspace, &report);
-    if (status == FAT32_OK && !write_report(&report))
+    if (status == FAT32_OK && !write_report(&report)) {
       status = FAT32_OUTPUT;
+    }
   } else if (!strcmp(options.command, "list")) {
     status = fat32_list(&volume, options.path, strlen(options.path), &workspace,
                         write_entry, stdout);
@@ -373,22 +396,26 @@ finish:
   int output_error = 0;
   if (fclose(stdout)) {
     output_error = errno;
-    if (status == FAT32_OK)
+    if (status == FAT32_OK) {
       status = FAT32_OUTPUT;
+    }
   }
   if (close(source.fd)) {
     fprintf(stderr, "fat32-inspect: source close: %s\n", strerror(errno));
-    if (status == FAT32_OK)
+    if (status == FAT32_OK) {
       status = FAT32_IO;
+    }
   }
   if (status != FAT32_OK) {
     fprintf(stderr, "fat32-inspect: %s: %s\n", options.command, status_name(status));
-    if (source.failed)
+    if (source.failed) {
       fprintf(stderr, "fat32-inspect: source sectors %" PRIu64 " + %" PRIu32 ": %s\n",
               source.failed_sector, source.failed_count,
               source.error ? strerror(source.error) : "unexpected end of source");
-    if (output_error)
+    }
+    if (output_error) {
       fprintf(stderr, "fat32-inspect: stdout: %s\n", strerror(output_error));
+    }
   }
   return status == FAT32_OK ? 0 : 1;
 }
