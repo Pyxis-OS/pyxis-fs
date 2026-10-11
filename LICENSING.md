@@ -15,6 +15,12 @@ applied: MPL's standard secondary-license provisions remain available.
 
 ## Provenance
 
+The FAT32/GPT reader generalizes algorithms from pyxis-userland
+`installer/esp_read.c` and `installer/gpt.c`, revision
+`d2437266d45989c1e73e1ceba995600e4d2f9787`, under MPL-2.0.
+The source files retain this provenance and their MPL notices. No external FAT
+implementation is imported.
+
 The optional Linux mount links the system-provided
 [libfuse3](https://github.com/libfuse/libfuse), under its GNU LGPL 2.1 terms
 ([upstream license](https://github.com/libfuse/libfuse/blob/master/LGPL2.txt)).
