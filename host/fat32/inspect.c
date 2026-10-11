@@ -247,7 +247,7 @@ status_name(enum fat32_status status)
   case FAT32_CORRUPT: return "corrupt metadata";
   case FAT32_UNSUPPORTED: return "unsupported format, geometry or name";
   case FAT32_IO: return "source read failed";
-  case FAT32_NO_MEMORY: return "workspace is too small";
+  case FAT32_NO_MEMORY: return "insufficient workspace or allocation failed";
   case FAT32_LIMIT: return "work or depth budget exhausted";
   case FAT32_NAME_TOO_LONG: return "name exceeds the supported byte bound";
   case FAT32_NOT_FOUND: return "path not found";
@@ -266,18 +266,34 @@ write_bytes(void *context, const void *bytes, size_t length)
 }
 
 static bool
+write_name(FILE *output, const char *name, size_t length)
+{
+  for (size_t i = 0; i < length; i++) {
+    unsigned char byte = (unsigned char)name[i];
+    if (byte < 0x20 || byte == 0x7f) {
+      if (fprintf(output, "\\x%02x", (unsigned int)byte) < 0) {
+        return false;
+      }
+    } else if (fputc(byte, output) == EOF) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool
 write_entry(void *context, const struct fat32_entry *entry)
 {
   FILE *output = context;
   if (fprintf(output, "%s\t%" PRIu32 "\t",
               entry->attributes & FAT32_ATTR_DIRECTORY ? "directory" : "file",
               entry->file_bytes) < 0 ||
-      fwrite(entry->name, 1, entry->name_bytes, output) != entry->name_bytes) {
+      !write_name(output, entry->name, entry->name_bytes)) {
     return false;
   }
   if (entry->alias_ascii && entry->alias_bytes) {
     if (fputs("\talias=", output) == EOF ||
-        fwrite(entry->alias, 1, entry->alias_bytes, output) != entry->alias_bytes) {
+        !write_name(output, entry->alias, entry->alias_bytes)) {
       return false;
     }
   }

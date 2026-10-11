@@ -20,17 +20,18 @@ Options precede the command. `info` prints the selected geometry and FAT
 clean/error flags. These flags are observations, not a whole-volume integrity
 proof. `check` requests the shared reader's whole-volume check and prints counts
 only after success. `list /PATH` prints immediate children as tab-separated type,
-file length, full preserved UTF-8 name and available ASCII alias. Names are never
-truncated. `read /PATH` streams the selected regular file's bytes to stdout;
-diagnostics use stderr. Paths begin at `/` and use the reader's bounded ASCII
+file length, full preserved UTF-8 name and available ASCII alias. ASCII control
+bytes, including DEL, print as `\xNN` escapes; all other name bytes are preserved.
+Names are never truncated. `read /PATH` streams the selected regular file's bytes
+to stdout; diagnostics use stderr. Paths begin at `/` and use the reader's bounded ASCII
 lookup profile. A listed Unicode long name can be addressed through its ASCII
 alias when one is available. Unsupported names or layouts fail explicitly.
 
 A list or read validates the metadata and chains required by that operation;
 success does not prove unrelated metadata sound. The reader preflights that
-checked set before emitting entries or file bytes, but subsequent source I/O or
-output failure can still leave a prefix. Check the command's exit status before
-using redirected data. The shell creates or truncates a redirected destination
+checked set before emitting entries or file bytes, but subsequent source I/O,
+output or work-budget failure can still leave a prefix. Check the command's exit
+status before using redirected data. The shell creates or truncates a redirected destination
 before the tool runs; choose an independent destination that cannot refer to the
 source disk image.
 
