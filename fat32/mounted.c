@@ -575,8 +575,11 @@ enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume
   if (!volume || !bytes || !volume->sectors_per_cluster ||
       volume->sectors_per_cluster > 128 ||
       (volume->sectors_per_cluster & (volume->sectors_per_cluster - 1)) ||
-      (volume->fat_count != 1 && volume->fat_count != 2) || changed_bytes > UINT32_MAX + UINT64_C(65536)) {
+      (volume->fat_count != 1 && volume->fat_count != 2)) {
     return FAT32_INVALID;
+  }
+  if (changed_bytes > UINT64_MAX - (FAT32_SECTOR_BYTES - 1)) {
+    return FAT32_LIMIT;
   }
   size_t reader;
   enum fat32_status status = fat32_workspace_size(volume, depth, &reader);
@@ -590,12 +593,16 @@ enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume
   if (allocation > SIZE_MAX || capacity > SIZE_MAX / sizeof(struct fat32_prepared_sector)) {
     return FAT32_LIMIT;
   }
-  uint64_t total = aligned(reader) + (uint64_t)aligned((size_t)allocation) +
-      capacity * sizeof(struct fat32_prepared_sector);
-  if (total > SIZE_MAX) {
+  size_t fixed = aligned(reader);
+  size_t vector_bytes = aligned((size_t)allocation);
+  if (vector_bytes > SIZE_MAX - fixed) {
     return FAT32_LIMIT;
   }
-  *bytes = (size_t)total;
+  fixed += vector_bytes;
+  if (capacity > (SIZE_MAX - fixed) / sizeof(struct fat32_prepared_sector)) {
+    return FAT32_LIMIT;
+  }
+  *bytes = fixed + (size_t)capacity * sizeof(struct fat32_prepared_sector);
   return FAT32_OK;
 }
 
