@@ -18,6 +18,12 @@ enum fat32_status fat32_check(const struct fat32_volume *volume,
 enum fat32_status fat32_check_context(struct fat32_context *context,
     struct fat32_check_report *report)
 {
+  return fat32_check_context_extra(context, report, NULL, NULL);
+}
+
+enum fat32_status fat32_check_context_extra(struct fat32_context *context,
+    struct fat32_check_report *report, fat32_check_extra_fn extra, void *extra_context)
+{
   const struct fat32_volume *volume = context->volume;
   enum fat32_status status;
   if (!context->frame_limit) {
@@ -80,6 +86,12 @@ enum fat32_status fat32_check_context(struct fat32_context *context,
       ++result.directories;
     } else {
       ++result.files;
+    }
+  }
+  if (extra) {
+    status = extra(context, extra_context, &result);
+    if (status != FAT32_OK) {
+      return status;
     }
   }
   for (uint32_t cluster = 2; cluster - 2 < volume->cluster_count; ++cluster) {

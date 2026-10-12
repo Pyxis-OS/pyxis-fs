@@ -259,6 +259,8 @@ status_name(enum fat32_status status)
   case FAT32_STALE: return "creation receipt no longer matches";
   case FAT32_STOPPED: return "writer permanently stopped";
   case FAT32_INPUT: return "payload input failed";
+  case FAT32_READ_ONLY: return "read-only regular file attribute";
+  case FAT32_NOT_EMPTY: return "directory is not empty";
   }
   return "unknown reader status";
 }

@@ -46,6 +46,13 @@ struct fat32_context {
 enum fat32_status fat32_check_context(struct fat32_context *context,
     struct fat32_check_report *report);
 
+typedef enum fat32_status (*fat32_check_extra_fn)(struct fat32_context *context,
+    void *extra_context, struct fat32_check_report *report);
+enum fat32_status fat32_check_context_extra(struct fat32_context *context,
+    struct fat32_check_report *report, fat32_check_extra_fn extra, void *extra_context);
+enum fat32_status fat32_locate_entry(struct fat32_context *context,
+    const struct fat32_locator *locator, struct fat32_entry *entry);
+
 uint16_t fat32_get16(const uint8_t *bytes);
 uint32_t fat32_get32(const uint8_t *bytes);
 uint64_t fat32_get64(const uint8_t *bytes);

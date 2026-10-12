@@ -29,6 +29,8 @@ enum fat32_status {
   FAT32_STALE,
   FAT32_STOPPED,
   FAT32_INPUT,
+  FAT32_READ_ONLY,
+  FAT32_NOT_EMPTY,
 };
 
 /* The callback fills the entire request or returns false. Its source remains

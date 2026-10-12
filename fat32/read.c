@@ -131,7 +131,7 @@ static enum fat32_status validate_entry_chain(struct fat32_context *context,
   return fat32_validate_directory(context, entry->first_cluster, parent);
 }
 
-static enum fat32_status locate_entry(struct fat32_context *context,
+enum fat32_status fat32_locate_entry(struct fat32_context *context,
     const struct fat32_locator *locator, struct fat32_entry *entry)
 {
   if (!locator) {
@@ -213,7 +213,7 @@ enum fat32_status fat32_locate(const struct fat32_volume *volume,
     return status;
   }
   struct fat32_entry result;
-  status = locate_entry(context, locator, &result);
+  status = fat32_locate_entry(context, locator, &result);
   if (status == FAT32_OK) {
     fat32_copy(entry, &result, sizeof(*entry));
   }
@@ -272,7 +272,7 @@ enum fat32_status fat32_lookup(const struct fat32_volume *volume,
     return status;
   }
   struct fat32_entry parent;
-  status = locate_entry(context, directory, &parent);
+  status = fat32_locate_entry(context, directory, &parent);
   if (status != FAT32_OK) {
     return status;
   }
@@ -318,7 +318,7 @@ enum fat32_status fat32_enumerate(const struct fat32_volume *volume,
     return status;
   }
   struct fat32_entry parent;
-  status = locate_entry(context, directory, &parent);
+  status = fat32_locate_entry(context, directory, &parent);
   if (status != FAT32_OK) {
     return status;
   }
@@ -385,7 +385,7 @@ enum fat32_status fat32_read_range(const struct fat32_volume *volume,
     return status;
   }
   struct fat32_entry entry;
-  status = locate_entry(context, file, &entry);
+  status = fat32_locate_entry(context, file, &entry);
   if (status != FAT32_OK) {
     return status;
   }
