@@ -1,8 +1,8 @@
 # pyxis-fs
 
-Shared npfs codecs, FAT32 read/raw-write engines and Linux host tools. Requires
-GNU Make and a GNU C23 compiler. Allocation, caching, capabilities and the runtime
-mounted writer belong to Caelum.
+Shared npfs codecs, FAT32 engines and Linux host tools. Requires
+GNU Make and a GNU C23 compiler. Allocation, caching, capabilities and the
+mounted backend adapter belong to Caelum.
 
 ```sh
 make -j16
@@ -14,10 +14,12 @@ build/npfs-inspect --image /tmp/npfs.raw list --volume home
 
 The build produces `libnpfs-format.a`, `mkfs.npfs`,
 `fsck.npfs`, `npfs-inspect`, `libfat32-read.a`, `libfat32-write.a`,
-`fat32-inspect` and the disposable-image session tool `fat32-write` under `build/`.
+`libfat32-mounted.a`, `fat32-inspect` and the disposable-image session tool
+`fat32-write` under `build/`.
 See the [FAT32 reader contract](docs/fat32-read.md) and
 [read-only inspector](docs/fat32-inspect.md) for GPT media, and the
-[raw writer contract](docs/fat32-write.md) for bounded creation receipts and durability.
+[raw writer contract](docs/fat32-write.md) for bounded creation receipts and durability,
+and the [mounted engine](docs/fat32-mounted.md) for retained objects and ordinary mutation.
 When libfuse3 development files are installed, it also builds the optional
 read-only Linux mount `npfs-fuse SOURCE MOUNTPOINT`, exposing each live volume
 as a directory. Use `cp -r --no-preserve=mode MOUNTPOINT/VOLUME DESTINATION`

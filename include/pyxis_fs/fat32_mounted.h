@@ -34,7 +34,7 @@ struct fat32_mounted_recovery {
   enum fat32_status failure;
   uint8_t phase;
   uint64_t failed_sector;
-  struct fat32_mounted_object *source, *victim;
+  struct fat32_mounted_object *source, *victim, *target_parent;
   char source_name[FAT32_NAME_MAX + 1], target_name[FAT32_NAME_MAX + 1];
   const struct fat32_prepared_sector *prepared_sectors;
   size_t prepared_sector_count;

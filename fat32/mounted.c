@@ -19,7 +19,7 @@ struct write_plan {
   uint8_t entry_count, entry_slots[21], entries[21][32];
   uint64_t entry_sectors[21];
   uint64_t short_slot;
-  struct fat32_mounted_object *grown_directory;
+  struct fat32_mounted_object *grown_directory, *target_parent;
   uint32_t *directory_extension, directory_extension_count;
 };
 
@@ -615,8 +615,8 @@ enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,
     return status;
   }
   fat32_zero(mounted, sizeof(*mounted));
-  mounted->volume = *volume;
-  mounted->io = *io;
+  fat32_copy(&mounted->volume, volume, sizeof(*volume));
+  fat32_copy(&mounted->io, io, sizeof(*io));
   return FAT32_OK;
 }
 
@@ -634,7 +634,7 @@ enum fat32_status fat32_mounted_check(struct fat32_mounted *mounted,
   struct fat32_check_report result;
   status = full_check(mounted, context, &result);
   if (status == FAT32_OK) {
-    *report = result;
+    fat32_copy(report, &result, sizeof(result));
   }
   return status;
 }
@@ -715,6 +715,7 @@ static enum fat32_status run_plan(struct write_plan *plan,
   fat32_zero(&mounted->recovery, sizeof(mounted->recovery));
   mounted->recovery.source = source;
   mounted->recovery.victim = victim;
+  mounted->recovery.target_parent = plan->target_parent;
   if (source) {
     fat32_copy(mounted->recovery.source_name, source->entry.name, source->entry.name_bytes);
   }
@@ -841,8 +842,8 @@ enum fat32_status fat32_mounted_object_bind(struct fat32_mounted *mounted,
   if (count > object->chain_capacity) {
     return FAT32_NO_MEMORY;
   }
-  object->entry = entry;
-  object->locator = *locator;
+  fat32_copy(&object->entry, &entry, sizeof(entry));
+  fat32_copy(&object->locator, locator, sizeof(*locator));
   object->chain_count = count;
   object->attached = true;
   register_object(mounted, object);
@@ -887,7 +888,7 @@ enum fat32_status fat32_mounted_locate(struct fat32_mounted_object *object,
   struct fat32_context *context;
   enum fat32_status status = read_object_context(object, workspace, &context);
   if (status == FAT32_OK) {
-    *entry = object->entry;
+    fat32_copy(entry, &object->entry, sizeof(*entry));
   }
   return status;
 }
@@ -977,7 +978,7 @@ enum fat32_status fat32_mounted_lookup(struct fat32_mounted_object *directory,
     if (status != FAT32_OK) {
       return status;
     }
-    *entry = candidate;
+    fat32_copy(entry, &candidate, sizeof(*entry));
     *child = directory_child(directory, cursor.position - 1);
     return FAT32_OK;
   }
@@ -1022,13 +1023,13 @@ enum fat32_status fat32_mounted_enumerate(struct fat32_mounted_object *directory
     }
     if (!selected && continuation != UINT64_MAX && cursor.position - 1 >= continuation) {
       selected = true;
-      result = candidate;
+      fat32_copy(&result, &candidate, sizeof(result));
       locator = directory_child(directory, cursor.position - 1);
       following = cursor.position;
     }
   }
   if (selected) {
-    *entry = result;
+    fat32_copy(entry, &result, sizeof(*entry));
     *child = locator;
   }
   *next = following;
@@ -1207,6 +1208,7 @@ static enum fat32_status update_size(struct write_plan *plan,
 struct mounted_payload {
   const uint8_t *bytes;
 };
+
 static bool payload_copy(void *context, uint32_t offset, void *bytes, size_t count)
 {
   const struct mounted_payload *payload = context;
@@ -1496,6 +1498,7 @@ enum fat32_status fat32_mounted_create(struct fat32_mounted_object *parent,
     status = fsinfo_plan(&plan, 0);
   }
   if (status == FAT32_OK) {
+    plan.target_parent = parent;
     status = run_plan(&plan, NULL, NULL, component, bytes, false);
   }
   if (status != FAT32_OK) {
@@ -1569,6 +1572,7 @@ enum fat32_status fat32_mounted_remove(struct fat32_mounted_object *parent,
     status = fsinfo_plan(&plan, 0);
   }
   if (status == FAT32_OK) {
+    plan.target_parent = parent;
     status = run_plan(&plan, object, NULL, object->entry.name, object->entry.name_bytes, false);
   }
   if (status == FAT32_OK) {
@@ -1673,6 +1677,7 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
     status = fsinfo_plan(&plan, 0);
   }
   if (status == FAT32_OK) {
+    plan.target_parent = target_parent;
     status = run_plan(&plan, source, victim, component, bytes, false);
   }
   if (status != FAT32_OK) {
