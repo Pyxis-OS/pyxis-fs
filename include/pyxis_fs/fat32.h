@@ -24,6 +24,11 @@ enum fat32_status {
   FAT32_NOT_DIRECTORY,
   FAT32_IS_DIRECTORY,
   FAT32_OUTPUT,
+  FAT32_EXISTS,
+  FAT32_NO_SPACE,
+  FAT32_STALE,
+  FAT32_STOPPED,
+  FAT32_INPUT,
 };
 
 /* The callback fills the entire request or returns false. Its source remains

@@ -14,7 +14,10 @@ FORMAT_ARCHIVE := $(BUILD)/libnpfs-format.a
 FAT32_SOURCES := base gpt volume directory read check
 FAT32_OBJECTS := $(addprefix $(BUILD)/fat32/,$(addsuffix .o,$(FAT32_SOURCES)))
 FAT32_ARCHIVE := $(BUILD)/libfat32-read.a
+FAT32_WRITE_ARCHIVE := $(BUILD)/libfat32-write.a
+FAT32_WRITE_OBJECTS := $(BUILD)/fat32/write.o
 FAT32_HOST_OBJECTS := $(BUILD)/host/fat32/inspect.o
+FAT32_WRITE_HOST_OBJECTS := $(BUILD)/host/fat32/write.o
 NPFS_HOST_OBJECTS := $(addprefix $(BUILD)/host/npfs/,host.o journal.o mkfs.o mkfs_source.o check.o fsck.o inspect.o)
 NPFS_TOOLS := $(BUILD)/mkfs.npfs $(BUILD)/fsck.npfs $(BUILD)/npfs-inspect
 FUSE_AVAILABLE := $(shell $(PKG_CONFIG) --exists fuse3 2>/dev/null && echo yes)
@@ -26,11 +29,20 @@ endif
 NPFS_HOST_OBJECTS += $(BUILD)/host/npfs/fuse.o
 
 .DEFAULT_GOAL := all
-.PHONY: all clean npfs-fuse fat32-read FORCE
+.PHONY: all clean npfs-fuse fat32-read fat32-write FORCE
 
-all: $(FORMAT_ARCHIVE) $(NPFS_TOOLS) $(FAT32_ARCHIVE) $(BUILD)/fat32-inspect
+all: $(FORMAT_ARCHIVE) $(NPFS_TOOLS) $(FAT32_ARCHIVE) $(BUILD)/fat32-inspect $(FAT32_WRITE_ARCHIVE) $(BUILD)/fat32-write
 
 fat32-read: $(FAT32_ARCHIVE)
+
+fat32-write: $(FAT32_ARCHIVE) $(FAT32_WRITE_ARCHIVE)
+
+$(FAT32_WRITE_ARCHIVE): $(FAT32_WRITE_OBJECTS)
+	$(RM) $@
+	$(HOST_AR) rcs $@ $^
+
+$(BUILD)/fat32-write: $(FAT32_WRITE_HOST_OBJECTS) $(FAT32_WRITE_ARCHIVE) $(FAT32_ARCHIVE)
+	$(HOST_CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(FAT32_ARCHIVE): $(FAT32_OBJECTS)
 	$(RM) $@
@@ -40,7 +52,7 @@ $(BUILD)/fat32/%.o: $(SOURCE)/fat32/%.c
 	@mkdir -p $(@D)
 	$(HOST_CC) $(CPPFLAGS) -I$(SOURCE)/include $(CFLAGS) $(FORMAT_FLAGS) $(WARNINGS) -MMD -MP -c $< -o $@
 
-$(FAT32_OBJECTS): $(BUILD)/fat32/.config
+$(FAT32_OBJECTS) $(FAT32_WRITE_OBJECTS): $(BUILD)/fat32/.config
 
 $(BUILD)/fat32/.config: FORCE
 	@mkdir -p $(@D)
@@ -90,6 +102,7 @@ $(BUILD)/format/%.o: $(SOURCE)/format/%.c
 clean:
 	$(RM) $(FORMAT_OBJECTS) $(FORMAT_OBJECTS:.o=.d) $(FORMAT_ARCHIVE) $(NPFS_HOST_OBJECTS) $(NPFS_HOST_OBJECTS:.o=.d) $(NPFS_TOOLS) $(BUILD)/npfs-fuse
 	$(RM) $(FAT32_OBJECTS) $(FAT32_OBJECTS:.o=.d) $(FAT32_ARCHIVE) $(FAT32_HOST_OBJECTS) $(FAT32_HOST_OBJECTS:.o=.d) $(BUILD)/fat32-inspect
+	$(RM) $(FAT32_WRITE_OBJECTS) $(FAT32_WRITE_OBJECTS:.o=.d) $(FAT32_WRITE_ARCHIVE) $(FAT32_WRITE_HOST_OBJECTS) $(FAT32_WRITE_HOST_OBJECTS:.o=.d) $(BUILD)/fat32-write
 
 -include $(FORMAT_OBJECTS:.o=.d) $(NPFS_HOST_OBJECTS:.o=.d)
--include $(FAT32_OBJECTS:.o=.d) $(FAT32_HOST_OBJECTS:.o=.d)
+-include $(FAT32_OBJECTS:.o=.d) $(FAT32_HOST_OBJECTS:.o=.d) $(FAT32_WRITE_OBJECTS:.o=.d) $(FAT32_WRITE_HOST_OBJECTS:.o=.d)

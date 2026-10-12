@@ -254,6 +254,11 @@ status_name(enum fat32_status status)
   case FAT32_NOT_DIRECTORY: return "path requires a directory";
   case FAT32_IS_DIRECTORY: return "read requires a regular file";
   case FAT32_OUTPUT: return "output failed";
+  case FAT32_EXISTS: return "name already exists";
+  case FAT32_NO_SPACE: return "volume or receipt storage full";
+  case FAT32_STALE: return "creation receipt no longer matches";
+  case FAT32_STOPPED: return "writer permanently stopped";
+  case FAT32_INPUT: return "payload input failed";
   }
   return "unknown reader status";
 }

@@ -12,6 +12,14 @@ enum fat32_status fat32_check(const struct fat32_volume *volume,
   if (status != FAT32_OK) {
     return status;
   }
+  return fat32_check_context(context, report);
+}
+
+enum fat32_status fat32_check_context(struct fat32_context *context,
+    struct fat32_check_report *report)
+{
+  const struct fat32_volume *volume = context->volume;
+  enum fat32_status status;
   if (!context->frame_limit) {
     return FAT32_LIMIT;
   }

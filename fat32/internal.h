@@ -43,6 +43,9 @@ struct fat32_context {
   bool data_cached, fat_cached;
 };
 
+enum fat32_status fat32_check_context(struct fat32_context *context,
+    struct fat32_check_report *report);
+
 uint16_t fat32_get16(const uint8_t *bytes);
 uint32_t fat32_get32(const uint8_t *bytes);
 uint64_t fat32_get64(const uint8_t *bytes);
