@@ -70,10 +70,6 @@ static enum fat32_status next_slot(struct fat32_context *context,
       FAT32_DIRECTORY_ENTRY_BYTES);
   ++cursor->position;
   *found = true;
-  if (!bytes[0]) {
-    cursor->done = true;
-    return FAT32_OK;
-  }
   if (++cursor->slot == FAT32_SECTOR_BYTES / FAT32_DIRECTORY_ENTRY_BYTES) {
     cursor->slot = 0;
     if (++cursor->sector == context->volume->sectors_per_cluster) {
@@ -94,6 +90,22 @@ static enum fat32_status next_slot(struct fat32_context *context,
     }
   }
   return FAT32_OK;
+}
+
+static enum fat32_status validate_end(struct fat32_context *context,
+    struct fat32_cursor *cursor)
+{
+  for (;;) {
+    uint8_t raw[FAT32_DIRECTORY_ENTRY_BYTES];
+    bool found;
+    enum fat32_status status = next_slot(context, cursor, raw, &found);
+    if (status != FAT32_OK || !found) {
+      return status;
+    }
+    if (raw[0]) {
+      return FAT32_CORRUPT;
+    }
+  }
 }
 
 static uint8_t alias_checksum(const uint8_t *entry)
@@ -120,10 +132,27 @@ static bool short_character(unsigned byte)
   }
 }
 
+static bool short_name_valid(const uint8_t *raw)
+{
+  if (raw[0] == ' ') {
+    return false;
+  }
+  for (unsigned i = 0; i < 11; ++i) {
+    unsigned byte = !i && raw[i] == 0x05 ? FAT32_DELETED : raw[i];
+    if (!short_character(byte) || (byte >= 'a' && byte <= 'z')) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static enum fat32_status decode_alias(const uint8_t *raw, struct fat32_entry *entry)
 {
-  if (raw[0] == ' ' || (raw[12] & ~(FAT32_NT_BASE_LOWER | FAT32_NT_EXT_LOWER))) {
-    return raw[0] == ' ' ? FAT32_CORRUPT : FAT32_UNSUPPORTED;
+  if (!short_name_valid(raw)) {
+    return FAT32_CORRUPT;
+  }
+  if (raw[12] & ~(FAT32_NT_BASE_LOWER | FAT32_NT_EXT_LOWER)) {
+    return FAT32_UNSUPPORTED;
   }
   entry->alias_ascii = true;
   unsigned base = 8, extension = 3;
@@ -140,9 +169,6 @@ static enum fat32_status decode_alias(const uint8_t *raw, struct fat32_entry *en
     unsigned byte = raw[i];
     if (!i && byte == 0x05) {
       byte = FAT32_DELETED;
-    }
-    if (!short_character(byte) || (byte >= 'a' && byte <= 'z')) {
-      return FAT32_CORRUPT;
     }
     if (byte > 127) {
       entry->alias_ascii = false;
@@ -277,8 +303,10 @@ enum fat32_status fat32_next_entry(struct fat32_context *context,
       return status;
     }
     if (!have_slot || !raw[0]) {
-      return active || (cursor->first != context->volume->root_cluster && cursor->position <= 2) ?
-          FAT32_CORRUPT : FAT32_OK;
+      if (active || (cursor->first != context->volume->root_cluster && cursor->position <= 2)) {
+        return FAT32_CORRUPT;
+      }
+      return have_slot ? validate_end(context, cursor) : FAT32_OK;
     }
     bool require_dot = cursor->first != context->volume->root_cluster && cursor->position <= 2;
     if (raw[0] == FAT32_DELETED) {
@@ -338,7 +366,8 @@ enum fat32_status fat32_next_entry(struct fat32_context *context,
       entry->name_ascii = entry->alias_ascii = true;
     } else if (raw[11] & FAT32_ATTR_VOLUME) {
       if (active || require_dot || cursor->first != context->volume->root_cluster ||
-          (raw[11] & FAT32_ATTR_DIRECTORY) || entry->first_cluster || entry->file_bytes) {
+          raw[11] != FAT32_ATTR_VOLUME || !short_name_valid(raw) ||
+          entry->first_cluster || entry->file_bytes) {
         return FAT32_CORRUPT;
       }
     } else {

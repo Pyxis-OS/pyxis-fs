@@ -32,7 +32,13 @@ Names decode to at most 255 UTF-8 bytes without truncation. NT lowercase flags a
 ASCII aliases preserve spelling. Unicode names list intact; lookup is ASCII
 case-insensitive through supported long names or aliases. Short-only OEM names
 refuse, and Unicode/OEM case folding is not inferred. Duplicate exact names/aliases
-and ASCII folded name/alias collisions refuse. Paths start at `/`; empty interior
+and ASCII folded name/alias collisions refuse. Short names retain interior spaces,
+including spaces in the extension; only trailing padding in each 8.3 component
+is removed. This tolerant read profile follows the
+[Microsoft FAT specification](https://www.cs.fsu.edu/~cop4610t/assignments/project3/spec/fatspec.pdf),
+page 30, which permits spaces in short names. It does not normalize or collapse
+those spaces. This read compatibility does not adopt existing files for mutation.
+Paths start at `/`; empty interior
 components and `.`/`..` are invalid. Namespace mutation is absent.
 
 ## Checked sets and failures
@@ -44,7 +50,10 @@ path directories and entire selected file chain before output. List validates
 the selected directory and immediate children's chains. A global visited bitmap
 within that operation catches cycles and repeated chain ownership in its checked
 set. Files require exactly the clusters their declared length needs; empty files
-have no chain. Directories require valid dot entries where applicable.
+have no chain. Directories require valid dot entries where applicable. An end marker is accepted
+only after checking that every later allocated directory slot has a zero first
+byte, across sectors and clusters. Root volume labels require a valid 11-byte
+short-name character field, only the VOLUME_ID attribute, and no data chain/size.
 
 `fat32_check` walks the whole tree iteratively, checks every meaningful FAT entry,
 and refuses orphan allocations and cross-links. Marked bad clusters are counted,
