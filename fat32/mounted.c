@@ -1324,7 +1324,8 @@ enum fat32_status fat32_mounted_write(struct fat32_mounted_object *object,
   if (status != FAT32_OK) {
     return status;
   }
-  if (bytes > FAT32_MOUNTED_PAYLOAD_MAX || offset > UINT32_MAX || bytes > UINT32_MAX - offset) {
+  if (bytes > FAT32_MOUNTED_PAYLOAD_MAX ||
+      (bytes && (offset > UINT32_MAX || bytes > UINT32_MAX - offset))) {
     return FAT32_LIMIT;
   }
   if (bytes && !payload) {
@@ -1334,7 +1335,7 @@ enum fat32_status fat32_mounted_write(struct fat32_mounted_object *object,
   if (bytes && offset + bytes > final) {
     final = (uint32_t)(offset + bytes);
   }
-  return file_update(object, final, (uint32_t)offset, payload, (uint32_t)bytes, workspace);
+  return file_update(object, final, bytes ? (uint32_t)offset : 0, payload, (uint32_t)bytes, workspace);
 }
 
 enum fat32_status fat32_mounted_resize(struct fat32_mounted_object *object,
