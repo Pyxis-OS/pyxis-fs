@@ -79,6 +79,16 @@ struct fat32_entry {
   bool has_long_name, name_ascii, alias_ascii;
 };
 
+/* Retain only library-produced locators with their original quiescent volume.
+ * The slot is the zero-based logical short-entry position in the parent chain;
+ * long names and aliases produce the same locator, including for empty files.
+ * Root alone is {0, 0, UINT64_MAX}. These values convey neither authority nor
+ * persistent object identity; replacement/media mutation invalidates their use. */
+struct fat32_locator {
+  uint32_t parent_cluster, parent_parent_cluster;
+  uint64_t short_entry_slot;
+};
+
 struct fat32_check_report {
   uint64_t files, directories, allocated_clusters, free_clusters, bad_clusters;
   bool all_names_ascii;
@@ -112,6 +122,43 @@ enum fat32_status fat32_list(const struct fat32_volume *volume, const char *path
 enum fat32_status fat32_read(const struct fat32_volume *volume, const char *path,
                             size_t path_bytes, struct fat32_workspace *workspace,
                             fat32_bytes_sink_fn sink, void *context);
+/* Retained-entry operations revalidate geometry, the containing directory and
+ * selected chain. Selected directories also validate their own entries. Root
+ * returns a synthetic directory entry without a name. Outputs publish only on
+ * success; a missing/reused nonordinary slot returns STALE. No mutable state or
+ * workspace pointer is retained by a locator. */
+enum fat32_status fat32_root(const struct fat32_volume *volume,
+                            struct fat32_workspace *workspace,
+                            struct fat32_entry *entry, struct fat32_locator *locator);
+enum fat32_status fat32_locate(const struct fat32_volume *volume,
+                              const struct fat32_locator *locator,
+                              struct fat32_workspace *workspace, struct fat32_entry *entry);
+/* A counted component uses the path API's ASCII folding/alias profile. Empty,
+ * slash-containing, control-byte and dot components refuse. */
+enum fat32_status fat32_lookup(const struct fat32_volume *volume,
+                              const struct fat32_locator *directory,
+                              const char *component, size_t component_bytes,
+                              struct fat32_workspace *workspace,
+                              struct fat32_entry *entry, struct fat32_locator *child);
+/* Continuation is opaque: pass 0 initially, then the returned next unchanged.
+ * UINT64_MAX denotes end. Each call preflights the complete directory and its
+ * immediate children's chains, omits dots/labels, and emits at most one entry.
+ * On successful end, found=false and next=UINT64_MAX; entry/child stay untouched.
+ * On failure all output arguments remain unchanged. */
+enum fat32_status fat32_enumerate(const struct fat32_volume *volume,
+                                 const struct fat32_locator *directory,
+                                 uint64_t continuation, struct fat32_workspace *workspace,
+                                 struct fat32_entry *entry, struct fat32_locator *child,
+                                 uint64_t *next, bool *found);
+/* Validate the entire file chain even for an empty range. Clip length to EOF
+ * without offset+length arithmetic; offset at/after EOF emits no bytes. Later
+ * I/O/budget/sink failure can leave a prefix; callers needing atomic publication
+ * must stage bytes until this call succeeds. */
+enum fat32_status fat32_read_range(const struct fat32_volume *volume,
+                                  const struct fat32_locator *file,
+                                  uint64_t offset, size_t length,
+                                  struct fat32_workspace *workspace,
+                                  fat32_bytes_sink_fn sink, void *context);
 /* Check traces all reachable directories/files and checks all meaningful FAT
  * entries. Repeated ownership and orphan allocations refuse; marked bad clusters
  * are allowed. FSInfo counts/hints are range checked, never treated as a proof.

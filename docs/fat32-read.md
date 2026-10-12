@@ -41,6 +41,48 @@ those spaces. This read compatibility does not adopt existing files for mutation
 Paths start at `/`; empty interior
 components and `.`/`..` are invalid. Namespace mutation is absent.
 
+## Retained-entry access
+
+`fat32_root` returns the root entry and its canonical locator;
+`fat32_lookup` resolves one counted ASCII component from a directory locator.
+`fat32_locate` refreshes the selected entry, and `fat32_read_range` streams a
+regular file's requested offset/length, clipped to EOF. Even zero-length or
+beyond-EOF reads validate the complete file chain. Offset and length are not
+added, so a range extending past the integer limit cannot wrap into the file.
+
+Locators record the containing directory cluster, that directory's parent
+cluster for dot-entry validation, and the zero-based logical short-entry slot
+within the containing chain. Root is the separate `{0, 0, UINT64_MAX}` sentinel.
+Long-name and alias lookups produce identical locators; separate empty files
+retain different slots despite both having no data chain. Keep only engine-issued
+locators with the original quiescent volume. They supply validation coordinates,
+not capability authority, a native object ID or persistent identity. External
+mutation and slot reuse are unsupported; finding an ordinary replacement in the
+same slot cannot prove it is the original object. Mount/object ownership and
+identity interning remain the caller's responsibility.
+
+`fat32_enumerate` validates the selected directory and all immediate children's
+chains before returning one entry and its child locator. Start with continuation
+0, then pass each returned `next` unchanged; its representation is opaque to the
+caller. A successful end returns `found=false` and `next=UINT64_MAX` without
+changing the entry/locator outputs. Dot entries and volume labels never appear.
+Unicode names retain their UTF-8 spelling. This engine supplies no native cursor
+generation, short-buffer protocol or mutable directory handle.
+
+Each retained operation revalidates geometry. Nonroot operations validate the
+containing directory's full metadata, chain and sibling-name collisions before
+selecting its short-entry slot, then validate the selected chain. Selected
+directories validate their own metadata as well. No workspace pointers or caches
+survive a call, and no root-to-entry path is retained or replayed. The original
+depth budget still controls whole-tree/path traversal; retained operations require
+a positive depth budget but do not walk ancestors. Whole-volume admission is a
+separate `fat32_check`, not implied by a locator operation.
+
+Entry/locator/continuation outputs publish only on success. Missing or
+nonordinary retained slots refuse with STALE. Range sinks follow the same prefix
+failure rule as path reads; a kernel adapter needing all-or-nothing publication
+must stage the requested bytes and publish them only after success.
+
 ## Checked sets and failures
 
 Open checks geometry and allocation headers, not the whole tree. Each subsequent
