@@ -20,11 +20,31 @@ partition and never infers existing-file authority from raw creation receipts.
 ## Admission and retained objects
 
 Admit GPT/geometry through `fat32_open` under exclusive authority, then call
-`fat32_mounted_open`. Admission revalidates geometry and the complete namespace,
-allocation and chains, refusing dirty/error, corrupt and unsupported media.
-Opening a fresh struct does not accept another instance's dirty mark or held
-chains. Reacquisition of an existing instance is a caller policy operation;
-`fat32_mounted_check` validates that existing state without reopening it.
+`fat32_mounted_open` with a fresh zero-initialized mount record, separate allocation
+backing and full-check workspace. `fat32_mounted_allocation_size` gives the retained
+bitmap size. Admission performs one complete mounted-volume check, refusing dirty,
+error, corrupt and unsupported media, and builds the exact free bitmap/count.
+FSInfo is a hint, never allocation authority. FAT reads use windows of up to eight
+512-byte sectors per copy, reduced to the callback's read limit; mirrored valid
+entries are compared before use.
+
+The retained allocation map borrows caller storage for the mount lifetime. Confirmed
+mutation/reclamation transitions update it only after all ordered phases flush.
+Detached held chains remain allocated through durable final-reference reclamation.
+The caller excludes every other media writer throughout this lifetime. Opening a
+fresh record does not accept another instance's dirty mark or held chains, and
+opening an existing or stopped record never resets it.
+
+`fat32_mounted_check(mounted, replacement, replacement_bytes, workspace, report)`
+explicitly revalidates the complete namespace, allocation, held objects and detached
+roots using the mount's current owned dirty snapshot. It needs full-check workspace
+from `fat32_workspace_size` and a disjoint replacement allocation map. Success
+publishes the replacement map/count together, restores valid proof, and permits
+releasing the old map. Backing/capacity refusal before validation preserves existing
+proof; any failure after validation starts leaves proof invalid and retains the
+old map and recovery state. The rejected replacement may be released. CHECK never
+writes media, repairs damage or resets a stopped writer. Native CHECK authority,
+publication intervals and leases belong to the adapter.
 
 Initialize a caller-embedded `fat32_mounted_object` to zero, set its chain pointer
 and capacity, then bind a library-produced locator. `object_chain_size` validates
@@ -97,34 +117,69 @@ There is no directory move, cross-volume move or crash-atomic rename.
 
 ## Finite preparation and effects
 
-Every mutation and detached reclamation runs whole-volume structural preflight.
-Explicit detached object chains are additional roots; their complete recorded
-links must still match, must not overlap namespace/other held chains, and detached
-directories must remain empty. Unexplained orphan allocation still refuses.
-`fat32_check` remains strictly namespace-rooted and deliberately reports allocated
-held orphans as corruption; only `fat32_mounted_check` knows mount-owned roots.
+Mutations and detached reclamation require valid retained allocation proof and
+check the affected complete chains, parent directories, names and held records.
+Attached file updates also revalidate a canonical held parent when present. Locally
+traversed chains cannot contain clusters recorded free; new candidates are checked
+against their FAT entries before effects. Searches visit at most the volume's
+cluster count and consume the finite step budget. Local chain loop detection uses
+constant storage, without a whole-volume bitmap clear per held object. Detached
+directories must remain empty before reads or reclamation.
 
-All plans, complete sector images, free-cluster vectors and payload copies occupy
-caller-provided aligned operation workspace. No file image is retained or copied
-in full merely to perform an ordinary overwrite. Before effects the engine checks
-namespace, FAT space, record capacities, finite work/sector/depth budgets and
-reserves every backing write/flush. There are no reads, payload callbacks or
-allocations during effects. Preflight refusal leaves media and records unchanged.
+Local checks do not reprove allocation ownership across unrelated objects. Silent
+in-session corruption, including a coherent cross-link to an unrelated allocated
+chain, may be detected only by explicit full CHECK or remount. A full mounted check
+includes detached chains as additional roots, rejects overlaps and unexplained
+orphans, and compares all held records. `fat32_check` remains namespace-rooted and
+reports allocated held orphans as corruption.
 
-`fat32_mounted_workspace_size(volume, depth, changed_bytes)` conservatively reserves
-reader storage, the volume's free-cluster vector, mirrored FAT images and changed
-data/namespace sectors. `changed_bytes` covers changed gaps/slack as well as input.
-For ordinary overwrite reserve the payload span plus sector edge slack. For growth,
-`new_size - old_size + 2 * cluster_bytes + payload_bytes` is conservative; for
-shrink one cluster is sufficient. Namespace operations use zero changed bytes:
-the size calculation separately reserves new-directory and parent-growth sectors.
-The operation uses only supplied bytes and returns NO_MEMORY or LIMIT before
-effects when any bound is insufficient. Admission/read operations need only the
-ordinary reader workspace. Reserve parent `chain_count + 2` for an insertion;
-21 name/short entries plus a spare fit at most two minimum-size clusters of growth.
-The operation charges every array/image through its caller; the native adapter
-also accounts for held records and retained failed workspace under its aggregate
-mount budgets.
+Backing read errors, detected structural inconsistency and uncertain outcomes
+invalidate allocation proof. Ordinary authority, capacity, name collision/missing
+name and no-space refusals before effects preserve it. Invalid proof prohibits
+mutation, detached reclamation and clean-mark clearing. Reads remain available
+unless the writer is stopped. Known pre-effect invalidation can recover only through
+successful explicit full CHECK; neither sync nor another operation silently checks
+or rebuilds it.
+
+Plans, operation-sized allocation candidates, distinct FAT changes and complete
+sector-and-phase images occupy caller-provided aligned workspace. No volume-sized
+free vector or conservative image of every FAT sector is reserved for a tiny write.
+Before effects the engine checks namespace, FAT space, record capacities and finite
+work/sector budgets, and reserves every backing write/flush. No reads, payload
+callbacks or allocations occur during effects. Preflight refusal leaves media and
+object records unchanged, although detected corruption invalidates proof.
+
+`fat32_mounted_workspace_size(volume, changed_bytes, allocated_clusters,
+changed_clusters)` reserves local context, candidate and FAT-change arrays, mirrored
+FAT images and changed data/namespace sectors. `changed_bytes` covers content images,
+including gaps, cluster slack and sector edges. An overwrite may reserve the payload
+span plus sector edge slack; growth may conservatively reserve
+`new_size - old_size + 2 * cluster_bytes + payload_bytes`; shrink needs one cluster.
+Namespace operations use zero changed bytes because the helper separately includes
+new-directory and parent-growth images. Required candidate/change bounds are:
+
+| Operation | allocated_clusters | changed_clusters |
+| --- | --- | --- |
+| Write or resize | added clusters | added + removed + 1 |
+| Create | 3 | 4 |
+| Rename | 2 | 3 |
+| Remove | 0 | 0 |
+| Detached final forget | 0 | retained chain count |
+| Seal | 0 | 0 |
+
+Create/rename reserve their maximum parent-growth needs even when the current parent
+has spare slots. Reserve parent `chain_count + 2` before insertion; 21 name/short
+entries plus a spare need at most two minimum-size clusters of growth. Insufficient
+workspace returns NO_MEMORY or LIMIT before effects. Mounted read operations can
+use the zero-change mounted workspace; admission/CHECK require the full checker
+bitmap and traversal frames instead. Keep a nonzero directory depth limit for
+locator operations and enough traversal depth for full CHECK.
+
+The caller charges allocation backing, operation workspace, held records/chains and
+retained failed workspace under its aggregate mount budget. Allocation backing stays
+separate from replaceable operation workspace. Reserve and charge old/new overlap
+before replacing either; failed allocation preserves existing storage. Size helpers
+calculate requirements without allocating or imposing an independent budget.
 
 The mounted phases are distinct from the raw writer phases:
 
@@ -144,9 +199,11 @@ entries use DOS minimum dates and zero times without claiming UTC validity.
 ## Sync, sealing and uncertainty
 
 Sync flushes the instance without clearing its owned dirty mark. Seal flushes,
-then clears/flushed the owned mark only when no detached allocated chains remain.
+then clears/flushes the owned mark only when allocation proof is valid and no
+detached allocated chains remain.
 Held attached objects/views and publication intervals remain caller-owned and
-intact. Detached chains leave the mark dirty but do not refuse sealing/power.
+intact. Detached chains or invalid proof leave the mark dirty after flush and do not
+by themselves refuse sealing/power. Unresolved mutation failure still refuses.
 After a successful clean clear, the copied `mounted.volume` snapshot reflects it;
 first resumed mutation durably marks dirty again. Always use that current volume
 snapshot with subsequent reader operations, not the original admission copy.
@@ -167,14 +224,58 @@ multi-call transaction; interrupted operations may need external host repair.
 
 ## Validation
 
-The task-4 engine was built with ordinary `make -j16`, including all host tools
-and the three FAT archives with freestanding GNU C23 warnings as errors. The
-existing raw CLI was manually exercised on a disposable copy of a 64 MiB FAT
-partition (512-byte clusters, two FATs): directory/file create, receipt append,
-extend to 1025, replacement, read and strict inspector check succeeded. The final
-check reported four files, five directories, nine allocated clusters and 129013
-free clusters. This validates raw-profile integration, not mounted semantics.
-Native mounted runtime, held-victim, clean-power and debugger qualification is
-performed by the parent task on disposable VirtIO images; no native ESP writes
-or hardware power-loss guarantees are claimed here. No new harness, fault hook,
-self-test or CI workflow is added.
+The retained-map change and its three local-validation corrections were built with
+ordinary `make -j16`, including host tools and all FAT archives using freestanding
+GNU C23 and warnings as errors. Manual Linux host qualification used existing
+ignored disposable-image machinery, the owner-produced FAT fixtures, 512-byte
+sectors, two mirrored FATs, callback reads of up to eight sectors, full-check depth
+16 and step/sector limits of one billion. Three fresh mutation sequences passed
+for each geometry:
+
+| Partition / sectors per cluster | Admission read requests | Empty CREATE read requests | Tiny write read requests | Admission milliseconds, min–max |
+| --- | --- | --- | --- | --- |
+| 40 MiB / 1 | 163 | 14 | 13 | 1.700–2.019 |
+| 128 MiB / 1 | 511 | 14 | 13 | 3.293–4.505 |
+| 512 MiB / 1 | 2023 | 14 | 13 | 8.466–11.766 |
+| 1 GiB / 1 | 4039 | 14 | 13 | 16.197–17.242 |
+| 512 MiB / 8 | 276 | 45 | 37 | 1.854–1.906 |
+| 1 GiB / 8 | 532 | 45 | 37 | 3.170–5.999 |
+
+Dense 1-GiB admission retained a 258107-byte free map and used 271664 bytes of
+full-check workspace; the manual operation workspace was 90784 bytes for every
+one-sector geometry. Host timing includes cached Linux image I/O and shared-host
+variation; it is not a native or nested-QEMU storage rate or a speedup comparison.
+The original exact-main baseline and parent runtime qualification live in the
+Pyxis OS preflight-cost investigation.
+
+Each sequence exercised create, payload/gap writes, zero extension, shrink,
+held-victim replacement, full CHECK with detached roots, detached file writes,
+durable final-reference reclamation, sealing, resumed mutation and final CHECK.
+Extracted final partitions passed `fsck.fat -n` and `mdir`; independent `mtype`
+confirmed the final `Beta.txt` bytes were exactly `new`.
+
+Additional existing manual modes confirmed pre-effect truncated backing and
+unsupported geometry/touched-chain corruption invalidate proof without stopping
+the writer, and restored media permit explicit rebuild. An untouched orphan was
+accepted by unrelated local creation and refused by full CHECK. Restored final
+images passed fsck and mtools. On a private 256-KiB tmpfs, real ENOSPC stopped the
+writer during DATA after 56 completed writes, retained 16 prepared records and
+eight candidate clusters, and invalidated proof. CHECK, write, seal, final forget,
+bind and reopen subsequently refused STOPPED without I/O or changing the retained
+recovery/workspace.
+
+The review reproductions now refuse before effects: a parent's extension into a
+map-free cluster returns CORRUPT; extension into an already allocated cluster
+returns STALE when its held chain disagrees; a detached directory containing an
+ordinary child returns CORRUPT and stays retained. Restoring the crafted media,
+explicitly checking, reclaiming and sealing produced fsck/mtools-clean images.
+Replacement-map and full-check-workspace capacity refusals preserve valid proof
+and perform no I/O.
+
+For these manual runs, sources, archives and logs remain under the ignored
+`build/qualification/` directory (`matrix-fixed-results.json`, `*-fixed-*.log`,
+`review-*.log`, `fixed-source-sha256.json`). No tracked harness, fixture generator,
+fault hook, self-test or CI workflow was added. CI establishes builds for its
+submitted revision only. The native adapter, CHECK authority/helper, publisher
+lease and interactive QEMU qualification are parent integration work; no native
+ESP writes or hardware power-loss guarantees are claimed here.

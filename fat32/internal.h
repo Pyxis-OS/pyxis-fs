@@ -10,6 +10,7 @@
 #define FAT32_EOC UINT32_C(0x0ffffff8)
 #define FAT32_MIN_CLUSTERS 65525u
 #define FAT32_IO_BYTES 4096u
+#define FAT32_FAT_WINDOW_SECTORS 8u
 #define FAT32_GPT_ARRAY_LIMIT 65536u
 #define FAT32_GPT_ENTRY_LIMIT 256u
 #define FAT32_DIRECTORY_ENTRY_BYTES 32u
@@ -33,13 +34,17 @@ struct fat32_context {
   const struct fat32_volume *volume;
   uint64_t steps, sectors;
   uint8_t *seen;
+  uint8_t *free_map;
+  const uint8_t *allocation;
   size_t seen_bytes;
   struct fat32_frame *frames;
   uint32_t frame_limit;
   uint8_t data[FAT32_IO_BYTES];
-  uint8_t fat[FAT32_SECTOR_BYTES], mirror[FAT32_SECTOR_BYTES];
+  uint8_t fat[FAT32_FAT_WINDOW_SECTORS * FAT32_SECTOR_BYTES];
+  uint8_t mirror[FAT32_FAT_WINDOW_SECTORS * FAT32_SECTOR_BYTES];
   uint16_t long_units[260];
   uint64_t data_sector, fat_sector;
+  uint32_t fat_sector_count;
   bool data_cached, fat_cached;
 };
 
@@ -68,6 +73,15 @@ enum fat32_status fat32_context_open(const struct fat32_source *source,
 enum fat32_status fat32_context_volume(const struct fat32_volume *volume,
                                       struct fat32_workspace *workspace,
                                       struct fat32_context **context);
+/* Checks and initializes full-check backing without reading the volume. */
+enum fat32_status fat32_context_volume_prepare(const struct fat32_volume *volume,
+                                              struct fat32_workspace *workspace,
+                                              struct fat32_context **context);
+/* Uses only fat32_context_size() backing and validates individual chains,
+ * without the checker's ownership bitmap or directory traversal frames. */
+enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
+                                            struct fat32_workspace *workspace,
+                                            struct fat32_context **context);
 enum fat32_status fat32_step(struct fat32_context *context);
 enum fat32_status fat32_disk_read(struct fat32_context *context, uint64_t first,
                                 uint32_t count, void *bytes);

@@ -47,7 +47,10 @@ struct fat32_mounted {
   struct fat32_write_io io;
   struct fat32_mounted_object *objects;
   uint32_t object_count;
-  bool dirty_owned, mutated, stopped;
+  uint8_t *allocation;
+  size_t allocation_bytes;
+  uint32_t free_count, next_free;
+  bool allocation_valid, dirty_owned, mutated, stopped;
   struct fat32_mounted_recovery recovery;
 };
 
@@ -55,18 +58,30 @@ struct fat32_mounted {
  * All storage and callback contexts remain alive through calls and held objects.
  * If stopped, retain the failed operation workspace unchanged with this mount;
  * no operation, retry, reclamation or rebinding is then permitted. No heap.
- * changed_bytes bounds sectors whose content is changed (gap and cluster slack
- * included). Depth/work/sector limits are finite. Allocation of both workspace
- * and sufficient object chain capacity must precede the operation/dirty mark.
+ * changed_bytes bounds content images (gap and cluster slack included);
+ * allocated_clusters bounds new candidate storage and changed_clusters bounds
+ * distinct FAT entries across allocation/reclamation phases. Work/sector limits
+ * are finite. Allocation backing remains separate from replaceable workspace.
+ * Allocation of both workspace and sufficient object chain capacity must
+ * precede the operation/dirty mark.
  * Namespace insertion can grow its parent by at most two clusters; reserve
  * parent.chain_count + 2 before create/rename. */
 enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume,
-    uint32_t depth, uint64_t changed_bytes, size_t *bytes);
+    uint64_t changed_bytes, uint32_t allocated_clusters, uint32_t changed_clusters, size_t *bytes);
+/* Allocation backing is caller-owned, retained until this mount is forgotten.
+ * CHECK needs a disjoint replacement map; success transfers its borrowed lifetime
+ * and permits the caller to release the old map. Backing/capacity refusal before
+ * validation preserves proof. Validation failure leaves proof invalid, retains
+ * the old map, and permits releasing the rejected replacement. Neither CHECK nor
+ * reopening may reset an uncertain stopped writer. */
+enum fat32_status fat32_mounted_allocation_size(const struct fat32_volume *volume, size_t *bytes);
+/* OPEN requires a fresh zero-initialized record; it never reopens/reset one. */
 enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,
     const struct fat32_volume *volume, const struct fat32_write_io *io,
-    struct fat32_workspace *workspace);
+    uint8_t *allocation, size_t allocation_bytes, struct fat32_workspace *workspace);
 enum fat32_status fat32_mounted_check(struct fat32_mounted *mounted,
-    struct fat32_workspace *workspace, struct fat32_check_report *report);
+    uint8_t *allocation, size_t allocation_bytes, struct fat32_workspace *workspace,
+    struct fat32_check_report *report);
 enum fat32_status fat32_mounted_object_chain_size(struct fat32_mounted *mounted,
     const struct fat32_locator *locator, struct fat32_workspace *workspace,
     uint32_t *count);

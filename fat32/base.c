@@ -121,7 +121,7 @@ enum fat32_status fat32_context_open(const struct fat32_source *source,
   return FAT32_OK;
 }
 
-enum fat32_status fat32_context_volume(const struct fat32_volume *volume,
+enum fat32_status fat32_context_volume_prepare(const struct fat32_volume *volume,
     struct fat32_workspace *workspace, struct fat32_context **context)
 {
   if (!volume) {
@@ -145,6 +145,28 @@ enum fat32_status fat32_context_volume(const struct fat32_volume *volume,
   (*context)->seen_bytes = ((size_t)volume->cluster_count + 2 + 7) / 8;
   (*context)->frames = (void *)((*context)->seen + align_size((*context)->seen_bytes));
   fat32_zero((*context)->seen, (*context)->seen_bytes);
+  return FAT32_OK;
+}
+
+enum fat32_status fat32_context_volume(const struct fat32_volume *volume,
+    struct fat32_workspace *workspace, struct fat32_context **context)
+{
+  enum fat32_status status = fat32_context_volume_prepare(volume, workspace, context);
+  return status == FAT32_OK ? fat32_revalidate(*context) : status;
+}
+
+enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
+    struct fat32_workspace *workspace, struct fat32_context **context)
+{
+  if (!volume || volume->cluster_count < FAT32_MIN_CLUSTERS ||
+      volume->cluster_count > FAT32_RESERVED_MIN - 2) {
+    return FAT32_INVALID;
+  }
+  enum fat32_status status = fat32_context_open(&volume->source, workspace, context);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  (*context)->volume = volume;
   return fat32_revalidate(*context);
 }
 

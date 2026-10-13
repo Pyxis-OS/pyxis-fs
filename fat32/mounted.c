@@ -9,12 +9,19 @@
 #define FAT32_CLEAN UINT32_C(0x08000000)
 #define FAT32_ATTR_READ_ONLY 0x01u
 
+struct allocation_change {
+  uint32_t cluster, value;
+  uint8_t phase;
+};
+
 struct write_plan {
   struct fat32_mounted *mounted;
   struct fat32_context *context;
   struct fat32_prepared_sector *sectors;
   size_t count, capacity;
-  uint32_t *free_clusters, free_count, allocated;
+  uint32_t *free_clusters, candidate_capacity, allocated, searched, next_candidate;
+  struct allocation_change *changes;
+  uint32_t change_capacity, change_count;
   struct fat32_check_report check;
   uint8_t entry_count, entry_slots[21], entries[21][32];
   uint64_t entry_sectors[21];
@@ -50,6 +57,19 @@ static uint32_t clusters_for(const struct fat32_volume *volume, uint32_t bytes)
 {
   uint32_t size = (uint32_t)volume->sectors_per_cluster * FAT32_SECTOR_BYTES;
   return (uint32_t)(((uint64_t)bytes + size - 1) / size);
+}
+
+static enum fat32_status mounted_result(struct fat32_mounted *mounted, enum fat32_status status)
+{
+  if (mounted && (status == FAT32_IO || status == FAT32_CORRUPT)) {
+    mounted->allocation_valid = false;
+  }
+  return status;
+}
+
+static bool cluster_free(const struct fat32_mounted *mounted, uint32_t cluster)
+{
+  return (mounted->allocation[cluster / 8] & (1u << (cluster % 8))) != 0;
 }
 
 static enum fat32_status sector_image(struct write_plan *plan, uint64_t sector,
@@ -95,6 +115,28 @@ static enum fat32_status sector_image(struct write_plan *plan, uint64_t sector,
 static enum fat32_status fat_set(struct write_plan *plan, uint32_t cluster,
     uint32_t value, uint8_t phase)
 {
+  struct allocation_change *change = NULL;
+  for (uint32_t i = 0; i < plan->change_count; ++i) {
+    enum fat32_status status = fat32_step(plan->context);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    if (plan->changes[i].cluster == cluster) {
+      change = &plan->changes[i];
+      break;
+    }
+  }
+  if (!change) {
+    if (plan->change_count == plan->change_capacity) {
+      return FAT32_NO_MEMORY;
+    }
+    change = &plan->changes[plan->change_count++];
+    *change = (struct allocation_change){.cluster = cluster};
+  }
+  if (phase >= change->phase) {
+    change->phase = phase;
+    change->value = value;
+  }
   const struct fat32_volume *volume = &plan->mounted->volume;
   for (unsigned copy = 0; copy < volume->fat_count; ++copy) {
     uint8_t *bytes;
@@ -112,10 +154,41 @@ static enum fat32_status fat_set(struct write_plan *plan, uint32_t cluster,
 static enum fat32_status allocate_chain(struct write_plan *plan, uint32_t count,
     uint32_t **chain)
 {
-  if (count > plan->free_count - plan->allocated) {
+  struct fat32_mounted *mounted = plan->mounted;
+  if (count > mounted->free_count - plan->allocated) {
     return FAT32_NO_SPACE;
   }
+  if (count > plan->candidate_capacity - plan->allocated) {
+    return FAT32_NO_MEMORY;
+  }
   *chain = plan->free_clusters + plan->allocated;
+  uint32_t found = 0;
+  while (found < count) {
+    if (plan->searched == mounted->volume.cluster_count) {
+      return FAT32_CORRUPT;
+    }
+    uint32_t cluster = plan->next_candidate;
+    if (++plan->next_candidate - 2 == mounted->volume.cluster_count) {
+      plan->next_candidate = 2;
+    }
+    ++plan->searched;
+    enum fat32_status status = fat32_step(plan->context);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    if (!cluster_free(mounted, cluster)) {
+      continue;
+    }
+    uint32_t value;
+    status = fat32_fat_entry(plan->context, cluster, &value);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    if (value) {
+      return FAT32_CORRUPT;
+    }
+    (*chain)[found++] = cluster;
+  }
   plan->allocated += count;
   for (uint32_t i = 0; i < count; ++i) {
     enum fat32_status status = fat_set(plan, (*chain)[i],
@@ -200,7 +273,7 @@ static enum fat32_status fsinfo_plan(struct write_plan *plan, uint32_t reclaimed
     if (status != FAT32_OK) {
       return status;
     }
-    put32(bytes + 488, (uint32_t)plan->check.free_clusters - plan->allocated + reclaimed);
+    put32(bytes + 488, plan->mounted->free_count - plan->allocated + reclaimed);
     put32(bytes + 492, UINT32_MAX);
   }
   return FAT32_OK;
@@ -432,6 +505,10 @@ static enum fat32_status chain_matches(struct fat32_context *context,
     return FAT32_STALE;
   }
   for (uint32_t i = 0; i < object->chain_count; ++i) {
+    if (!fat32_valid_cluster(context->volume, object->chain[i]) ||
+        (object->mounted->allocation_valid && cluster_free(object->mounted, object->chain[i]))) {
+      return FAT32_STALE;
+    }
     uint32_t next;
     enum fat32_status status = fat32_fat_entry(context, object->chain[i], &next);
     if (status != FAT32_OK) {
@@ -443,6 +520,25 @@ static enum fat32_status chain_matches(struct fat32_context *context,
     }
   }
   return FAT32_OK;
+}
+
+static enum fat32_status empty_directory(struct fat32_context *context,
+    struct fat32_mounted_object *object)
+{
+  struct fat32_cursor cursor;
+  fat32_cursor_start(&cursor, object->entry.first_cluster);
+  for (;;) {
+    struct fat32_entry entry;
+    bool found;
+    enum fat32_status status = fat32_next_entry(context, &cursor,
+        object->locator.parent_cluster, &entry, &found);
+    if (status != FAT32_OK || !found) {
+      return status;
+    }
+    if (fat32_ordinary_entry(&entry)) {
+      return FAT32_NOT_EMPTY;
+    }
+  }
 }
 
 static enum fat32_status held_roots(struct fat32_context *context, void *extra,
@@ -475,21 +571,9 @@ static enum fat32_status held_roots(struct fat32_context *context, void *extra,
       if (status != FAT32_OK) {
         return status;
       }
-      struct fat32_cursor cursor;
-      fat32_cursor_start(&cursor, object->entry.first_cluster);
-      for (;;) {
-        struct fat32_entry entry;
-        bool found;
-        status = fat32_next_entry(context, &cursor, object->locator.parent_cluster, &entry, &found);
-        if (status != FAT32_OK || !found) {
-          if (status != FAT32_OK) {
-            return status;
-          }
-          break;
-        }
-        if (fat32_ordinary_entry(&entry)) {
-          return FAT32_CORRUPT;
-        }
+      status = empty_directory(context, object);
+      if (status != FAT32_OK) {
+        return status == FAT32_NOT_EMPTY ? FAT32_CORRUPT : status;
       }
     }
   }
@@ -500,7 +584,7 @@ static bool same_entry(const struct fat32_entry *a, const struct fat32_entry *b)
 {
   return a->first_cluster == b->first_cluster && a->file_bytes == b->file_bytes &&
       a->attributes == b->attributes && a->name_bytes == b->name_bytes &&
-      a->alias_bytes == b->alias_bytes &&
+      a->alias_bytes == b->alias_bytes && a->has_long_name == b->has_long_name &&
       fat32_equal(a->name, b->name, a->name_bytes) &&
       fat32_equal(a->alias, b->alias, a->alias_bytes) &&
       fat32_equal(a->short_name, b->short_name, sizeof(a->short_name));
@@ -509,32 +593,54 @@ static bool same_entry(const struct fat32_entry *a, const struct fat32_entry *b)
 static enum fat32_status validate_object(struct fat32_context *context,
     struct fat32_mounted_object *object)
 {
-  fat32_zero(context->seen, context->seen_bytes);
   if (object->attached) {
     struct fat32_entry entry;
     enum fat32_status status = fat32_locate_entry(context, &object->locator, &entry);
     if (status != FAT32_OK) {
-      return status;
+      if (status == FAT32_STALE || status == FAT32_UNSUPPORTED) {
+        object->mounted->allocation_valid = false;
+      }
+      return mounted_result(object->mounted, status);
     }
     if (!same_entry(&entry, &object->entry)) {
+      object->mounted->allocation_valid = false;
       return FAT32_STALE;
     }
-  } else {
-    uint64_t clusters;
-    enum fat32_status status = fat32_claim_chain(context, object->entry.first_cluster,
-        object->entry.file_bytes, (object->entry.attributes & FAT32_ATTR_DIRECTORY) != 0, &clusters);
-    if (status != FAT32_OK) {
-      return status;
-    }
-    if (object->entry.attributes & FAT32_ATTR_DIRECTORY) {
-      status = fat32_validate_directory(context, object->entry.first_cluster,
-          object->locator.parent_cluster);
-      if (status != FAT32_OK) {
-        return status;
+  }
+  enum fat32_status status = chain_matches(context, object);
+  if (status == FAT32_OK && (object->entry.attributes & FAT32_ATTR_DIRECTORY)) {
+    status = fat32_validate_directory(context, object->entry.first_cluster,
+        object->locator.parent_cluster);
+    if (status == FAT32_OK && !object->attached) {
+      status = empty_directory(context, object);
+      if (status == FAT32_NOT_EMPTY) {
+        status = FAT32_CORRUPT;
       }
     }
   }
-  return chain_matches(context, object);
+  if (status == FAT32_STALE || status == FAT32_UNSUPPORTED) {
+    object->mounted->allocation_valid = false;
+  }
+  return mounted_result(object->mounted, status);
+}
+
+static enum fat32_status validate_parent(struct fat32_context *context,
+    struct fat32_mounted_object *object)
+{
+  if (!object->attached) {
+    return FAT32_OK;
+  }
+  for (struct fat32_mounted_object *parent = object->mounted->objects; parent; parent = parent->next) {
+    enum fat32_status status = fat32_step(context);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    if (parent->attached && (parent->entry.attributes & FAT32_ATTR_DIRECTORY) &&
+        parent->entry.first_cluster == object->locator.parent_cluster) {
+      return validate_object(context, parent);
+    }
+  }
+  return FAT32_OK;
 }
 
 static enum fat32_status mounted_context(struct fat32_mounted *mounted,
@@ -546,7 +652,14 @@ static enum fat32_status mounted_context(struct fat32_mounted *mounted,
   if (mounted->stopped) {
     return FAT32_STOPPED;
   }
-  return fat32_context_volume(&mounted->volume, workspace, context);
+  enum fat32_status status = fat32_context_volume_local(&mounted->volume, workspace, context);
+  if (status == FAT32_UNSUPPORTED) {
+    mounted->allocation_valid = false;
+  }
+  if (status == FAT32_OK && mounted->allocation_valid) {
+    (*context)->allocation = mounted->allocation;
+  }
+  return mounted_result(mounted, status);
 }
 
 static enum fat32_status full_check(struct fat32_mounted *mounted,
@@ -556,6 +669,8 @@ static enum fat32_status full_check(struct fat32_mounted *mounted,
   if (status != FAT32_OK) {
     return status;
   }
+  context->seen = NULL;
+  context->seen_bytes = 0;
   for (struct fat32_mounted_object *object = mounted->objects; object; object = object->next) {
     status = fat32_step(context);
     if (status == FAT32_OK) {
@@ -565,40 +680,55 @@ static enum fat32_status full_check(struct fat32_mounted *mounted,
       return status;
     }
   }
-  fat32_zero(context->seen, context->seen_bytes);
   return FAT32_OK;
 }
 
-enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume,
-    uint32_t depth, uint64_t changed_bytes, size_t *bytes)
+enum fat32_status fat32_mounted_allocation_size(const struct fat32_volume *volume, size_t *bytes)
 {
-  if (!volume || !bytes || !volume->sectors_per_cluster ||
-      volume->sectors_per_cluster > 128 ||
+  if (!volume || !volume->sectors_per_cluster || volume->sectors_per_cluster > 128 ||
       (volume->sectors_per_cluster & (volume->sectors_per_cluster - 1)) ||
       (volume->fat_count != 1 && volume->fat_count != 2)) {
     return FAT32_INVALID;
   }
-  if (changed_bytes > UINT64_MAX - (FAT32_SECTOR_BYTES - 1)) {
+  size_t reader;
+  enum fat32_status status = fat32_workspace_size(volume, 0, &reader);
+  if (status == FAT32_OK && bytes) {
+    *bytes = ((size_t)volume->cluster_count + 2 + 7) / 8;
+  }
+  return bytes ? status : FAT32_INVALID;
+}
+
+enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume,
+    uint64_t changed_bytes, uint32_t allocated_clusters, uint32_t changed_clusters, size_t *bytes)
+{
+  size_t allocation;
+  enum fat32_status status = fat32_mounted_allocation_size(volume, &allocation);
+  if (status != FAT32_OK || !bytes) {
+    return status != FAT32_OK ? status : FAT32_INVALID;
+  }
+  if (changed_bytes > UINT64_MAX - (FAT32_SECTOR_BYTES - 1) ||
+      allocated_clusters > volume->cluster_count || changed_clusters > volume->cluster_count) {
     return FAT32_LIMIT;
   }
-  size_t reader;
-  enum fat32_status status = fat32_workspace_size(volume, depth, &reader);
-  if (status != FAT32_OK) {
-    return status;
-  }
-  uint64_t allocation = ((uint64_t)volume->cluster_count + 2) * sizeof(uint32_t);
-  uint64_t capacity = (uint64_t)volume->fat_sectors * volume->fat_count * 2 +
+  uint64_t sectors = changed_clusters < volume->fat_sectors ? changed_clusters : volume->fat_sectors;
+  uint64_t capacity = sectors * volume->fat_count * 2 +
       (changed_bytes + FAT32_SECTOR_BYTES - 1) / FAT32_SECTOR_BYTES +
       (uint64_t)volume->sectors_per_cluster * 3 + 64;
-  if (allocation > SIZE_MAX || capacity > SIZE_MAX / sizeof(struct fat32_prepared_sector)) {
+  uint64_t candidates = (uint64_t)allocated_clusters * sizeof(uint32_t);
+  uint64_t changes = (uint64_t)changed_clusters * sizeof(struct allocation_change);
+  if (candidates > SIZE_MAX - _Alignof(max_align_t) ||
+      changes > SIZE_MAX - _Alignof(max_align_t)) {
     return FAT32_LIMIT;
   }
-  size_t fixed = aligned(reader);
-  size_t vector_bytes = aligned((size_t)allocation);
-  if (vector_bytes > SIZE_MAX - fixed) {
+  size_t fixed = fat32_context_size();
+  if (aligned((size_t)candidates) > SIZE_MAX - fixed) {
     return FAT32_LIMIT;
   }
-  fixed += vector_bytes;
+  fixed += aligned((size_t)candidates);
+  if (aligned((size_t)changes) > SIZE_MAX - fixed) {
+    return FAT32_LIMIT;
+  }
+  fixed += aligned((size_t)changes);
   if (capacity > (SIZE_MAX - fixed) / sizeof(struct fat32_prepared_sector)) {
     return FAT32_LIMIT;
   }
@@ -608,81 +738,104 @@ enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume
 
 enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,
     const struct fat32_volume *volume, const struct fat32_write_io *io,
-    struct fat32_workspace *workspace)
+    uint8_t *allocation, size_t allocation_bytes, struct fat32_workspace *workspace)
 {
   if (!mounted || !volume || !io || !io->write || !io->flush || !workspace) {
+    return FAT32_INVALID;
+  }
+  if (mounted->stopped) {
+    return FAT32_STOPPED;
+  }
+  if (mounted->allocation || mounted->objects || mounted->object_count) {
     return FAT32_INVALID;
   }
   if (!volume->clean_shutdown || !volume->no_hard_error) {
     return FAT32_CORRUPT;
   }
+  struct fat32_mounted result;
+  fat32_zero(&result, sizeof(result));
+  fat32_copy(&result.volume, volume, sizeof(*volume));
+  fat32_copy(&result.io, io, sizeof(*io));
   struct fat32_check_report report;
-  enum fat32_status status = fat32_check(volume, workspace, &report);
-  if (status != FAT32_OK) {
-    return status;
+  enum fat32_status status = fat32_mounted_check(&result, allocation, allocation_bytes,
+      workspace, &report);
+  if (status == FAT32_OK) {
+    fat32_copy(mounted, &result, sizeof(result));
   }
-  fat32_zero(mounted, sizeof(*mounted));
-  fat32_copy(&mounted->volume, volume, sizeof(*volume));
-  fat32_copy(&mounted->io, io, sizeof(*io));
-  return FAT32_OK;
+  return status;
 }
 
 enum fat32_status fat32_mounted_check(struct fat32_mounted *mounted,
-    struct fat32_workspace *workspace, struct fat32_check_report *report)
+    uint8_t *allocation, size_t allocation_bytes, struct fat32_workspace *workspace,
+    struct fat32_check_report *report)
 {
-  if (!report) {
+  if (!mounted || !report) {
     return FAT32_INVALID;
   }
-  struct fat32_context *context;
-  enum fat32_status status = mounted_context(mounted, workspace, &context);
+  if (mounted->stopped) {
+    return FAT32_STOPPED;
+  }
+  size_t required;
+  enum fat32_status status = fat32_mounted_allocation_size(&mounted->volume, &required);
   if (status != FAT32_OK) {
     return status;
   }
+  if (!allocation || allocation_bytes < required || allocation == mounted->allocation) {
+    return FAT32_NO_MEMORY;
+  }
+  struct fat32_context *context;
+  status = fat32_context_volume_prepare(&mounted->volume, workspace, &context);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  mounted->allocation_valid = false;
+  status = fat32_revalidate(context);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  fat32_zero(allocation, required);
+  context->free_map = allocation;
   struct fat32_check_report result;
   status = full_check(mounted, context, &result);
   if (status == FAT32_OK) {
+    mounted->allocation = allocation;
+    mounted->allocation_bytes = required;
+    mounted->free_count = (uint32_t)result.free_clusters;
+    mounted->next_free = 2;
+    mounted->allocation_valid = true;
     fat32_copy(report, &result, sizeof(result));
   }
   return status;
 }
 
 static enum fat32_status begin_plan(struct fat32_mounted *mounted,
-    struct fat32_workspace *workspace, struct write_plan *plan, bool mutation)
+    struct fat32_workspace *workspace, struct write_plan *plan, bool mutation,
+    uint32_t candidates, uint32_t changes)
 {
   fat32_zero(plan, sizeof(*plan));
   plan->mounted = mounted;
+  if (!mounted->allocation_valid) {
+    return mounted->stopped ? FAT32_STOPPED : FAT32_CORRUPT;
+  }
   enum fat32_status status = mounted_context(mounted, workspace, &plan->context);
   if (status != FAT32_OK) {
     return status;
   }
-  status = full_check(mounted, plan->context, &plan->check);
-  if (status != FAT32_OK) {
-    return status;
-  }
-  size_t reader;
-  status = fat32_workspace_size(&mounted->volume, workspace->directory_depth_limit, &reader);
-  if (status != FAT32_OK) {
-    return status;
-  }
-  size_t vector_bytes = ((size_t)mounted->volume.cluster_count + 2) * sizeof(uint32_t);
-  if (vector_bytes > SIZE_MAX - aligned(reader) ||
-      workspace->bytes < aligned(reader) + aligned(vector_bytes)) {
+  size_t vector = aligned((size_t)candidates * sizeof(uint32_t));
+  size_t updates = aligned((size_t)changes * sizeof(struct allocation_change));
+  size_t offset = fat32_context_size();
+  if (vector > workspace->bytes - offset || updates > workspace->bytes - offset - vector) {
     return FAT32_NO_MEMORY;
   }
-  size_t offset = aligned(reader) + aligned(vector_bytes);
-  plan->free_clusters = (void *)((uint8_t *)workspace->memory + aligned(reader));
+  plan->free_clusters = (void *)((uint8_t *)workspace->memory + offset);
+  plan->candidate_capacity = candidates;
+  offset += vector;
+  plan->changes = (void *)((uint8_t *)workspace->memory + offset);
+  plan->change_capacity = changes;
+  offset += updates;
   plan->sectors = (void *)((uint8_t *)workspace->memory + offset);
   plan->capacity = (workspace->bytes - offset) / sizeof(*plan->sectors);
-  for (uint32_t cluster = 2; cluster - 2 < mounted->volume.cluster_count; ++cluster) {
-    uint32_t value;
-    status = fat32_fat_entry(plan->context, cluster, &value);
-    if (status != FAT32_OK) {
-      return status;
-    }
-    if (!value) {
-      plan->free_clusters[plan->free_count++] = cluster;
-    }
-  }
+  plan->next_candidate = mounted->next_free;
   if (mutation && !mounted->dirty_owned) {
     for (unsigned copy = 0; copy < mounted->volume.fat_count; ++copy) {
       uint8_t *bytes;
@@ -699,6 +852,7 @@ static enum fat32_status begin_plan(struct fat32_mounted *mounted,
 
 static enum fat32_status uncertain(struct fat32_mounted *mounted)
 {
+  mounted->allocation_valid = false;
   mounted->stopped = true;
   mounted->recovery.uncertain = true;
   mounted->recovery.failure = FAT32_IO;
@@ -765,6 +919,25 @@ static enum fat32_status run_plan(struct write_plan *plan,
     }
   }
   if (!clean) {
+    for (uint32_t i = 0; i < plan->change_count; ++i) {
+      const struct allocation_change *change = &plan->changes[i];
+      uint8_t mask = (uint8_t)(1u << (change->cluster % 8));
+      bool was_free = cluster_free(mounted, change->cluster);
+      bool free = change->value == 0;
+      if (free) {
+        mounted->allocation[change->cluster / 8] |= mask;
+      } else {
+        mounted->allocation[change->cluster / 8] &= (uint8_t)~mask;
+      }
+      if (was_free != free) {
+        if (free) {
+          ++mounted->free_count;
+        } else {
+          --mounted->free_count;
+        }
+      }
+    }
+    mounted->next_free = plan->next_candidate;
     mounted->mutated = true;
   }
   if (plan->grown_directory) {
@@ -799,7 +972,7 @@ enum fat32_status fat32_mounted_object_chain_size(struct fat32_mounted *mounted,
   struct fat32_context *context;
   enum fat32_status status = mounted_context(mounted, workspace, &context);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   struct fat32_entry entry;
   uint32_t result;
@@ -810,7 +983,7 @@ enum fat32_status fat32_mounted_object_chain_size(struct fat32_mounted *mounted,
   if (status == FAT32_OK) {
     *count = result;
   }
-  return status;
+  return mounted_result(mounted, status);
 }
 
 enum fat32_status fat32_mounted_object_bind(struct fat32_mounted *mounted,
@@ -823,12 +996,12 @@ enum fat32_status fat32_mounted_object_bind(struct fat32_mounted *mounted,
   struct fat32_context *context;
   enum fat32_status status = mounted_context(mounted, workspace, &context);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   for (struct fat32_mounted_object *item = mounted->objects; item; item = item->next) {
     status = fat32_step(context);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     if (item->attached && same_locator(&item->locator, locator)) {
       return FAT32_EXISTS;
@@ -844,7 +1017,7 @@ enum fat32_status fat32_mounted_object_bind(struct fat32_mounted *mounted,
     status = chain_collect(context, &entry, object->chain, object->chain_capacity, &count);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (count > object->chain_capacity) {
     return FAT32_NO_MEMORY;
@@ -889,6 +1062,7 @@ static enum fat32_status read_object_context(struct fat32_mounted_object *object
 enum fat32_status fat32_mounted_locate(struct fat32_mounted_object *object,
     struct fat32_workspace *workspace, struct fat32_entry *entry)
 {
+  struct fat32_mounted *mounted = object ? object->mounted : NULL;
   if (!entry) {
     return FAT32_INVALID;
   }
@@ -897,7 +1071,7 @@ enum fat32_status fat32_mounted_locate(struct fat32_mounted_object *object,
   if (status == FAT32_OK) {
     fat32_copy(entry, &object->entry, sizeof(*entry));
   }
-  return status;
+  return mounted_result(mounted, status);
 }
 
 static enum fat32_status component_valid(const char *name, size_t bytes, bool mutation)
@@ -950,17 +1124,18 @@ enum fat32_status fat32_mounted_lookup(struct fat32_mounted_object *directory,
     const char *component, size_t bytes, struct fat32_workspace *workspace,
     struct fat32_entry *entry, struct fat32_locator *child)
 {
+  struct fat32_mounted *mounted = directory ? directory->mounted : NULL;
   if (!entry || !child) {
     return FAT32_INVALID;
   }
   enum fat32_status status = component_valid(component, bytes, false);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   struct fat32_context *context;
   status = directory_context(directory, workspace, &context);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   struct fat32_cursor cursor;
   fat32_cursor_start(&cursor, directory->entry.first_cluster);
@@ -969,7 +1144,7 @@ enum fat32_status fat32_mounted_lookup(struct fat32_mounted_object *directory,
     bool found;
     status = fat32_next_entry(context, &cursor, directory->locator.parent_cluster, &candidate, &found);
     if (status != FAT32_OK || !found) {
-      return status != FAT32_OK ? status : FAT32_NOT_FOUND;
+      return mounted_result(mounted, status != FAT32_OK ? status : FAT32_NOT_FOUND);
     }
     if (!fat32_ordinary_entry(&candidate) ||
         !((candidate.name_ascii && fat32_ascii_equal(candidate.name, candidate.name_bytes, component, bytes)) ||
@@ -983,7 +1158,7 @@ enum fat32_status fat32_mounted_lookup(struct fat32_mounted_object *directory,
       status = fat32_validate_directory(context, candidate.first_cluster, directory->entry.first_cluster);
     }
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     fat32_copy(entry, &candidate, sizeof(*entry));
     *child = directory_child(directory, cursor.position - 1);
@@ -995,13 +1170,14 @@ enum fat32_status fat32_mounted_enumerate(struct fat32_mounted_object *directory
     uint64_t continuation, struct fat32_workspace *workspace,
     struct fat32_entry *entry, struct fat32_locator *child, uint64_t *next, bool *found)
 {
+  struct fat32_mounted *mounted = directory ? directory->mounted : NULL;
   if (!entry || !child || !next || !found) {
     return FAT32_INVALID;
   }
   struct fat32_context *context;
   enum fat32_status status = directory_context(directory, workspace, &context);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   struct fat32_cursor cursor;
   fat32_cursor_start(&cursor, directory->entry.first_cluster);
@@ -1014,7 +1190,7 @@ enum fat32_status fat32_mounted_enumerate(struct fat32_mounted_object *directory
     bool have;
     status = fat32_next_entry(context, &cursor, directory->locator.parent_cluster, &candidate, &have);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     if (!have) {
       break;
@@ -1026,7 +1202,7 @@ enum fat32_status fat32_mounted_enumerate(struct fat32_mounted_object *directory
     status = fat32_claim_chain(context, candidate.first_cluster, candidate.file_bytes,
         (candidate.attributes & FAT32_ATTR_DIRECTORY) != 0, &clusters);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     if (!selected && continuation != UINT64_MAX && cursor.position - 1 >= continuation) {
       selected = true;
@@ -1048,13 +1224,14 @@ enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
     uint64_t offset, size_t bytes, struct fat32_workspace *workspace,
     fat32_bytes_sink_fn sink, void *output)
 {
+  struct fat32_mounted *mounted = object ? object->mounted : NULL;
   if (!sink) {
     return FAT32_INVALID;
   }
   struct fat32_context *context;
   enum fat32_status status = read_object_context(object, workspace, &context);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (object->entry.attributes & FAT32_ATTR_DIRECTORY) {
     return FAT32_IS_DIRECTORY;
@@ -1079,7 +1256,7 @@ enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
     status = fat32_partition_read(context, sector, 1, context->data);
     context->data_cached = false;
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     if (!sink(output, context->data + skip, amount)) {
       return FAT32_OUTPUT;
@@ -1240,13 +1417,20 @@ static enum fat32_status file_update(struct fat32_mounted_object *object,
   if (total > object->chain_capacity) {
     return FAT32_NO_MEMORY;
   }
+  uint32_t old_count = object->chain_count;
+  uint32_t added = total > old_count ? total - old_count : 0;
+  uint32_t removed = old_count > total ? old_count - total : 0;
   struct write_plan plan;
-  status = begin_plan(object->mounted, workspace, &plan, true);
+  status = begin_plan(object->mounted, workspace, &plan, true, added, added + removed + 1);
+  if (status == FAT32_OK) {
+    status = validate_parent(plan.context, object);
+  }
+  if (status == FAT32_OK) {
+    status = validate_object(plan.context, object);
+  }
   if (status != FAT32_OK) {
     return status;
   }
-  uint32_t old_count = object->chain_count;
-  uint32_t added = total > old_count ? total - old_count : 0;
   uint32_t *new_chain;
   status = allocate_chain(&plan, added, &new_chain);
   if (status == FAT32_OK) {
@@ -1327,9 +1511,10 @@ static enum fat32_status file_update(struct fat32_mounted_object *object,
 enum fat32_status fat32_mounted_write(struct fat32_mounted_object *object,
     uint64_t offset, const void *payload, size_t bytes, struct fat32_workspace *workspace)
 {
+  struct fat32_mounted *mounted = object ? object->mounted : NULL;
   enum fat32_status status = mutable_file(object);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (bytes > FAT32_MOUNTED_PAYLOAD_MAX ||
       (bytes && (offset > UINT32_MAX || bytes > UINT32_MAX - offset))) {
@@ -1342,16 +1527,17 @@ enum fat32_status fat32_mounted_write(struct fat32_mounted_object *object,
   if (bytes && offset + bytes > final) {
     final = (uint32_t)(offset + bytes);
   }
-  return file_update(object, final, bytes ? (uint32_t)offset : 0, payload, (uint32_t)bytes, workspace);
+  return mounted_result(mounted, file_update(object, final, bytes ? (uint32_t)offset : 0, payload, (uint32_t)bytes, workspace));
 }
 
 enum fat32_status fat32_mounted_resize(struct fat32_mounted_object *object,
     uint64_t bytes, struct fat32_workspace *workspace)
 {
+  struct fat32_mounted *mounted = object ? object->mounted : NULL;
   if (bytes > UINT32_MAX) {
     return FAT32_LIMIT;
   }
-  return file_update(object, (uint32_t)bytes, 0, NULL, 0, workspace);
+  return mounted_result(mounted, file_update(object, (uint32_t)bytes, 0, NULL, 0, workspace));
 }
 
 static enum fat32_status namespace_scan(struct write_plan *plan,
@@ -1444,12 +1630,13 @@ enum fat32_status fat32_mounted_create(struct fat32_mounted_object *parent,
     const char *component, size_t bytes, bool directory,
     struct fat32_workspace *workspace, struct fat32_mounted_object *object)
 {
+  struct fat32_mounted *mounted = parent ? parent->mounted : NULL;
   enum fat32_status status = mutable_directory(parent);
   if (status == FAT32_OK) {
     status = component_valid(component, bytes, true);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (!object || object->mounted || (object->chain_capacity && !object->chain)) {
     return FAT32_INVALID;
@@ -1461,14 +1648,18 @@ enum fat32_status fat32_mounted_create(struct fat32_mounted_object *parent,
     return FAT32_NO_MEMORY;
   }
   struct write_plan plan;
-  status = begin_plan(parent->mounted, workspace, &plan, true);
+  status = begin_plan(parent->mounted, workspace, &plan, true, 3, 4);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
+  }
+  status = validate_object(plan.context, parent);
+  if (status != FAT32_OK) {
+    return mounted_result(mounted, status);
   }
   uint8_t alias[11];
   status = mounted_alias(&plan, parent, component, bytes, NULL, NULL, alias);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   uint32_t count = directory ? 1 : 0;
   uint32_t *chain;
@@ -1477,14 +1668,14 @@ enum fat32_status fat32_mounted_create(struct fat32_mounted_object *parent,
     status = zero_chain(&plan, chain, count);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (directory) {
     uint8_t *data;
     status = sector_image(&plan, cluster_sector(&parent->mounted->volume, chain[0]),
         FAT32_MOUNTED_DATA, false, &data);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     uint8_t dots[11];
     for (unsigned i = 0; i < 11; ++i) {
@@ -1510,7 +1701,7 @@ enum fat32_status fat32_mounted_create(struct fat32_mounted_object *parent,
     status = run_plan(&plan, NULL, NULL, component, bytes, false);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   created_entry(&object->entry, &plan, component, bytes, directory, first, 0);
   object->locator = directory_child(parent, plan.short_slot);
@@ -1523,34 +1714,16 @@ enum fat32_status fat32_mounted_create(struct fat32_mounted_object *parent,
   return FAT32_OK;
 }
 
-static enum fat32_status empty_directory(struct write_plan *plan,
-    struct fat32_mounted_object *object)
-{
-  struct fat32_cursor cursor;
-  fat32_cursor_start(&cursor, object->entry.first_cluster);
-  for (;;) {
-    struct fat32_entry entry;
-    bool found;
-    enum fat32_status status = fat32_next_entry(plan->context, &cursor,
-        object->locator.parent_cluster, &entry, &found);
-    if (status != FAT32_OK || !found) {
-      return status;
-    }
-    if (fat32_ordinary_entry(&entry)) {
-      return FAT32_NOT_EMPTY;
-    }
-  }
-}
-
 enum fat32_status fat32_mounted_remove(struct fat32_mounted_object *parent,
     struct fat32_mounted_object *object, struct fat32_workspace *workspace)
 {
+  struct fat32_mounted *mounted = parent ? parent->mounted : NULL;
   enum fat32_status status = mutable_directory(parent);
   if (status == FAT32_OK) {
     status = object_valid(object);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (object->mounted != parent->mounted || !object->attached ||
       object->locator.parent_cluster != parent->entry.first_cluster) {
@@ -1563,15 +1736,22 @@ enum fat32_status fat32_mounted_remove(struct fat32_mounted_object *parent,
     return FAT32_READ_ONLY;
   }
   struct write_plan plan;
-  status = begin_plan(parent->mounted, workspace, &plan, true);
+  status = begin_plan(parent->mounted, workspace, &plan, true, 0, 0);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
+  }
+  status = validate_object(plan.context, parent);
+  if (status == FAT32_OK) {
+    status = validate_object(plan.context, object);
+  }
+  if (status != FAT32_OK) {
+    return mounted_result(mounted, status);
   }
   bool collision;
   status = namespace_scan(&plan, parent, object->entry.name, object->entry.name_bytes,
       NULL, 0, NULL, NULL, &collision, NULL);
   if (status == FAT32_OK && (object->entry.attributes & FAT32_ATTR_DIRECTORY)) {
-    status = empty_directory(&plan, object);
+    status = empty_directory(plan.context, object);
   }
   if (status == FAT32_OK) {
     status = delete_entry(&plan, object);
@@ -1586,7 +1766,7 @@ enum fat32_status fat32_mounted_remove(struct fat32_mounted_object *parent,
   if (status == FAT32_OK) {
     object->attached = false;
   }
-  return status;
+  return mounted_result(mounted, status);
 }
 
 enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_parent,
@@ -1594,6 +1774,7 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
     const char *component, size_t bytes, bool replace,
     struct fat32_mounted_object *victim, struct fat32_workspace *workspace)
 {
+  struct fat32_mounted *mounted = source ? source->mounted : NULL;
   enum fat32_status status = mutable_directory(source_parent);
   if (status == FAT32_OK) {
     status = mutable_directory(target_parent);
@@ -1605,7 +1786,7 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
     status = component_valid(component, bytes, true);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (source->mounted != source_parent->mounted || target_parent->mounted != source->mounted ||
       !source->attached || source->locator.parent_cluster != source_parent->entry.first_cluster) {
@@ -1614,7 +1795,7 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
   if (victim && victim != source) {
     status = mutable_file(victim);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     if (victim->mounted != source->mounted || !victim->attached ||
         victim->locator.parent_cluster != target_parent->entry.first_cluster) {
@@ -1622,9 +1803,22 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
     }
   }
   struct write_plan plan;
-  status = begin_plan(source->mounted, workspace, &plan, true);
+  status = begin_plan(source->mounted, workspace, &plan, true, 2, 3);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
+  }
+  status = validate_object(plan.context, source_parent);
+  if (status == FAT32_OK && target_parent != source_parent) {
+    status = validate_object(plan.context, target_parent);
+  }
+  if (status == FAT32_OK) {
+    status = validate_object(plan.context, source);
+  }
+  if (status == FAT32_OK && victim && victim != source) {
+    status = validate_object(plan.context, victim);
+  }
+  if (status != FAT32_OK) {
+    return mounted_result(mounted, status);
   }
   bool collision;
   struct fat32_locator matched;
@@ -1635,12 +1829,12 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
         NULL, 0, NULL, NULL, &collision, &matched);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (collision) {
     if (same_locator(&matched, &source->locator)) {
       /* Alias/self rename is a successful no-op, preserving current spelling. */
-      return victim && victim != source ? FAT32_STALE : FAT32_OK;
+      return mounted_result(mounted, victim && victim != source ? FAT32_STALE : FAT32_OK);
     }
     if (!replace) {
       return FAT32_EXISTS;
@@ -1653,24 +1847,24 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
   }
   status = entry_group(&plan, source);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   uint8_t old_short[32];
   fat32_copy(old_short, plan.entries[plan.entry_count - 1], sizeof(old_short));
   if (victim) {
     status = delete_entry(&plan, victim);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
   }
   status = delete_entry(&plan, source);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   uint8_t alias[11];
   status = mounted_alias(&plan, target_parent, component, bytes, source, victim, alias);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   long_entries(&plan, component, bytes, alias, false, source->entry.first_cluster, source->entry.file_bytes);
   /* Rename preserves attributes/timestamps; the generated alias has no NT case flags. */
@@ -1689,7 +1883,7 @@ enum fat32_status fat32_mounted_rename(struct fat32_mounted_object *source_paren
     status = run_plan(&plan, source, victim, component, bytes, false);
   }
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   uint8_t attributes = source->entry.attributes;
   created_entry(&source->entry, &plan, component, bytes, false,
@@ -1723,23 +1917,28 @@ static void unregister_object(struct fat32_mounted_object *object)
 enum fat32_status fat32_mounted_object_forget(struct fat32_mounted_object *object,
     struct fat32_workspace *workspace)
 {
+  struct fat32_mounted *mounted = object ? object->mounted : NULL;
   enum fat32_status status = object_valid(object);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   if (object->attached || !object->chain_count) {
     unregister_object(object);
     return FAT32_OK;
   }
   struct write_plan plan;
-  status = begin_plan(object->mounted, workspace, &plan, true);
+  status = begin_plan(object->mounted, workspace, &plan, true, 0, object->chain_count);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
+  }
+  status = validate_object(plan.context, object);
+  if (status != FAT32_OK) {
+    return mounted_result(mounted, status);
   }
   for (uint32_t i = 0; i < object->chain_count; ++i) {
     status = fat_set(&plan, object->chain[i], 0, FAT32_MOUNTED_RECLAIM);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
   }
   status = fsinfo_plan(&plan, object->chain_count);
@@ -1749,7 +1948,7 @@ enum fat32_status fat32_mounted_object_forget(struct fat32_mounted_object *objec
   if (status == FAT32_OK) {
     unregister_object(object);
   }
-  return status;
+  return mounted_result(mounted, status);
 }
 
 enum fat32_status fat32_mounted_sync(struct fat32_mounted *mounted)
@@ -1764,7 +1963,7 @@ enum fat32_status fat32_mounted_sync(struct fat32_mounted *mounted)
   mounted->recovery.failed_sector = UINT64_MAX;
   mounted->recovery.phase = FAT32_MOUNTED_FSINFO;
   if (!mounted->io.flush(mounted->io.context)) {
-    return uncertain(mounted);
+    return mounted_result(mounted, uncertain(mounted));
   }
   fat32_zero(&mounted->recovery, sizeof(mounted->recovery));
   return FAT32_OK;
@@ -1774,8 +1973,8 @@ enum fat32_status fat32_mounted_seal(struct fat32_mounted *mounted,
     struct fat32_workspace *workspace)
 {
   enum fat32_status status = fat32_mounted_sync(mounted);
-  if (status != FAT32_OK || !mounted->dirty_owned) {
-    return status;
+  if (status != FAT32_OK || !mounted->dirty_owned || !mounted->allocation_valid) {
+    return mounted_result(mounted, status);
   }
   for (struct fat32_mounted_object *object = mounted->objects; object; object = object->next) {
     if (!object->attached && object->chain_count) {
@@ -1783,18 +1982,18 @@ enum fat32_status fat32_mounted_seal(struct fat32_mounted *mounted,
     }
   }
   struct write_plan plan;
-  status = begin_plan(mounted, workspace, &plan, false);
+  status = begin_plan(mounted, workspace, &plan, false, 0, 0);
   if (status != FAT32_OK) {
-    return status;
+    return mounted_result(mounted, status);
   }
   for (unsigned copy = 0; copy < mounted->volume.fat_count; ++copy) {
     uint8_t *bytes;
     status = sector_image(&plan, mounted->volume.fat_first +
         (uint64_t)copy * mounted->volume.fat_sectors, FAT32_MOUNTED_CLEAN, false, &bytes);
     if (status != FAT32_OK) {
-      return status;
+      return mounted_result(mounted, status);
     }
     put32(bytes + 4, fat32_get32(bytes + 4) | FAT32_CLEAN);
   }
-  return run_plan(&plan, NULL, NULL, NULL, 0, true);
+  return mounted_result(mounted, run_plan(&plan, NULL, NULL, NULL, 0, true));
 }

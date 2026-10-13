@@ -106,6 +106,9 @@ enum fat32_status fat32_check_context_extra(struct fat32_context *context,
         return FAT32_CORRUPT;
       }
       ++result.free_clusters;
+      if (context->free_map) {
+        context->free_map[cluster / 8] |= 1u << (cluster % 8);
+      }
     } else if (value == FAT32_BAD) {
       if (reached) {
         return FAT32_CORRUPT;
