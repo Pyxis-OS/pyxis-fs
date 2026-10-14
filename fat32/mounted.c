@@ -950,6 +950,43 @@ static enum fat32_status run_plan(struct write_plan *plan,
   return FAT32_OK;
 }
 
+enum fat32_status fat32_mounted_root(struct fat32_mounted *mounted,
+    struct fat32_workspace *workspace, struct fat32_entry *entry, struct fat32_locator *locator)
+{
+  if (!entry || !locator) {
+    return FAT32_INVALID;
+  }
+  struct fat32_context *context;
+  enum fat32_status status = mounted_context(mounted, workspace, &context);
+  if (status != FAT32_OK) {
+    return mounted_result(mounted, status);
+  }
+  struct fat32_locator root = {.short_entry_slot = UINT64_MAX};
+  struct fat32_entry result;
+  status = fat32_locate_entry(context, &root, &result);
+  if (status == FAT32_UNSUPPORTED) {
+    mounted->allocation_valid = false;
+  }
+  if (status != FAT32_OK) {
+    return mounted_result(mounted, status);
+  }
+  for (struct fat32_mounted_object *object = mounted->objects; object; object = object->next) {
+    status = fat32_step(context);
+    if (status == FAT32_OK && object->attached && same_locator(&object->locator, &root)) {
+      status = validate_object(context, object);
+      if (status == FAT32_OK) {
+        break;
+      }
+    }
+    if (status != FAT32_OK) {
+      return mounted_result(mounted, status);
+    }
+  }
+  fat32_copy(entry, &result, sizeof(result));
+  fat32_copy(locator, &root, sizeof(root));
+  return FAT32_OK;
+}
+
 static void register_object(struct fat32_mounted *mounted,
     struct fat32_mounted_object *object)
 {

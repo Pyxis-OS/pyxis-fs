@@ -46,6 +46,13 @@ old map and recovery state. The rejected replacement may be released. CHECK neve
 writes media, repairs damage or resets a stopped writer. Native CHECK authority,
 publication intervals and leases belong to the adapter.
 
+`fat32_mounted_root` selects the root entry and authoritative root locator using
+local mounted validation. It checks geometry, root chain and directory, compares
+any canonical held root record, and publishes both outputs only on success.
+Detected backing/structure errors invalidate the mounted allocation proof; this
+selector neither binds another object nor performs full CHECK. RW adapters use
+this selector; the raw `fat32_root` reader retains its separate interface.
+
 Initialize a caller-embedded `fat32_mounted_object` to zero, set its chain pointer
 and capacity, then bind a library-produced locator. `object_chain_size` validates
 and determines the exact number of clusters before allocating backing. Bind
@@ -263,6 +270,16 @@ writer during DATA after 56 completed writes, retained 16 prepared records and
 eight candidate clusters, and invalidated proof. CHECK, write, seal, final forget,
 bind and reopen subsequently refused STOPPED without I/O or changing the retained
 recovery/workspace.
+
+Mounted-root follow-up qualification covered unbound and held root selection on
+40-MiB and dense 1-GiB images, with canonical root outputs and unchanged raw RO
+helpers. Corrupt root allocation, truncated backing and a mismatching held root
+chain refused without writes and invalidated proof; failures preserved both output
+records. Restoring media and explicit CHECK restored root selection, while reopen
+could not reset invalid proof. Real ENOSPC also confirmed mounted root refuses
+STOPPED without touching recovery or failed workspace. Final restored/regular
+partitions passed fsck and mtools; these logs and source hashes use the
+`root-api-*` prefix under `build/qualification/`.
 
 The review reproductions now refuse before effects: a parent's extension into a
 map-free cluster returns CORRUPT; extension into an already allocated cluster

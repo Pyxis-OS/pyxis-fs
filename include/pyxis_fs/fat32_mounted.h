@@ -82,6 +82,11 @@ enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,
 enum fat32_status fat32_mounted_check(struct fat32_mounted *mounted,
     uint8_t *allocation, size_t allocation_bytes, struct fat32_workspace *workspace,
     struct fat32_check_report *report);
+/* Selects and locally validates root, including any canonical held root record.
+ * Outputs change only on success; detected backing/structure errors invalidate
+ * allocation proof. This does not bind a new object or perform a full CHECK. */
+enum fat32_status fat32_mounted_root(struct fat32_mounted *mounted,
+    struct fat32_workspace *workspace, struct fat32_entry *entry, struct fat32_locator *locator);
 enum fat32_status fat32_mounted_object_chain_size(struct fat32_mounted *mounted,
     const struct fat32_locator *locator, struct fat32_workspace *workspace,
     uint32_t *count);
