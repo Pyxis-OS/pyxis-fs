@@ -37,28 +37,28 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
       sector - context->fat_sector >= context->fat_sector_count) {
     context->fat_cached = false;
     context->fat_sector_count = 0;
-    uint32_t count = FAT32_FAT_WINDOW_SECTORS;
+    uint32_t count = context->fat_window_sectors;
     if (count > context->source->max_read_sectors) {
       count = context->source->max_read_sectors;
     }
     if (count > volume->fat_sectors - sector) {
       count = (uint32_t)(volume->fat_sectors - sector);
     }
-    status = fat32_partition_read(context, volume->fat_first + sector, count, context->fat);
+    status = fat32_partition_read(context, volume->fat_first + sector, count, context->fat_bytes);
     if (status != FAT32_OK) {
       return status;
     }
     if (volume->fat_count == 2) {
       status = fat32_partition_read(context, volume->fat_first + volume->fat_sectors + sector,
-          count, context->mirror);
+          count, context->mirror_bytes);
       if (status != FAT32_OK) {
         return status;
       }
       uint64_t first = sector * (FAT32_SECTOR_BYTES / 4);
       uint32_t entries = count * (FAT32_SECTOR_BYTES / 4);
       for (uint32_t i = 0; i < entries && first + i <= (uint64_t)volume->cluster_count + 1; ++i) {
-        if ((fat32_get32(context->fat + 4 * i) & FAT32_MASK) !=
-            (fat32_get32(context->mirror + 4 * i) & FAT32_MASK)) {
+        if ((fat32_get32(context->fat_bytes + 4 * i) & FAT32_MASK) !=
+            (fat32_get32(context->mirror_bytes + 4 * i) & FAT32_MASK)) {
           return FAT32_CORRUPT;
         }
       }
@@ -69,7 +69,7 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
   }
   size_t within = (size_t)(sector - context->fat_sector) * FAT32_SECTOR_BYTES +
       offset % FAT32_SECTOR_BYTES;
-  *value = fat32_get32(context->fat + within) & FAT32_MASK;
+  *value = fat32_get32(context->fat_bytes + within) & FAT32_MASK;
   return FAT32_OK;
 }
 

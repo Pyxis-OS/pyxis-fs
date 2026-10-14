@@ -11,6 +11,7 @@
 #define FAT32_MIN_CLUSTERS 65525u
 #define FAT32_IO_BYTES 4096u
 #define FAT32_FAT_WINDOW_SECTORS 8u
+#define FAT32_CHECK_FAT_WINDOW_SECTORS 128u
 #define FAT32_GPT_ARRAY_LIMIT 65536u
 #define FAT32_GPT_ENTRY_LIMIT 256u
 #define FAT32_DIRECTORY_ENTRY_BYTES 32u
@@ -33,6 +34,8 @@ struct fat32_context {
   const struct fat32_source *source;
   const struct fat32_volume *volume;
   uint64_t steps, sectors;
+  uint8_t *fat_bytes, *mirror_bytes;
+  uint32_t fat_window_sectors;
   uint8_t *seen;
   uint8_t *free_map;
   const uint8_t *allocation;

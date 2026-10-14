@@ -24,8 +24,10 @@ Admit GPT/geometry through `fat32_open` under exclusive authority, then call
 backing and full-check workspace. `fat32_mounted_allocation_size` gives the retained
 bitmap size. Admission performs one complete mounted-volume check, refusing dirty,
 error, corrupt and unsupported media, and builds the exact free bitmap/count.
-FSInfo is a hint, never allocation authority. FAT reads use windows of up to eight
-512-byte sectors per copy, reduced to the callback's read limit; mirrored valid
+FSInfo is a hint, never allocation authority. Full checks use FAT windows of up to 128
+512-byte sectors per copy, reduced to the callback's read limit, with at most
+128 KiB of additional caller-owned scratch. Local mutations keep eight-sector
+windows; mirrored valid
 entries are compared before use.
 
 The retained allocation map borrows caller storage for the mount lifetime. Confirmed
