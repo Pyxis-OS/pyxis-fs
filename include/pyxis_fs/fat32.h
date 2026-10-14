@@ -58,6 +58,16 @@ struct fat32_workspace {
   uint32_t directory_depth_limit;
 };
 
+/* Mounted-view tracking is library-maintained. Start zeroed and bind separate
+ * zero bitmap storage after geometry admission. Keep both alive and disjoint
+ * from workspace for every volume copy and mounted object using this view. */
+struct fat32_mirror_state {
+  uint8_t *pending;
+  size_t pending_bytes;
+  uint32_t sector_count, pending_sectors;
+  bool mismatch_seen, bound;
+};
+
 /* Copied, read-only geometry. Offsets fat_first/data_first are relative to the
  * partition. Do not modify this result or use it with different media. It is
  * an inspection view, not a mount or a persistent file identity. */
@@ -68,6 +78,7 @@ struct fat32_volume {
   uint32_t volume_sectors, fat_sectors, cluster_count, root_cluster, gpt_entry;
   uint8_t sectors_per_cluster, fat_count, media;
   bool clean_shutdown, no_hard_error;
+  struct fat32_mirror_state *mirrors; /* NULL for strict inspection/raw writing. */
   uint8_t disk_guid[16], partition_guid[16], partition_type[16];
   uint64_t partition_attributes;
 };
@@ -94,6 +105,7 @@ struct fat32_locator {
 struct fat32_check_report {
   uint64_t files, directories, allocated_clusters, free_clusters, bad_clusters;
   bool all_names_ascii;
+  uint32_t mirror_mismatch_sectors;
 };
 
 /* Sink pointers are borrowed until the callback returns. Returning false stops
@@ -113,6 +125,19 @@ enum fat32_status fat32_workspace_size(const struct fat32_volume *volume,
  * declared copies must be structurally valid. FSInfo hints may be stale. */
 enum fat32_status fat32_open(const struct fat32_source *source, uint32_t gpt_entry,
                             struct fat32_workspace *workspace, struct fat32_volume *volume);
+/* Native mounted views alone select FAT1 authority. FAT2 reads still must
+ * succeed, but disagreement in valid 28-bit entries records pending repair.
+ * Geometry can note mismatch before bitmap binding. Bind before any subsequent
+ * reader/CHECK/mounted call; full CHECK then populates all pending sectors.
+ * No call here writes or repairs media. Failed validation may conservatively
+ * add pending bits; only confirmed mutation repair clears them. */
+enum fat32_status fat32_open_mounted_view(const struct fat32_source *source, uint32_t gpt_entry,
+    struct fat32_mirror_state *mirrors, struct fat32_workspace *workspace,
+    struct fat32_volume *volume);
+enum fat32_status fat32_mirror_size(const struct fat32_volume *volume, size_t *bytes);
+enum fat32_status fat32_mirror_bind(const struct fat32_volume *volume,
+    uint8_t *pending, size_t bytes);
+uint32_t fat32_mirror_pending(const struct fat32_volume *volume);
 /* Paths are bounded ASCII, rooted at '/'; '.'/'..' and empty interior components
  * refuse. Components are at most 255 bytes. Unicode names are listed intact;
  * ASCII aliases can read those objects. Short-only OEM names are unsupported.

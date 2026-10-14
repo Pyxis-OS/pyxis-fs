@@ -1,7 +1,7 @@
 # Read-only FAT32 engine
 
 `include/pyxis_fs/fat32.h` is the public API. `libfat32-read.a` is freestanding:
-no allocation, disk/capability calls, libc, mutation or mount state. The caller
+no allocation, disk/capability calls, libc or media mutation. The caller
 owns a synchronous sector source and an aligned workspace; all arguments and
 sink buffers are borrowed for the call. Keep the media quiescent and its source
 alive for the copied volume's lifetime. Read-only opening supplies neither a
@@ -27,6 +27,12 @@ they are not allocation authority. Writers rebuild from the FAT and publish
 corrected hints with the next confirmed mutation. Dirty/error flags are observations,
 not integrity proofs or permission to write. Meaningful FAT values ignore their
 reserved upper nibble; mirrored values must agree.
+
+`fat32_open` retains that strict policy. Native RO/RW adapters may explicitly
+choose `fat32_open_mounted_view` and caller-owned mirror tracking, documented in
+the [mounted engine](fat32-mounted.md#admission-and-retained-objects). Such a view
+reads FAT1, reports pending FAT2 disagreement, and still refuses backing read
+failure. Generic reader calls and CHECK never repair either policy's media.
 
 LFN sequences require ordered slots, one final marker, matching checksums,
 zero type/cluster fields, valid termination/filler and valid UTF-16 surrogates.

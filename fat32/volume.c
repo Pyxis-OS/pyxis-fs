@@ -59,7 +59,22 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
       for (uint32_t i = 0; i < entries && first + i <= (uint64_t)volume->cluster_count + 1; ++i) {
         if ((fat32_get32(context->fat_bytes + 4 * i) & FAT32_MASK) !=
             (fat32_get32(context->mirror_bytes + 4 * i) & FAT32_MASK)) {
-          return FAT32_CORRUPT;
+          struct fat32_mirror_state *mirrors = volume->mirrors;
+          if (!mirrors) {
+            return FAT32_CORRUPT;
+          }
+          mirrors->mismatch_seen = true;
+          if (mirrors->bound) {
+            uint64_t different = (first + i) / (FAT32_SECTOR_BYTES / 4);
+            if (different >= mirrors->sector_count) {
+              return FAT32_CORRUPT;
+            }
+            uint8_t mask = (uint8_t)(1u << (different % 8));
+            if (!(mirrors->pending[different / 8] & mask)) {
+              mirrors->pending[different / 8] |= mask;
+              ++mirrors->pending_sectors;
+            }
+          }
         }
       }
     }
@@ -215,8 +230,9 @@ enum fat32_status fat32_revalidate(struct fat32_context *context)
   return FAT32_OK;
 }
 
-enum fat32_status fat32_open(const struct fat32_source *source, uint32_t gpt_entry,
-    struct fat32_workspace *workspace, struct fat32_volume *volume)
+static enum fat32_status open_view(const struct fat32_source *source, uint32_t gpt_entry,
+    struct fat32_mirror_state *mirrors, struct fat32_workspace *workspace,
+    struct fat32_volume *volume)
 {
   if (!volume) {
     return FAT32_INVALID;
@@ -231,6 +247,7 @@ enum fat32_status fat32_open(const struct fat32_source *source, uint32_t gpt_ent
   }
   struct fat32_volume result;
   fat32_zero(&result, sizeof(result));
+  result.mirrors = mirrors;
   fat32_copy(&result.source, source, sizeof(*source));
   status = fat32_gpt_select(context, gpt_entry,
       (uint8_t *)workspace->memory + fat32_context_size(), &result);
@@ -241,6 +258,72 @@ enum fat32_status fat32_open(const struct fat32_source *source, uint32_t gpt_ent
     fat32_copy(volume, &result, sizeof(result));
   }
   return status;
+}
+
+enum fat32_status fat32_open(const struct fat32_source *source, uint32_t gpt_entry,
+    struct fat32_workspace *workspace, struct fat32_volume *volume)
+{
+  return open_view(source, gpt_entry, NULL, workspace, volume);
+}
+
+enum fat32_status fat32_open_mounted_view(const struct fat32_source *source, uint32_t gpt_entry,
+    struct fat32_mirror_state *mirrors, struct fat32_workspace *workspace,
+    struct fat32_volume *volume)
+{
+  if (!mirrors || mirrors->pending || mirrors->pending_bytes || mirrors->sector_count ||
+      mirrors->pending_sectors || mirrors->mismatch_seen || mirrors->bound) {
+    return FAT32_INVALID;
+  }
+  return open_view(source, gpt_entry, mirrors, workspace, volume);
+}
+
+enum fat32_status fat32_mirror_size(const struct fat32_volume *volume, size_t *bytes)
+{
+  if (!volume || !volume->mirrors || !bytes ||
+      volume->cluster_count < FAT32_MIN_CLUSTERS || volume->cluster_count > FAT32_RESERVED_MIN - 2 ||
+      (volume->fat_count != 1 && volume->fat_count != 2)) {
+    return FAT32_INVALID;
+  }
+  uint64_t sectors = ((uint64_t)volume->cluster_count + 2 + 127) / 128;
+  if (sectors > volume->fat_sectors) {
+    return FAT32_CORRUPT;
+  }
+  *bytes = volume->fat_count == 2 ? (size_t)((sectors + 7) / 8) : 0;
+  return FAT32_OK;
+}
+
+enum fat32_status fat32_mirror_bind(const struct fat32_volume *volume,
+    uint8_t *pending, size_t bytes)
+{
+  size_t required;
+  enum fat32_status status = fat32_mirror_size(volume, &required);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  struct fat32_mirror_state *mirrors = volume->mirrors;
+  if (mirrors->bound || mirrors->pending || mirrors->pending_bytes ||
+      mirrors->sector_count || mirrors->pending_sectors) {
+    return FAT32_INVALID;
+  }
+  if (bytes < required || (required && !pending)) {
+    return FAT32_NO_MEMORY;
+  }
+  for (size_t i = 0; i < required; ++i) {
+    if (pending[i]) {
+      return FAT32_INVALID;
+    }
+  }
+  mirrors->pending = required ? pending : NULL;
+  mirrors->pending_bytes = required;
+  mirrors->sector_count = volume->fat_count == 2 ?
+      (uint32_t)(((uint64_t)volume->cluster_count + 2 + 127) / 128) : 0;
+  mirrors->bound = true;
+  return FAT32_OK;
+}
+
+uint32_t fat32_mirror_pending(const struct fat32_volume *volume)
+{
+  return volume && volume->mirrors ? volume->mirrors->pending_sectors : 0;
 }
 
 enum fat32_status fat32_claim_chain(struct fat32_context *context, uint32_t first,

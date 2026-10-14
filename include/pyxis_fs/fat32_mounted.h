@@ -15,6 +15,7 @@ enum fat32_mounted_phase {
   FAT32_MOUNTED_RECLAIM,
   FAT32_MOUNTED_FSINFO,
   FAT32_MOUNTED_CLEAN,
+  FAT32_MOUNTED_MIRROR,
 };
 
 struct fat32_mounted;
@@ -41,6 +42,7 @@ struct fat32_mounted_recovery {
   const uint32_t *allocated_chain;
   uint32_t allocated_clusters;
   bool uncertain;
+  const uint8_t *mirror_image; /* Retained repair buffer; failed reads may be partial. */
 };
 struct fat32_mounted {
   struct fat32_volume volume;
@@ -97,7 +99,8 @@ enum fat32_status fat32_mounted_object_reserve(struct fat32_mounted_object *obje
     uint32_t *chain, uint32_t capacity);
 /* Forget only after final caller reference drains. Attached records need no
  * media effects; detached chains are durably freed before the record unlinks.
- * A failure leaves this record and its chain retained. */
+ * A failure leaves this record and its chain retained. Pending mirror repair
+ * refuses detached reclamation with READ_ONLY; forgetting never repairs. */
 enum fat32_status fat32_mounted_object_forget(struct fat32_mounted_object *object,
     struct fat32_workspace *workspace);
 enum fat32_status fat32_mounted_locate(struct fat32_mounted_object *object,

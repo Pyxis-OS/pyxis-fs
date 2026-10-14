@@ -79,6 +79,7 @@ struct fat32_writer {
  * included). Zero budgets remain zero. Session operations are serialized. */
 enum fat32_status fat32_write_workspace_size(const struct fat32_volume *volume,
     uint32_t depth, uint32_t max_file_bytes, size_t *bytes);
+/* Only strict fat32_open volumes; mounted-view policy is not raw-write authority. */
 enum fat32_status fat32_writer_open(struct fat32_writer *writer,
     const struct fat32_volume *volume, const struct fat32_write_io *io,
     const struct fat32_workspace *workspace, uint32_t max_file_bytes,

@@ -125,6 +125,7 @@ enum fat32_status fat32_check_context_extra(struct fat32_context *context,
       }
     }
   }
+  result.mirror_mismatch_sectors = fat32_mirror_pending(volume);
   fat32_copy(report, &result, sizeof(result));
   return FAT32_OK;
 }

@@ -19,7 +19,8 @@ partition and never infers existing-file authority from raw creation receipts.
 
 ## Admission and retained objects
 
-Admit GPT/geometry through `fat32_open` under exclusive authority, then call
+Admit GPT/geometry through `fat32_open` for strict mirror validation or
+`fat32_open_mounted_view` for native FAT1 authority, then call
 `fat32_mounted_open` with a fresh zero-initialized mount record, separate allocation
 backing and full-check workspace. `fat32_mounted_allocation_size` gives the retained
 bitmap size. Admission performs one complete mounted-volume check, refusing dirty,
@@ -27,8 +28,28 @@ error, corrupt and unsupported media, and builds the exact free bitmap/count.
 FSInfo is a hint, never allocation authority. Full checks use FAT windows of up to 128
 512-byte sectors per copy, reduced to the callback's read limit, with at most
 128 KiB of additional caller-owned scratch. Local mutations keep eight-sector
-windows; mirrored valid
-entries are compared before use.
+windows; valid entries are compared before use under the selected mirror policy.
+
+The mounted-view opener borrows a fresh zero-initialized `fat32_mirror_state`.
+It validates FAT1's own geometry, allocation headers and flags; a stale or invalid
+FAT2 value never replaces FAT1. FAT2 backing reads must still succeed. Geometry
+may set `mismatch_seen` before bitmap binding. After open, obtain the byte count
+with `fat32_mirror_size`, allocate separate zeroed backing, and call
+`fat32_mirror_bind` before any reader, CHECK or mounted operation. One-FAT views
+need zero bytes and accept a NULL bitmap. The bitmap has one bit per sector
+containing valid FAT entries, including entries zero and one, independent of
+unused overprovisioned FAT sectors. The library owns its fields; every copied
+volume borrows the same state and backing for subsequent engine operations.
+
+Admission/CHECK fills pending bits while validating all FAT1 allocation and
+reachability. `fat32_mirror_pending` and successful CHECK's
+`mirror_mismatch_sectors` report the retained count. Comparison ignores reserved
+upper nibbles and entries outside the volume's valid range. A failed scan may
+conservatively add pending bits, but cannot clear them. `mismatch_seen` stays
+true after successful repair so the adapter can log at most once per mount.
+No logging, authority or callback is added here. Mounted RO views never repair;
+the standalone inspector and raw writer remain strict, and the raw writer
+rejects mounted-view volumes.
 
 The retained allocation map borrows caller storage for the mount lifetime. Confirmed
 mutation/reclamation transitions update it only after all ordered phases flush.
@@ -90,6 +111,8 @@ ordered durable reclamation before its record unlinks. Any failure leaves the
 record/chain retained. Final close is not a sync or retirement promise. The caller
 must keep a detached record alive until successful reclamation and keep every
 record alive after terminal uncertainty.
+Pending mirror repair refuses detached reclamation with `FAT32_READ_ONLY`,
+retaining the record. Forgetting and background/retirement cleanup never repair.
 
 ## Reads and mutation profile
 
@@ -157,8 +180,9 @@ Plans, operation-sized allocation candidates, distinct FAT changes and complete
 sector-and-phase images occupy caller-provided aligned workspace. No volume-sized
 free vector or conservative image of every FAT sector is reserved for a tiny write.
 Before effects the engine checks namespace, FAT space, record capacities and finite
-work/sector budgets, and reserves every backing write/flush. No reads, payload
-callbacks or allocations occur during effects. Preflight refusal leaves media and
+work/sector budgets, and reserves every backing write/flush. No payload
+callbacks or allocations occur during effects. Pending mirror repair alone uses
+bounded streamed backing reads during effects, as described below. Preflight refusal leaves media and
 object records unchanged, although detected corruption invalidates proof.
 
 `fat32_mounted_workspace_size(volume, changed_bytes, allocated_clusters,
@@ -204,6 +228,27 @@ The mounted phases are distinct from the raw writer phases:
 6. FSINFO publishes checked free counts and unknown next-free hints to declared
    copies, then performs the final flush.
 
+For a mounted view with pending mismatch, only an effective write, resize,
+create, remove or rename may enter repair after all ordinary validation and
+preparation succeed. MARK writes FAT1 alone and flushes before repair. This can
+add sector zero to pending repair because FAT2 still has the old clean bit.
+An already owned durable dirty mark needs no new MARK. The appended MIRROR
+phase reads each pending FAT1/FAT2 sector through retained context buffers,
+writes FAT1's complete sector to FAT2 only when valid entries differ, then
+flushes before DATA or any other user effect. Ordinary prepared FAT2 images
+derive from the corresponding primary image, including earlier phase changes,
+so they cannot restore stale secondary entries. Healthy volumes keep the
+ordinary MARK path and do not scan for repair on each mutation.
+
+Preflight reserves the repair bitmap traversal, bounded comparisons, reads,
+writes and flush in the operation budgets. Pending bits clear together only
+after the repair flush succeeds. A failed write/flush, or conservatively any
+post-MARK repair read failure, stops the writer and retains pending bits,
+prepared images and the streamed buffer in `recovery.mirror_image`. Failed
+reads can leave that buffer partial. `recovery.phase` is MIRROR, and the failed
+sector is absolute; a flush failure uses UINT64_MAX. Later refused calls never
+overwrite this backing. No retry or rollback is supplied.
+
 Each non-mark phase flushes even when empty. The raw writer still preserves all
 clean/error bits. Timestamps stay preserved during mounted updates/rename; new
 entries use DOS minimum dates and zero times without claiming UTC validity.
@@ -212,7 +257,7 @@ entries use DOS minimum dates and zero times without claiming UTC validity.
 
 Sync flushes the instance without clearing its owned dirty mark. Seal flushes,
 then clears/flushes the owned mark only when allocation proof is valid and no
-detached allocated chains remain.
+detached allocated chains or pending mirror repairs remain.
 Held attached objects/views and publication intervals remain caller-owned and
 intact. Detached chains or invalid proof leave the mark dirty after flush and do not
 by themselves refuse sealing/power. Unresolved mutation failure still refuses.

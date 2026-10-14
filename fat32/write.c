@@ -95,7 +95,7 @@ enum fat32_status fat32_writer_open(struct fat32_writer *writer,
     const struct fat32_workspace *workspace, uint32_t max_file_bytes,
     struct fat32_receipt *receipts, uint32_t receipt_count)
 {
-  if (!writer || !volume || !io || !io->write || !io->flush || !workspace ||
+  if (!writer || !volume || volume->mirrors || !io || !io->write || !io->flush || !workspace ||
       !workspace->memory || (uintptr_t)workspace->memory % _Alignof(max_align_t) ||
       (!receipts && receipt_count)) {
     return FAT32_INVALID;

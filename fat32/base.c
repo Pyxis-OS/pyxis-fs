@@ -142,7 +142,7 @@ enum fat32_status fat32_context_open(const struct fat32_source *source,
 enum fat32_status fat32_context_volume_prepare(const struct fat32_volume *volume,
     struct fat32_workspace *workspace, struct fat32_context **context)
 {
-  if (!volume) {
+  if (!volume || (volume->mirrors && !volume->mirrors->bound)) {
     return FAT32_INVALID;
   }
   size_t required;
@@ -183,7 +183,8 @@ enum fat32_status fat32_context_volume(const struct fat32_volume *volume,
 enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
     struct fat32_workspace *workspace, struct fat32_context **context)
 {
-  if (!volume || volume->cluster_count < FAT32_MIN_CLUSTERS ||
+  if (!volume || (volume->mirrors && !volume->mirrors->bound) ||
+      volume->cluster_count < FAT32_MIN_CLUSTERS ||
       volume->cluster_count > FAT32_RESERVED_MIN - 2) {
     return FAT32_INVALID;
   }
