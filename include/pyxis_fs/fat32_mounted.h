@@ -69,11 +69,11 @@ struct fat32_mounted {
 enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume,
     uint64_t changed_bytes, uint32_t allocated_clusters, uint32_t changed_clusters, size_t *bytes);
 /* Allocation backing is caller-owned, retained until this mount is forgotten.
- * CHECK needs a disjoint replacement map; success transfers its borrowed lifetime
- * and permits the caller to release the old map. Backing/capacity refusal before
- * validation preserves proof. Validation failure leaves proof invalid, retains
- * the old map, and permits releasing the rejected replacement. Neither CHECK nor
- * reopening may reset an uncertain stopped writer. */
+ * CHECK rebuilds in its reader scratch and copies to allocation only after
+ * full validation succeeds. The destination may be the existing retained map,
+ * but remains disjoint from workspace. Backing/capacity refusal before validation
+ * preserves proof. Validation failure leaves proof invalid and allocation bytes
+ * unchanged. Neither CHECK nor reopening may reset an uncertain stopped writer. */
 enum fat32_status fat32_mounted_allocation_size(const struct fat32_volume *volume, size_t *bytes);
 /* OPEN requires a fresh zero-initialized record; it never reopens/reset one. */
 enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,

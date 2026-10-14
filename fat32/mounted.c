@@ -780,7 +780,7 @@ enum fat32_status fat32_mounted_check(struct fat32_mounted *mounted,
   if (status != FAT32_OK) {
     return status;
   }
-  if (!allocation || allocation_bytes < required || allocation == mounted->allocation) {
+  if (!allocation || allocation_bytes < required) {
     return FAT32_NO_MEMORY;
   }
   struct fat32_context *context;
@@ -793,11 +793,12 @@ enum fat32_status fat32_mounted_check(struct fat32_mounted *mounted,
   if (status != FAT32_OK) {
     return status;
   }
-  fat32_zero(allocation, required);
-  context->free_map = allocation;
+  uint8_t *rebuilt = context->seen;
+  context->free_map = rebuilt;
   struct fat32_check_report result;
   status = full_check(mounted, context, &result);
   if (status == FAT32_OK) {
+    fat32_copy(allocation, rebuilt, required);
     mounted->allocation = allocation;
     mounted->allocation_bytes = required;
     mounted->free_count = (uint32_t)result.free_clusters;

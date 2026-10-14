@@ -106,9 +106,6 @@ enum fat32_status fat32_check_context_extra(struct fat32_context *context,
         return FAT32_CORRUPT;
       }
       ++result.free_clusters;
-      if (context->free_map) {
-        context->free_map[cluster / 8] |= 1u << (cluster % 8);
-      }
     } else if (value == FAT32_BAD) {
       if (reached) {
         return FAT32_CORRUPT;
@@ -116,6 +113,16 @@ enum fat32_status fat32_check_context_extra(struct fat32_context *context,
       ++result.bad_clusters;
     } else if (!reached || (value < FAT32_EOC && !fat32_valid_cluster(volume, value))) {
       return FAT32_CORRUPT;
+    }
+    if (context->free_map) {
+      /* Reached bits are no longer needed after this cluster's validation,
+       * so mounted CHECK can rebuild in the same scratch bitmap. */
+      uint8_t mask = 1u << (cluster % 8);
+      if (!value) {
+        context->free_map[cluster / 8] |= mask;
+      } else {
+        context->free_map[cluster / 8] &= (uint8_t)~mask;
+      }
     }
   }
   fat32_copy(report, &result, sizeof(result));

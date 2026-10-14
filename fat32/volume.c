@@ -80,14 +80,13 @@ static enum fat32_status fsinfo(struct fat32_context *context, uint32_t sector)
     return status;
   }
   const uint8_t *bytes = context->data;
-  uint32_t free_count = fat32_get32(bytes + 488), next_free = fat32_get32(bytes + 492);
   if (fat32_get32(bytes) != FAT32_FSINFO_LEAD ||
       fat32_get32(bytes + 484) != FAT32_FSINFO_STRUCTURE ||
-      fat32_get32(bytes + 508) != FAT32_FSINFO_TRAIL ||
-      (free_count != UINT32_MAX && free_count > context->volume->cluster_count) ||
-      (next_free != UINT32_MAX && !fat32_valid_cluster(context->volume, next_free))) {
+      fat32_get32(bytes + 508) != FAT32_FSINFO_TRAIL) {
     return FAT32_CORRUPT;
   }
+  /* Both hints are advisory, including out-of-range values. Writers rebuild
+   * from the FAT and publish corrected hints with a confirmed mutation. */
   return FAT32_OK;
 }
 

@@ -22,7 +22,9 @@ sectors, and one FAT or two mirrored FATs. Active-FAT/nonmirrored extensions and
 new filesystem versions are unsupported. The volume must fit its selected GPT
 extent and contain enough clusters to be FAT32; the FAT must cover them. Declared
 backup BPB and FSInfo copies are validated. Absent optional copies are accepted;
-FSInfo hints may be stale but must be in range. Dirty/error flags are observations,
+FSInfo free-count and next-free hints are advisory, including out-of-range values;
+they are not allocation authority. Writers rebuild from the FAT and publish
+corrected hints with the next confirmed mutation. Dirty/error flags are observations,
 not integrity proofs or permission to write. Meaningful FAT values ignore their
 reserved upper nibble; mirrored values must agree.
 

@@ -35,14 +35,17 @@ The caller excludes every other media writer throughout this lifetime. Opening a
 fresh record does not accept another instance's dirty mark or held chains, and
 opening an existing or stopped record never resets it.
 
-`fat32_mounted_check(mounted, replacement, replacement_bytes, workspace, report)`
+`fat32_mounted_check(mounted, allocation, allocation_bytes, workspace, report)`
 explicitly revalidates the complete namespace, allocation, held objects and detached
 roots using the mount's current owned dirty snapshot. It needs full-check workspace
-from `fat32_workspace_size` and a disjoint replacement allocation map. Success
-publishes the replacement map/count together, restores valid proof, and permits
-releasing the old map. Backing/capacity refusal before validation preserves existing
-proof; any failure after validation starts leaves proof invalid and retains the
-old map and recovery state. The rejected replacement may be released. CHECK never
+from `fat32_workspace_size` and caller-owned allocation backing disjoint from the
+workspace. CHECK converts its reachability scratch into free bits after each
+cluster's final validation, then copies the completed map only after held-object
+validation also succeeds. The destination may be the retained map; no third
+bitmap is required. Success publishes map/count and restores valid proof.
+Backing/capacity refusal before validation preserves existing proof; any failure
+after validation starts leaves proof invalid and allocation bytes unchanged.
+Recovery backing remains retained. CHECK never
 writes media, repairs damage or resets a stopped writer. Native CHECK authority,
 publication intervals and leases belong to the adapter.
 
@@ -286,7 +289,7 @@ map-free cluster returns CORRUPT; extension into an already allocated cluster
 returns STALE when its held chain disagrees; a detached directory containing an
 ordinary child returns CORRUPT and stays retained. Restoring the crafted media,
 explicitly checking, reclaiming and sealing produced fsck/mtools-clean images.
-Replacement-map and full-check-workspace capacity refusals preserve valid proof
+Allocation-destination and full-check-workspace capacity refusals preserve valid proof
 and perform no I/O.
 
 For these manual runs, sources, archives and logs remain under the ignored
