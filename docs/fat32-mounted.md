@@ -191,7 +191,7 @@ mutation is supplied. `FAT32_READ_ONLY` and `FAT32_NOT_EMPTY` distinguish these
 format-policy refusals from corruption and capacity failure.
 
 New regular files start empty. Newly created directories get real dot entries.
-Writes accept at most 4080 caller bytes and enforce FAT's 32-bit file-length
+Writes accept at most 1 MiB of caller bytes and enforce FAT's 32-bit file-length
 limit. Overwrites preserve untouched bytes. Growth zeroes old slack and all newly
 allocated clusters, including beyond-EOF gaps and new slack. Shrink zeroes the
 retained tail slack, durably publishes the smaller directory length, then cuts
@@ -262,8 +262,12 @@ bounded streamed backing reads during effects, as described below. Preflight ref
 object records unchanged, although detected corruption invalidates proof.
 
 `fat32_mounted_workspace_size(volume, changed_bytes, allocated_clusters,
-changed_clusters)` reserves local context, candidate and FAT-change arrays, mirrored
-FAT images and changed data/namespace sectors. `changed_bytes` covers content images,
+changed_clusters, max_write_sectors)` reserves local context, candidate and
+FAT-change arrays, operation-sized lookup indexes, mirrored FAT images, changed
+data/namespace sectors and a disjoint write-run buffer. `max_write_sectors` is
+nonzero and matches the mounted callback bound; the run buffer holds exactly that
+many actual logical sectors. All size arithmetic checks multiplication, alignment
+and addition before accepting the requirement. `changed_bytes` covers content images,
 including gaps, cluster slack and sector edges. An overwrite may reserve the payload
 span plus sector edge slack; growth may conservatively reserve
 `new_size - old_size + 2 * cluster_bytes + payload_bytes`; shrink needs one cluster.
@@ -292,6 +296,17 @@ retained failed workspace under its aggregate mount budget. Allocation backing s
 separate from replaceable operation workspace. Reserve and charge old/new overlap
 before replacing either; failed allocation preserves existing storage. Size helpers
 calculate requirements without allocating or imposing an independent budget.
+
+Prepared sector images are indexed by phase and LBA; FAT allocation changes are
+indexed by cluster. Open-addressed tables have more than twice as many slots as
+their respective record capacities. Every probe consumes the finite step budget;
+unfavorable collisions can refuse with LIMIT before any effect. Looking for an
+earlier image checks only the fixed set of preceding phases. Preparation no
+longer scans every earlier sector image or FAT change for each lookup. Once all
+images are complete, a budgeted heapsort reuses the sector index as a phase/LBA
+ordering array, costing O(n log n) comparisons for n prepared images. Prepared
+records and image storage stay at their original addresses. None of these indexes
+or ordering state survive a successful operation as reusable validation proof.
 
 The mounted phases are distinct from the raw writer phases:
 
@@ -325,10 +340,13 @@ reads can leave that buffer partial. `recovery.phase` is MIRROR, and the failed
 sector is absolute; a flush failure uses UINT64_MAX. Later refused calls never
 overwrite this backing. No retry or rollback is supplied.
 
-Prepared writes batch only adjacent sectors in phase order, bounded by the
-explicit nonzero `fat32_write_io.max_write_sectors` callback limit and the existing
-4 KiB disjoint context buffer. Images are packed into that buffer; retained
-prepared records are not contiguous payload. A phase flushes only if it wrote;
+Prepared writes use increasing LBA order within each phase and batch adjacent
+sectors up to the explicit nonzero `fat32_write_io.max_write_sectors` callback
+limit. Images are packed into the disjoint operation-workspace run buffer using
+the actual logical sector size; retained prepared records are not contiguous
+payload. A 64-KiB callback bound therefore permits 64-KiB writes on both 512-byte
+and 4096-byte sectors. The caller supplies and charges this buffer before effects;
+the engine allocates no memory. A phase flushes only if it wrote;
 MARK/data/FAT/directory/reclaim/FSInfo order, dirty-mark/repair barriers and explicit
 sync/seal flushes are preserved. No batching crosses phases or calls. Any batch
 failure stops immediately without splitting or retry: `recovery.failed_sector`

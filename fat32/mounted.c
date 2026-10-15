@@ -18,11 +18,14 @@ struct write_plan {
   struct fat32_mounted *mounted;
   struct fat32_context *context;
   struct fat32_prepared_sector *sectors;
-  uint8_t *images;
-  size_t count, capacity;
+  uint8_t *images, *run;
+  size_t *sector_index;
+  size_t count, capacity, sector_slots;
   uint32_t *free_clusters, candidate_capacity, allocated, searched, next_candidate;
   struct allocation_change *changes;
+  uint32_t *change_index;
   uint32_t change_capacity, change_count;
+  size_t change_slots;
   struct fat32_check_report check;
   uint8_t entry_count, entry_slots[21], entries[21][32];
   uint64_t entry_sectors[21];
@@ -93,30 +96,78 @@ static bool cluster_free(const struct fat32_mounted *mounted, uint32_t cluster)
   return (mounted->allocation[cluster / 8] & (1u << (cluster % 8))) != 0;
 }
 
-static enum fat32_status sector_image(struct write_plan *plan, uint64_t sector,
-    uint8_t phase, bool zero, uint8_t **bytes)
+static uint64_t index_hash(uint64_t key)
 {
-  struct fat32_prepared_sector *previous = NULL;
-  for (size_t i = 0; i < plan->count; ++i) {
+  key ^= key >> 30;
+  key *= UINT64_C(0xbf58476d1ce4e5b9);
+  key ^= key >> 27;
+  key *= UINT64_C(0x94d049bb133111eb);
+  return key ^ (key >> 31);
+}
+
+/* Index entries contain record index + 1; zero is an unused slot. The tables
+ * stay below half full, and every probe consumes the operation step budget. */
+static enum fat32_status sector_slot(struct write_plan *plan, uint64_t sector,
+    uint8_t phase, size_t *slot)
+{
+  size_t index = index_hash(sector ^ index_hash(phase)) % plan->sector_slots;
+  for (;;) {
     enum fat32_status status = fat32_step(plan->context);
     if (status != FAT32_OK) {
       return status;
     }
-    struct fat32_prepared_sector *record = &plan->sectors[i];
-    if (record->sector == sector) {
-      if (record->phase == phase) {
-        *bytes = record->bytes;
-        return FAT32_OK;
-      }
-      if (record->phase < phase && (!previous || record->phase > previous->phase)) {
-        previous = record;
-      }
+    size_t item = plan->sector_index[index];
+    if (!item || (plan->sectors[item - 1].sector == sector &&
+        plan->sectors[item - 1].phase == phase)) {
+      *slot = index;
+      return FAT32_OK;
     }
+    if (++index == plan->sector_slots) {
+      index = 0;
+    }
+  }
+}
+
+static enum fat32_status sector_previous(struct write_plan *plan, uint64_t sector,
+    uint8_t phase, struct fat32_prepared_sector **previous)
+{
+  *previous = NULL;
+  for (unsigned earlier = phase; earlier-- > 0;) {
+    size_t slot;
+    enum fat32_status status = sector_slot(plan, sector, (uint8_t)earlier, &slot);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    if (plan->sector_index[slot]) {
+      *previous = &plan->sectors[plan->sector_index[slot] - 1];
+      break;
+    }
+  }
+  return FAT32_OK;
+}
+
+static enum fat32_status sector_image(struct write_plan *plan, uint64_t sector,
+    uint8_t phase, bool zero, uint8_t **bytes)
+{
+  size_t slot;
+  enum fat32_status status = sector_slot(plan, sector, phase, &slot);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  if (plan->sector_index[slot]) {
+    *bytes = plan->sectors[plan->sector_index[slot] - 1].bytes;
+    return FAT32_OK;
+  }
+  struct fat32_prepared_sector *previous;
+  status = sector_previous(plan, sector, phase, &previous);
+  if (status != FAT32_OK) {
+    return status;
   }
   if (plan->count == plan->capacity) {
     return FAT32_NO_MEMORY;
   }
   struct fat32_prepared_sector *record = &plan->sectors[plan->count++];
+  plan->sector_index[slot] = plan->count;
   record->sector = sector;
   record->phase = phase;
   record->bytes = plan->images + (plan->count - 1) * plan->context->source->sector_bytes;
@@ -126,7 +177,6 @@ static enum fat32_status sector_image(struct write_plan *plan, uint64_t sector,
     fat32_copy(record->bytes, previous->bytes, plan->context->source->sector_bytes);
   } else {
     const struct fat32_volume *volume = &plan->mounted->volume;
-    enum fat32_status status;
     if (volume->mirrors && volume->fat_count == 2 &&
         sector >= volume->fat_first + volume->fat_sectors &&
         sector - volume->fat_first - volume->fat_sectors < volume->fat_sectors) {
@@ -150,14 +200,22 @@ static enum fat32_status fat_set(struct write_plan *plan, uint32_t cluster,
     uint32_t value, uint8_t phase)
 {
   struct allocation_change *change = NULL;
-  for (uint32_t i = 0; i < plan->change_count; ++i) {
+  size_t slot = index_hash(cluster) % plan->change_slots;
+  for (;;) {
     enum fat32_status status = fat32_step(plan->context);
     if (status != FAT32_OK) {
       return status;
     }
-    if (plan->changes[i].cluster == cluster) {
-      change = &plan->changes[i];
+    uint32_t item = plan->change_index[slot];
+    if (!item) {
       break;
+    }
+    if (plan->changes[item - 1].cluster == cluster) {
+      change = &plan->changes[item - 1];
+      break;
+    }
+    if (++slot == plan->change_slots) {
+      slot = 0;
     }
   }
   if (!change) {
@@ -165,6 +223,7 @@ static enum fat32_status fat_set(struct write_plan *plan, uint32_t cluster,
       return FAT32_NO_MEMORY;
     }
     change = &plan->changes[plan->change_count++];
+    plan->change_index[slot] = plan->change_count;
     *change = (struct allocation_change){.cluster = cluster};
   }
   if (phase >= change->phase) {
@@ -375,19 +434,12 @@ static enum fat32_status find_slots(struct write_plan *plan, struct fat32_mounte
   for (;;) {
     for (unsigned sector = 0; sector < volume->sectors_per_cluster; ++sector) {
       uint64_t address = cluster_sector(volume, cluster) + sector;
-      const struct fat32_prepared_sector *prepared = NULL;
-      for (size_t i = 0; i < plan->count; ++i) {
-        enum fat32_status step = fat32_step(plan->context);
-        if (step != FAT32_OK) {
-          return step;
-        }
-        const struct fat32_prepared_sector *record = &plan->sectors[i];
-        if (record->sector == address && record->phase <= FAT32_MOUNTED_DIRECTORY &&
-            (!prepared || record->phase > prepared->phase)) {
-          prepared = record;
-        }
+      struct fat32_prepared_sector *prepared;
+      enum fat32_status status = sector_previous(plan, address,
+          FAT32_MOUNTED_DIRECTORY + 1, &prepared);
+      if (status != FAT32_OK) {
+        return status;
       }
-      enum fat32_status status = FAT32_OK;
       if (prepared) {
         fat32_copy(plan->context->data, prepared->bytes, volume->source.sector_bytes);
       } else {
@@ -735,12 +787,44 @@ enum fat32_status fat32_mounted_allocation_size(const struct fat32_volume *volum
   return bytes ? status : FAT32_INVALID;
 }
 
+static enum fat32_status plan_reserve(size_t *offset, uint64_t count, size_t unit)
+{
+  size_t padding = _Alignof(max_align_t) - 1;
+  if (count > (SIZE_MAX - padding) / unit) {
+    return FAT32_LIMIT;
+  }
+  size_t bytes = aligned((size_t)count * unit);
+  if (bytes > SIZE_MAX - *offset) {
+    return FAT32_LIMIT;
+  }
+  *offset += bytes;
+  return FAT32_OK;
+}
+
+static enum fat32_status plan_fixed_size(const struct fat32_volume *volume,
+    uint32_t candidates, uint32_t changes, uint32_t max_write_sectors, size_t *bytes)
+{
+  *bytes = fat32_context_size();
+  enum fat32_status status = plan_reserve(bytes, candidates, sizeof(uint32_t));
+  if (status == FAT32_OK) {
+    status = plan_reserve(bytes, changes, sizeof(struct allocation_change));
+  }
+  if (status == FAT32_OK) {
+    status = plan_reserve(bytes, (uint64_t)changes * 2 + 1, sizeof(uint32_t));
+  }
+  if (status == FAT32_OK) {
+    status = plan_reserve(bytes, max_write_sectors, volume->source.sector_bytes);
+  }
+  return status;
+}
+
 enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume,
-    uint64_t changed_bytes, uint32_t allocated_clusters, uint32_t changed_clusters, size_t *bytes)
+    uint64_t changed_bytes, uint32_t allocated_clusters, uint32_t changed_clusters,
+    uint32_t max_write_sectors, size_t *bytes)
 {
   size_t allocation;
   enum fat32_status status = fat32_mounted_allocation_size(volume, &allocation);
-  if (status != FAT32_OK || !bytes) {
+  if (status != FAT32_OK || !bytes || !max_write_sectors) {
     return status != FAT32_OK ? status : FAT32_INVALID;
   }
   if (changed_bytes > UINT64_MAX - (volume->source.sector_bytes - 1) ||
@@ -751,27 +835,18 @@ enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume
   uint64_t capacity = sectors * volume->fat_count * 2 +
       (changed_bytes + volume->source.sector_bytes - 1) / volume->source.sector_bytes +
       (uint64_t)volume->sectors_per_cluster * 3 + 64;
-  uint64_t candidates = (uint64_t)allocated_clusters * sizeof(uint32_t);
-  uint64_t changes = (uint64_t)changed_clusters * sizeof(struct allocation_change);
-  if (candidates > SIZE_MAX - _Alignof(max_align_t) ||
-      changes > SIZE_MAX - _Alignof(max_align_t)) {
+  size_t fixed;
+  status = plan_fixed_size(volume, allocated_clusters, changed_clusters, max_write_sectors, &fixed);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  size_t overhead = sizeof(size_t) + _Alignof(max_align_t) - 1;
+  size_t per_sector = sizeof(struct fat32_prepared_sector) + volume->source.sector_bytes +
+      2 * sizeof(size_t);
+  if (fixed > SIZE_MAX - overhead || capacity > (SIZE_MAX - fixed - overhead) / per_sector) {
     return FAT32_LIMIT;
   }
-  size_t fixed = fat32_context_size();
-  if (aligned((size_t)candidates) > SIZE_MAX - fixed) {
-    return FAT32_LIMIT;
-  }
-  fixed += aligned((size_t)candidates);
-  if (aligned((size_t)changes) > SIZE_MAX - fixed) {
-    return FAT32_LIMIT;
-  }
-  fixed += aligned((size_t)changes);
-  if (capacity > (SIZE_MAX - fixed) /
-      (sizeof(struct fat32_prepared_sector) + volume->source.sector_bytes)) {
-    return FAT32_LIMIT;
-  }
-  *bytes = fixed + (size_t)capacity *
-      (sizeof(struct fat32_prepared_sector) + volume->source.sector_bytes);
+  *bytes = fixed + overhead + (size_t)capacity * per_sector;
   return FAT32_OK;
 }
 
@@ -866,22 +941,39 @@ static enum fat32_status begin_plan(struct fat32_mounted *mounted,
   if (status != FAT32_OK) {
     return status;
   }
-  size_t vector = aligned((size_t)candidates * sizeof(uint32_t));
-  size_t updates = aligned((size_t)changes * sizeof(struct allocation_change));
-  size_t offset = fat32_context_size();
-  if (vector > workspace->bytes - offset || updates > workspace->bytes - offset - vector) {
+  size_t fixed;
+  status = plan_fixed_size(&mounted->volume, candidates, changes,
+      mounted->io.max_write_sectors, &fixed);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  size_t overhead = sizeof(size_t) + _Alignof(max_align_t) - 1;
+  if (fixed > workspace->bytes || overhead > workspace->bytes - fixed) {
     return FAT32_NO_MEMORY;
   }
+  size_t offset = fat32_context_size();
   plan->free_clusters = (void *)((uint8_t *)workspace->memory + offset);
   plan->candidate_capacity = candidates;
-  offset += vector;
+  offset += aligned((size_t)candidates * sizeof(uint32_t));
   plan->changes = (void *)((uint8_t *)workspace->memory + offset);
   plan->change_capacity = changes;
-  offset += updates;
+  offset += aligned((size_t)changes * sizeof(struct allocation_change));
+  plan->change_index = (void *)((uint8_t *)workspace->memory + offset);
+  plan->change_slots = (size_t)changes * 2 + 1;
+  offset += aligned(plan->change_slots * sizeof(uint32_t));
+  plan->run = (uint8_t *)workspace->memory + offset;
+  offset = fixed;
+  size_t per_sector = sizeof(*plan->sectors) + mounted->volume.source.sector_bytes +
+      2 * sizeof(size_t);
+  plan->capacity = (workspace->bytes - fixed - overhead) / per_sector;
   plan->sectors = (void *)((uint8_t *)workspace->memory + offset);
-  plan->capacity = (workspace->bytes - offset) /
-      (sizeof(*plan->sectors) + mounted->volume.source.sector_bytes);
-  plan->images = (uint8_t *)(plan->sectors + plan->capacity);
+  offset += aligned(plan->capacity * sizeof(*plan->sectors));
+  plan->images = (uint8_t *)workspace->memory + offset;
+  offset += plan->capacity * mounted->volume.source.sector_bytes;
+  plan->sector_index = (void *)((uint8_t *)workspace->memory + offset);
+  plan->sector_slots = plan->capacity * 2 + 1;
+  fat32_zero(plan->change_index, plan->change_slots * sizeof(*plan->change_index));
+  fat32_zero(plan->sector_index, plan->sector_slots * sizeof(*plan->sector_index));
   plan->next_candidate = mounted->next_free;
   if (mutation && !mounted->dirty_owned) {
     for (unsigned copy = 0; copy < mounted->volume.fat_count; ++copy) {
@@ -971,6 +1063,69 @@ static enum fat32_status repair_mirror(struct write_plan *plan)
   return FAT32_OK;
 }
 
+static bool sector_before(const struct write_plan *plan, size_t left, size_t right)
+{
+  const struct fat32_prepared_sector *a = &plan->sectors[left];
+  const struct fat32_prepared_sector *b = &plan->sectors[right];
+  return a->phase < b->phase || (a->phase == b->phase && a->sector < b->sector);
+}
+
+static enum fat32_status order_sift(struct write_plan *plan, size_t root, size_t count)
+{
+  size_t *order = plan->sector_index;
+  while (root < count / 2) {
+    size_t child = root * 2 + 1;
+    enum fat32_status status = fat32_step(plan->context);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    if (child + 1 < count && sector_before(plan, order[child], order[child + 1])) {
+      ++child;
+    }
+    status = fat32_step(plan->context);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    if (!sector_before(plan, order[root], order[child])) {
+      break;
+    }
+    size_t swap = order[root];
+    order[root] = order[child];
+    order[child] = swap;
+    root = child;
+  }
+  return FAT32_OK;
+}
+
+static enum fat32_status order_plan(struct write_plan *plan)
+{
+  /* Preparation is complete. Reuse the hash table as an ordered record index;
+   * keep every prepared record and image at its original recovery address. */
+  for (size_t i = 0; i < plan->count; ++i) {
+    enum fat32_status status = fat32_step(plan->context);
+    if (status != FAT32_OK) {
+      return status;
+    }
+    plan->sector_index[i] = i;
+  }
+  for (size_t root = plan->count / 2; root-- > 0;) {
+    enum fat32_status status = order_sift(plan, root, plan->count);
+    if (status != FAT32_OK) {
+      return status;
+    }
+  }
+  for (size_t count = plan->count; count > 1; --count) {
+    size_t swap = plan->sector_index[0];
+    plan->sector_index[0] = plan->sector_index[count - 1];
+    plan->sector_index[count - 1] = swap;
+    enum fat32_status status = order_sift(plan, 0, count - 1);
+    if (status != FAT32_OK) {
+      return status;
+    }
+  }
+  return FAT32_OK;
+}
+
 static enum fat32_status run_plan(struct write_plan *plan,
     struct fat32_mounted_object *source, struct fat32_mounted_object *victim,
     const char *target, size_t target_bytes, bool clean)
@@ -983,6 +1138,10 @@ static enum fat32_status run_plan(struct write_plan *plan,
   }
   if (repairs && !plan->allow_mirror_repair) {
     return FAT32_READ_ONLY;
+  }
+  enum fat32_status status = order_plan(plan);
+  if (status != FAT32_OK) {
+    return status;
   }
   bool repair = repairs != 0;
   if (repair && !mounted->dirty_owned && !(mirrors->pending[0] & 1u)) {
@@ -1021,7 +1180,7 @@ static enum fat32_status run_plan(struct write_plan *plan,
     mounted->recovery.phase = phase;
     bool wrote = false;
     for (size_t i = 0; i < plan->count; ++i) {
-      struct fat32_prepared_sector *record = &plan->sectors[i];
+      struct fat32_prepared_sector *record = &plan->sectors[plan->sector_index[i]];
       if (record->phase != phase) {
         continue;
       }
@@ -1030,22 +1189,18 @@ static enum fat32_status run_plan(struct write_plan *plan,
         continue;
       }
       uint32_t count = 1;
-      uint32_t limit = sizeof(plan->context->data) / plan->context->source->sector_bytes;
-      if (limit > mounted->io.max_write_sectors) {
-        limit = mounted->io.max_write_sectors;
-      }
-      plan->context->data_cached = false;
-      fat32_copy(plan->context->data, record->bytes, plan->context->source->sector_bytes);
+      uint32_t limit = mounted->io.max_write_sectors;
+      fat32_copy(plan->run, record->bytes, plan->context->source->sector_bytes);
       for (size_t next = i + 1; next < plan->count && count < limit; ++next) {
-        const struct fat32_prepared_sector *following = &plan->sectors[next];
+        const struct fat32_prepared_sector *following = &plan->sectors[plan->sector_index[next]];
         if (following->phase != phase) {
-          continue;
+          break;
         }
         if (following->sector != record->sector + count ||
             (repair && phase == FAT32_MOUNTED_MARK)) {
           break;
         }
-        fat32_copy(plan->context->data + (size_t)count * plan->context->source->sector_bytes,
+        fat32_copy(plan->run + (size_t)count * plan->context->source->sector_bytes,
             following->bytes, plan->context->source->sector_bytes);
         ++count;
         i = next;
@@ -1054,7 +1209,7 @@ static enum fat32_status run_plan(struct write_plan *plan,
       mounted->recovery.failed_sector = mounted->volume.partition_first + record->sector;
       mounted->recovery.failed_sector_count = count;
       if (!mounted->io.write(mounted->io.context, mounted->recovery.failed_sector,
-          count, plan->context->data)) {
+          count, plan->run)) {
         return uncertain(mounted);
       }
     }
@@ -1078,7 +1233,7 @@ static enum fat32_status run_plan(struct write_plan *plan,
         mirrors->pending[0] |= 1u;
         ++mirrors->pending_sectors;
       }
-      enum fat32_status status = repair_mirror(plan);
+      status = repair_mirror(plan);
       if (status != FAT32_OK) {
         return status;
       }

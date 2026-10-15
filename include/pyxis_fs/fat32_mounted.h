@@ -4,7 +4,7 @@
 
 #include <pyxis_fs/fat32_write.h>
 
-#define FAT32_MOUNTED_PAYLOAD_MAX 4080u
+#define FAT32_MOUNTED_PAYLOAD_MAX (1024u * 1024u)
 
 enum fat32_mounted_phase {
   FAT32_MOUNTED_SNAPSHOT,
@@ -69,10 +69,13 @@ struct fat32_mounted {
  * are finite. Allocation backing remains separate from replaceable workspace.
  * Allocation of both workspace and sufficient object chain capacity must
  * precede the operation/dirty mark.
+ * max_write_sectors is nonzero and matches the mounted I/O callback bound;
+ * workspace includes a disjoint run buffer of that many logical sectors.
  * Namespace insertion can grow its parent by at most two clusters; reserve
  * parent.chain_count + 2 before create/rename. */
 enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume,
-    uint64_t changed_bytes, uint32_t allocated_clusters, uint32_t changed_clusters, size_t *bytes);
+    uint64_t changed_bytes, uint32_t allocated_clusters, uint32_t changed_clusters,
+    uint32_t max_write_sectors, size_t *bytes);
 /* Allocation backing is caller-owned, retained until this mount is forgotten.
  * CHECK rebuilds in its reader scratch and copies to allocation only after
  * full validation succeeds. The destination may be the existing retained map,
