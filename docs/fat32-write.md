@@ -110,6 +110,20 @@ interface. It uses `pread`/`pwrite` and `fsync`, preserving system error text fo
 backing failures. The Linux host filesystem remains responsible for its own
 physical durability guarantees.
 
+Add `--sector-size 4096` for a 4Kn image; `--sector-size 512` is the default.
+For example:
+
+```sh
+build/fat32-write --image /tmp/scratch-4kn-gpt.raw --gpt-partition 1 --sector-size 4096
+```
+
+The image length must be nonzero and aligned to its selected logical sector
+size, and its FAT BPB must agree. The tool never guesses GPT sector geometry
+from image contents. Callback requests remain bounded to 64 KiB in bytes;
+sector counts and byte offsets use the selected 512-byte or 4096-byte geometry.
+Receipt chain capacity uses the actual bytes per cluster and the existing
+1 MiB file bound.
+
 Commands are read from stdin in one session:
 
 ```text
@@ -128,7 +142,7 @@ Successful creation prints its receipt ID; append/replacement/extend use that ID
 never a name. Inline payload may contain spaces and be empty. The delimiter is
 ` = `; binary payload and delimiter-containing paths need a separate consumer.
 The host limits are 32 receipts, 1 MiB per file, 8191 bytes per command line,
-depth 64, 32 MiB workspace, 64 million steps and 4 million backing sectors per
+depth 64, 32 MiB workspace, 64 million steps and 4 million backing logical sectors per
 operation. An oversized line ends the session before executing a truncated
 command. Any refused command makes the process exit nonzero; safe later commands
 may continue. Uncertain effects print recovery/held chains and end the session

@@ -14,6 +14,7 @@ build/fat32-inspect --image /tmp/scratch-gpt.raw --gpt-partition 1 list /
 build/fat32-inspect --image /tmp/scratch-gpt.raw --gpt-partition 1 list /EFI/BOOT
 build/fat32-inspect --image /tmp/scratch-gpt.raw --gpt-partition 1 read /EFI/BOOT/BOOTX64.EFI \
   > /tmp/BOOTX64.EFI
+build/fat32-inspect --image /tmp/scratch-4kn-gpt.raw --sector-size 4096 --gpt-partition 1 info
 ```
 
 Options precede the command. `info` prints the selected geometry and FAT
@@ -35,8 +36,13 @@ status before using redirected data. The shell creates or truncates a redirected
 before the tool runs; choose an independent destination that cannot refer to the
 source disk image.
 
-The source must be a regular file or block device. Regular images have nonzero
-512-byte-aligned lengths; Linux devices must report 512-byte logical sectors.
+The source must be a regular file or block device. `--sector-size 512|4096`
+selects a regular image's logical sector size, defaulting to 512 bytes. Set 4096
+explicitly for a 4Kn image; GPT offsets are never guessed from image contents.
+Linux block devices use their `BLKSSZGET` logical sector size, which must be 512
+or 4096 bytes. A conflicting explicit `--sector-size` refuses the device; an
+omitted option does not override its reported geometry. Source length must be
+nonzero and aligned to that logical sector size, and the FAT BPB must match it.
 Source length must fit signed 64-bit host file offsets. Reads are checked against
 that source length and limited to 64 KiB per host request. Short reads are completed
 and interrupted host reads resume the same unpublished request; a source error
@@ -53,7 +59,8 @@ is additional. The default is 32 MiB. Unsuffixed sizes are bytes; KiB/MiB/GiB us
 binary multipliers and KB/MB/GB use decimal multipliers.
 
 `--step-budget N` and `--sector-budget N` bound examined metadata/work and backing
-sectors for each reader call, including open. They default to 64,000,000 steps
+logical sectors of the selected source for each reader call, including open.
+They default to 64,000,000 steps
 and 4,000,000 sectors. `--depth N` sets the operation's maximum directory depth,
 defaulting to 64, and participates in the workspace sizing request. These are
 host configuration defaults, not filesystem format limits. All values must be

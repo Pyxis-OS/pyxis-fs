@@ -21,22 +21,25 @@
 #define HOST_MEMORY_BYTES (32u * 1024u * 1024u)
 #define HOST_STEPS UINT64_C(64000000)
 #define HOST_SECTORS UINT64_C(4000000)
+#define HOST_IO_MAX_BYTES 65536u
 
 struct host_source {
   int fd, last_error;
   uint64_t sectors;
+  uint32_t sector_bytes;
 };
 
 static bool source_read(void *context, uint64_t first, uint32_t count, void *bytes)
 {
   struct host_source *source = context;
-  if (!count || first >= source->sectors || count > source->sectors - first) {
+  if (!count || count > HOST_IO_MAX_BYTES / source->sector_bytes ||
+      first >= source->sectors || count > source->sectors - first) {
     source->last_error = EINVAL;
     return false;
   }
-  size_t remaining = (size_t)count * FAT32_SECTOR_BYTES;
+  size_t remaining = (size_t)count * source->sector_bytes;
   uint8_t *cursor = bytes;
-  off_t offset = (off_t)(first * FAT32_SECTOR_BYTES);
+  off_t offset = (off_t)(first * source->sector_bytes);
   while (remaining) {
     ssize_t got = pread(source->fd, cursor, remaining, offset);
     if (got < 0 && errno == EINTR) {
@@ -56,13 +59,14 @@ static bool source_read(void *context, uint64_t first, uint32_t count, void *byt
 static bool source_write(void *context, uint64_t first, uint32_t count, const void *bytes)
 {
   struct host_source *source = context;
-  if (!count || first >= source->sectors || count > source->sectors - first) {
+  if (!count || count > HOST_IO_MAX_BYTES / source->sector_bytes ||
+      first >= source->sectors || count > source->sectors - first) {
     source->last_error = EINVAL;
     return false;
   }
-  size_t remaining = (size_t)count * FAT32_SECTOR_BYTES;
+  size_t remaining = (size_t)count * source->sector_bytes;
   const uint8_t *cursor = bytes;
-  off_t offset = (off_t)(first * FAT32_SECTOR_BYTES);
+  off_t offset = (off_t)(first * source->sector_bytes);
   while (remaining) {
     ssize_t got = pwrite(source->fd, cursor, remaining, offset);
     if (got < 0 && errno == EINTR) {
@@ -222,10 +226,27 @@ static enum fat32_status command(struct fat32_writer *writer, char *line)
 
 int main(int argc, char **argv)
 {
-  uint32_t partition;
-  if (argc != 5 || strcmp(argv[1], "--image") || strcmp(argv[3], "--gpt-partition") ||
-      !number(argv[4], &partition) || !partition) {
+  const char *image = NULL;
+  uint32_t partition = 0, sector_bytes = 512;
+  bool valid = true, sector_size_given = false;
+  for (int i = 1; valid && i < argc; i += 2) {
+    if (i + 1 == argc) {
+      valid = false;
+    } else if (!strcmp(argv[i], "--image") && !image) {
+      image = argv[i + 1];
+    } else if (!strcmp(argv[i], "--gpt-partition") && !partition) {
+      valid = number(argv[i + 1], &partition) && partition;
+    } else if (!strcmp(argv[i], "--sector-size") && !sector_size_given) {
+      sector_size_given = true;
+      valid = number(argv[i + 1], &sector_bytes) &&
+          (sector_bytes == FAT32_SECTOR_MIN_BYTES || sector_bytes == FAT32_SECTOR_MAX_BYTES);
+    } else {
+      valid = false;
+    }
+  }
+  if (!valid || !image || !partition) {
     fputs("usage: fat32-write --image DISPOSABLE-REGULAR-IMAGE --gpt-partition N\n"
+        "       [--sector-size 512|4096]\n"
         "stdin session commands: check, list /path, read /path, mkdir /path,\n"
         "create /path = payload, append ID = payload, replace ID = payload,\n"
         "extend ID LENGTH, quit. Paths/payload may contain spaces.\n"
@@ -233,7 +254,8 @@ int main(int argc, char **argv)
         stderr);
     return 2;
   }
-  struct host_source source = { .fd = open(argv[2], O_RDWR | O_CLOEXEC | O_NOFOLLOW) };
+  struct host_source source = { .fd = open(image, O_RDWR | O_CLOEXEC | O_NOFOLLOW),
+      .sector_bytes = sector_bytes };
   if (source.fd < 0) {
     fprintf(stderr, "fat32-write: open: %s\n", strerror(errno));
     return 1;
@@ -243,15 +265,15 @@ int main(int argc, char **argv)
   void *memory = NULL;
   uint32_t *chains = NULL;
   if (fstat(source.fd, &info) || !S_ISREG(info.st_mode) || info.st_size <= 0 ||
-      info.st_size % FAT32_SECTOR_BYTES || flock(source.fd, LOCK_EX | LOCK_NB)) {
-    fputs("fat32-write: requires an exclusively advisory-locked, regular 512-byte image\n",
+      info.st_size % source.sector_bytes || flock(source.fd, LOCK_EX | LOCK_NB)) {
+    fputs("fat32-write: requires an exclusively advisory-locked regular image aligned to its logical sectors\n",
         stderr);
     goto finish;
   }
-  source.sectors = (uint64_t)info.st_size / FAT32_SECTOR_BYTES;
+  source.sectors = (uint64_t)info.st_size / source.sector_bytes;
   struct fat32_source input = {
     .read = source_read, .context = &source, .sectors = source.sectors,
-    .sector_bytes = FAT32_SECTOR_BYTES, .max_read_sectors = 128,
+    .sector_bytes = source.sector_bytes, .max_read_sectors = HOST_IO_MAX_BYTES / source.sector_bytes,
   };
   struct fat32_workspace workspace = {
     .bytes = fat32_open_workspace_size(), .step_limit = HOST_STEPS,
@@ -284,8 +306,8 @@ int main(int argc, char **argv)
   }
   workspace.memory = memory;
   workspace.bytes = bytes;
-  uint32_t capacity = (HOST_FILE_BYTES + volume.sectors_per_cluster * 512 - 1) /
-      (volume.sectors_per_cluster * 512);
+  uint32_t cluster_bytes = volume.sectors_per_cluster * volume.source.sector_bytes;
+  uint32_t capacity = (HOST_FILE_BYTES + cluster_bytes - 1) / cluster_bytes;
   chains = calloc((size_t)HOST_RECEIPTS * capacity, sizeof(*chains));
   if (!chains) {
     goto finish;

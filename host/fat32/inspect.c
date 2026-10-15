@@ -22,19 +22,20 @@ static const size_t default_memory_budget = 32u * 1024u * 1024u;
 static const uint64_t default_step_budget = 64000000;
 static const uint64_t default_sector_budget = 4000000;
 static const uint32_t default_depth = 64;
-static const uint32_t host_max_read_sectors = 128;
+static const uint32_t host_max_read_bytes = 65536;
 
 struct inspect_options {
   const char *image, *command, *path;
   size_t memory_budget;
   uint64_t step_budget, sector_budget;
-  uint32_t gpt_partition, depth;
+  uint32_t gpt_partition, depth, sector_bytes;
+  bool sector_size_given;
 };
 
 struct inspect_source {
   int fd, error;
   uint64_t bytes, failed_sector;
-  uint32_t failed_count;
+  uint32_t failed_count, sector_bytes;
   bool failed;
 };
 
@@ -42,6 +43,7 @@ static int
 usage(void)
 {
   fputs("usage: fat32-inspect --image PATH --gpt-partition N\n"
+        "       [--sector-size 512|4096]\n"
         "       [--memory-budget SIZE --step-budget N --sector-budget N --depth N]\n"
         "       info|check|list /PATH|read /PATH\n"
         "SIZE is bytes or a value suffixed KiB, MiB, GiB, KB, MB or GB.\n", stderr);
@@ -96,6 +98,7 @@ parse_options(int argc, char **argv, struct inspect_options *options)
     .step_budget = default_step_budget,
     .sector_budget = default_sector_budget,
     .depth = default_depth,
+    .sector_bytes = 512,
   };
   int i = 1;
   for (; i < argc && !strncmp(argv[i], "--", 2); i++) {
@@ -119,6 +122,13 @@ parse_options(int argc, char **argv, struct inspect_options *options)
         return false;
       }
       options->gpt_partition = (uint32_t)value;
+    } else if (!strcmp(option, "--sector-size")) {
+      if (options->sector_size_given ||
+          (value != FAT32_SECTOR_MIN_BYTES && value != FAT32_SECTOR_MAX_BYTES)) {
+        return false;
+      }
+      options->sector_size_given = true;
+      options->sector_bytes = (uint32_t)value;
     } else if (!strcmp(option, "--memory-budget")) {
       if (value > SIZE_MAX) {
         return false;
@@ -153,9 +163,10 @@ parse_options(int argc, char **argv, struct inspect_options *options)
 }
 
 static bool
-open_source(const char *path, struct inspect_source *source)
+open_source(const struct inspect_options *options, struct inspect_source *source)
 {
-  *source = (struct inspect_source) { .fd = -1 };
+  const char *path = options->image;
+  *source = (struct inspect_source) { .fd = -1, .sector_bytes = options->sector_bytes };
   source->fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   if (source->fd < 0) {
     fprintf(stderr, "fat32-inspect: open %s: %s\n", path, strerror(errno));
@@ -180,10 +191,15 @@ open_source(const char *path, struct inspect_source *source)
       fprintf(stderr, "fat32-inspect: block geometry %s: %s\n", path, strerror(errno));
       return false;
     }
-    if (sector_bytes != FAT32_SECTOR_BYTES) {
+    if (sector_bytes != FAT32_SECTOR_MIN_BYTES && sector_bytes != FAT32_SECTOR_MAX_BYTES) {
       fputs("fat32-inspect: unsupported device logical sector size\n", stderr);
       return false;
     }
+    if (options->sector_size_given && options->sector_bytes != (uint32_t)sector_bytes) {
+      fputs("fat32-inspect: explicit sector size conflicts with device logical sectors\n", stderr);
+      return false;
+    }
+    source->sector_bytes = (uint32_t)sector_bytes;
 #else
     fputs("fat32-inspect: block devices require Linux geometry ioctls\n", stderr);
     return false;
@@ -192,8 +208,8 @@ open_source(const char *path, struct inspect_source *source)
     fputs("fat32-inspect: source must be a regular image or block device\n", stderr);
     return false;
   }
-  if (!source->bytes || source->bytes % FAT32_SECTOR_BYTES || source->bytes > INT64_MAX) {
-    fputs("fat32-inspect: source size must be nonzero, 512-byte aligned and fit host offsets\n",
+  if (!source->bytes || source->bytes % source->sector_bytes || source->bytes > INT64_MAX) {
+    fputs("fat32-inspect: source size must be nonzero, logical-sector aligned and fit host offsets\n",
           stderr);
     return false;
   }
@@ -204,14 +220,14 @@ static bool
 read_sectors(void *context, uint64_t first_sector, uint32_t sector_count, void *bytes)
 {
   struct inspect_source *source = context;
-  uint64_t sectors = source->bytes / FAT32_SECTOR_BYTES;
-  if (!sector_count || sector_count > host_max_read_sectors || first_sector > sectors ||
+  uint64_t sectors = source->bytes / source->sector_bytes;
+  if (!sector_count || sector_count > host_max_read_bytes / source->sector_bytes || first_sector > sectors ||
       sector_count > sectors - first_sector) {
     source->error = EINVAL;
     goto fail;
   }
-  size_t remaining = (size_t)sector_count * FAT32_SECTOR_BYTES;
-  uint64_t offset = first_sector * FAT32_SECTOR_BYTES;
+  size_t remaining = (size_t)sector_count * source->sector_bytes;
+  uint64_t offset = first_sector * source->sector_bytes;
   unsigned char *cursor = bytes;
   while (remaining) {
     ssize_t got = pread(source->fd, cursor, remaining, (off_t)offset);
@@ -316,7 +332,7 @@ write_info(const struct fat32_volume *volume)
                 "\nfat_sectors=%" PRIu32 "\nclusters=%" PRIu32
                 "\nroot_cluster=%" PRIu32 "\nclean_shutdown=%s\nno_hard_error=%s\n",
                 volume->gpt_entry, volume->partition_first, volume->partition_sectors,
-                volume->volume_sectors, FAT32_SECTOR_BYTES, volume->sectors_per_cluster,
+                volume->volume_sectors, volume->source.sector_bytes, volume->sectors_per_cluster,
                 volume->fat_count, volume->fat_sectors, volume->cluster_count,
                 volume->root_cluster, volume->clean_shutdown ? "yes" : "no",
                 volume->no_hard_error ? "yes" : "no") >= 0;
@@ -344,7 +360,7 @@ main(int argc, char **argv)
     return 1;
   }
   struct inspect_source source;
-  if (!open_source(options.image, &source)) {
+  if (!open_source(&options, &source)) {
     if (source.fd >= 0) {
       close(source.fd);
     }
@@ -352,8 +368,9 @@ main(int argc, char **argv)
   }
   struct fat32_source input = {
     .read = read_sectors, .context = &source,
-    .sectors = source.bytes / FAT32_SECTOR_BYTES,
-    .sector_bytes = FAT32_SECTOR_BYTES, .max_read_sectors = host_max_read_sectors,
+    .sectors = source.bytes / source.sector_bytes,
+    .sector_bytes = source.sector_bytes,
+    .max_read_sectors = host_max_read_bytes / source.sector_bytes,
   };
   struct fat32_workspace workspace = {
     .bytes = fat32_open_workspace_size(),
