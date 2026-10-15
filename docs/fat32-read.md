@@ -17,8 +17,8 @@ nonoverlapping extents and source bounds. Bare FAT, legacy/hybrid MBR and degrad
 GPT recovery are unsupported. The bounded GPT profile accepts at most 256 entries
 and 64 KiB of array bytes, with power-of-two entry strides of at least 128 bytes.
 
-FAT32 has 512-byte logical sectors, power-of-two clusters from 1 through 128
-sectors, and one FAT or two mirrored FATs. Active-FAT/nonmirrored extensions and
+FAT32 has 512- or 4096-byte logical sectors matching the source device,
+power-of-two clusters from 1 through 128 sectors, and one FAT or two mirrored FATs. Active-FAT/nonmirrored extensions and
 new filesystem versions are unsupported. The volume must fit its selected GPT
 extent and contain enough clusters to be FAT32; the FAT must cover them. Declared
 backup BPB and FSInfo copies are validated. Absent optional copies are accepted;

@@ -25,10 +25,10 @@ Admit GPT/geometry through `fat32_open` for strict mirror validation or
 backing and full-check workspace. `fat32_mounted_allocation_size` gives the retained
 bitmap size. Admission performs one complete mounted-volume check, refusing dirty,
 error, corrupt and unsupported media, and builds the exact free bitmap/count.
-FSInfo is a hint, never allocation authority. Full checks use FAT windows of up to 128
-512-byte sectors per copy, reduced to the callback's read limit, with at most
-128 KiB of additional caller-owned scratch. Local mutations keep eight-sector
-windows; valid entries are compared before use under the selected mirror policy.
+FSInfo is a hint, never allocation authority. Full checks use FAT windows of up to 64 KiB per copy (128 sectors at 512 bytes
+or 16 at 4096), reduced to the callback's read limit, with at most 128 KiB of
+additional caller-owned scratch. Local mutations keep 4 KiB windows (eight
+512-byte sectors or one 4096-byte sector); valid entries are compared before use under the selected mirror policy.
 
 The mounted-view opener borrows a fresh zero-initialized `fat32_mirror_state`.
 It validates FAT1's own geometry, allocation headers and flags; a stale or invalid
@@ -173,8 +173,8 @@ repair, retry, lease extension or reset is introduced.
 
 Cold regular-file validation borrows full-check FAT windows when the existing
 workspace contains the complete full-check allocation. Windows are bounded by
-128 sectors per copy and the source callback limit; smaller workspaces retain
-local windows. Directories and mutations retain their eight-sector windows. No
+64 KiB per copy and the source callback limit; smaller workspaces retain
+local windows. Directories and mutations retain their 4-KiB windows. No
 allocation, workspace growth or ownership bitmap clearing is added. Range reads
 batch physically consecutive payload sectors, including consecutive clusters,
 through the existing 4-KiB data buffer. Partition bounds, callback limits, EOF
@@ -431,3 +431,18 @@ fault hook, self-test or CI workflow was added. CI establishes builds for its
 submitted revision only. The native adapter, CHECK authority/helper, publisher
 lease and interactive QEMU qualification are parent integration work; no native
 ESP writes or hardware power-loss guarantees are claimed here.
+
+## Logical-sector geometry
+
+The shared profile accepts matching 512- or 4096-byte device/FAT sectors. GPT
+arrays remain bounded to 64 KiB and 256 entries; directory slots and FAT entries
+are counted using the admitted sector size. Boot and FSInfo signature fields
+keep their format-defined offsets within the first 512 bytes. Other sector
+sizes are unsupported.
+
+Prepared-sector descriptors borrow actual-sector-sized images in the caller's
+operation workspace. The size helpers charge both descriptor and image storage,
+with checked arithmetic. On 64-bit hosts this is 536 bytes per prepared 512-byte
+image (formerly 528), or 4120 bytes for 4096-byte images; the ordinary windows
+remain 4 KiB. Failure recovery retains those same workspace bytes and pointers
+until the caller has recorded the outcome.
