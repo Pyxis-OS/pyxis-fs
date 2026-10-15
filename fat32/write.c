@@ -11,6 +11,7 @@ struct write_plan {
   struct fat32_writer *writer;
   struct fat32_context *context;
   struct fat32_prepared_sector *sectors;
+  uint8_t *images;
   size_t count, capacity;
   uint32_t *free_clusters, free_count, allocated;
   struct fat32_check_report check;
@@ -43,7 +44,7 @@ static uint64_t cluster_sector(const struct fat32_volume *volume, uint32_t clust
 
 static uint32_t clusters_for(const struct fat32_volume *volume, uint32_t bytes)
 {
-  uint32_t size = (uint32_t)volume->sectors_per_cluster * FAT32_SECTOR_BYTES;
+  uint32_t size = (uint32_t)volume->sectors_per_cluster * volume->source.sector_bytes;
   return (uint32_t)(((uint64_t)bytes + size - 1) / size);
 }
 
@@ -58,7 +59,7 @@ static enum fat32_status plan_capacity(const struct fat32_volume *volume,
   uint64_t count = (uint64_t)volume->fat_sectors * volume->fat_count * 2 +
       (uint64_t)clusters_for(volume, max_file_bytes) * volume->sectors_per_cluster +
       (uint64_t)volume->sectors_per_cluster * 3 + 32;
-  if (count > SIZE_MAX / sizeof(struct fat32_prepared_sector)) {
+  if (count > SIZE_MAX / (sizeof(struct fat32_prepared_sector) + volume->source.sector_bytes)) {
     return FAT32_LIMIT;
   }
   *capacity = (size_t)count;
@@ -81,12 +82,20 @@ enum fat32_status fat32_write_workspace_size(const struct fat32_volume *volume,
     return status;
   }
   uint64_t allocation = ((uint64_t)volume->cluster_count + 2) * sizeof(uint32_t);
-  uint64_t total = (uint64_t)aligned(reader) + aligned((size_t)allocation) +
-      (uint64_t)capacity * sizeof(struct fat32_prepared_sector);
-  if (allocation > SIZE_MAX || total > SIZE_MAX) {
+  size_t padding = _Alignof(max_align_t) - 1;
+  if (reader > SIZE_MAX - padding || allocation > SIZE_MAX - padding) {
     return FAT32_LIMIT;
   }
-  *bytes = (size_t)total;
+  size_t fixed = aligned(reader);
+  if (aligned((size_t)allocation) > SIZE_MAX - fixed) {
+    return FAT32_LIMIT;
+  }
+  fixed += aligned((size_t)allocation);
+  size_t image_bytes = sizeof(struct fat32_prepared_sector) + volume->source.sector_bytes;
+  if (capacity > (SIZE_MAX - fixed) / image_bytes) {
+    return FAT32_LIMIT;
+  }
+  *bytes = fixed + capacity * image_bytes;
   return FAT32_OK;
 }
 
@@ -165,6 +174,7 @@ static enum fat32_status begin_plan(struct fat32_writer *writer, struct write_pl
   plan->free_clusters = (void *)((uint8_t *)writer->workspace.memory + aligned(reader));
   plan->sectors = (void *)((uint8_t *)plan->free_clusters +
       aligned(((size_t)writer->volume.cluster_count + 2) * sizeof(uint32_t)));
+  plan->images = (uint8_t *)(plan->sectors + plan->capacity);
   for (uint32_t cluster = 2; cluster - 2 < writer->volume.cluster_count; ++cluster) {
     uint32_t value;
     status = fat32_fat_entry(plan->context, cluster, &value);
@@ -205,10 +215,11 @@ static enum fat32_status sector_image(struct write_plan *plan, uint64_t sector,
   struct fat32_prepared_sector *record = &plan->sectors[plan->count++];
   record->sector = sector;
   record->phase = phase;
+  record->bytes = plan->images + (plan->count - 1) * plan->context->source->sector_bytes;
   if (zero) {
-    fat32_zero(record->bytes, sizeof(record->bytes));
+    fat32_zero(record->bytes, plan->context->source->sector_bytes);
   } else if (previous) {
-    fat32_copy(record->bytes, previous->bytes, sizeof(record->bytes));
+    fat32_copy(record->bytes, previous->bytes, plan->context->source->sector_bytes);
   } else {
     enum fat32_status status = fat32_partition_read(plan->context, sector, 1, record->bytes);
     if (status != FAT32_OK) {
@@ -223,14 +234,15 @@ static enum fat32_status fat_set(struct write_plan *plan, uint32_t cluster,
     uint32_t value, uint8_t phase)
 {
   const struct fat32_volume *volume = &plan->writer->volume;
+  uint32_t entries_per_sector = volume->source.sector_bytes / 4;
   for (unsigned copy = 0; copy < volume->fat_count; ++copy) {
     uint8_t *bytes;
     enum fat32_status status = sector_image(plan, volume->fat_first +
-        (uint64_t)copy * volume->fat_sectors + cluster / 128, phase, false, &bytes);
+        (uint64_t)copy * volume->fat_sectors + cluster / entries_per_sector, phase, false, &bytes);
     if (status != FAT32_OK) {
       return status;
     }
-    uint8_t *entry = bytes + (cluster % 128) * 4;
+    uint8_t *entry = bytes + (cluster % entries_per_sector) * 4;
     put32(entry, (fat32_get32(entry) & ~FAT32_MASK) | value);
   }
   return FAT32_OK;
@@ -275,7 +287,7 @@ static enum fat32_status content(struct write_plan *plan, const uint32_t *old_ch
     uint32_t offset, uint32_t length, fat32_payload_fn payload, void *context)
 {
   const struct fat32_volume *volume = &plan->writer->volume;
-  uint32_t cluster_bytes = (uint32_t)volume->sectors_per_cluster * FAT32_SECTOR_BYTES;
+  uint32_t cluster_bytes = (uint32_t)volume->sectors_per_cluster * volume->source.sector_bytes;
   uint32_t processed = 0;
   while (processed < length) {
     uint64_t position = (uint64_t)offset + processed;
@@ -285,9 +297,9 @@ static enum fat32_status content(struct write_plan *plan, const uint32_t *old_ch
     }
     uint32_t cluster = index < old_count ? old_chain[index] : new_chain[index - old_count];
     uint64_t sector = cluster_sector(volume, cluster) +
-        position % cluster_bytes / FAT32_SECTOR_BYTES;
-    uint32_t within = (uint32_t)(position % FAT32_SECTOR_BYTES);
-    uint32_t amount = FAT32_SECTOR_BYTES - within;
+        position % cluster_bytes / volume->source.sector_bytes;
+    uint32_t within = (uint32_t)(position % volume->source.sector_bytes);
+    uint32_t amount = volume->source.sector_bytes - within;
     if (amount > length - processed) {
       amount = length - processed;
     }
@@ -493,6 +505,8 @@ static enum fat32_status choose_alias(struct write_plan *plan, uint32_t director
 static enum fat32_status find_slots(struct write_plan *plan, uint32_t directory)
 {
   const struct fat32_volume *volume = &plan->writer->volume;
+  uint32_t slots_per_sector = volume->source.sector_bytes / FAT32_DIRECTORY_ENTRY_BYTES;
+  uint32_t slots_per_cluster = volume->sectors_per_cluster * slots_per_sector;
   uint32_t cluster = directory;
   unsigned run = 0;
   /* Reserve a spare slot too, retaining the end marker where one existed. */
@@ -505,7 +519,7 @@ static enum fat32_status find_slots(struct write_plan *plan, uint32_t directory)
       if (status != FAT32_OK) {
         return status;
       }
-      for (unsigned slot = 0; slot < 16; ++slot) {
+      for (unsigned slot = 0; slot < slots_per_sector; ++slot) {
         status = fat32_step(plan->context);
         if (status != FAT32_OK) {
           return status;
@@ -534,8 +548,8 @@ static enum fat32_status find_slots(struct write_plan *plan, uint32_t directory)
     }
     cluster = next;
   }
-  uint32_t count = (needed - run + volume->sectors_per_cluster * 16 - 1) /
-      (volume->sectors_per_cluster * 16);
+  uint32_t count = (needed - run + slots_per_cluster - 1) /
+      (slots_per_cluster);
   uint32_t *chain;
   enum fat32_status status = allocate_chain(plan, count, &chain);
   if (status != FAT32_OK) {
@@ -552,10 +566,10 @@ static enum fat32_status find_slots(struct write_plan *plan, uint32_t directory)
   /* Continue the existing free tail, moving any end marker past the new group. */
   for (unsigned i = run; i < plan->entry_count; ++i) {
     unsigned index = i - run;
-    unsigned cluster_index = index / (volume->sectors_per_cluster * 16);
-    unsigned within = index % (volume->sectors_per_cluster * 16);
-    plan->entry_sectors[i] = cluster_sector(volume, chain[cluster_index]) + within / 16;
-    plan->entry_slots[i] = (uint8_t)(within % 16);
+    unsigned cluster_index = index / slots_per_cluster;
+    unsigned within = index % slots_per_cluster;
+    plan->entry_sectors[i] = cluster_sector(volume, chain[cluster_index]) + within / slots_per_sector;
+    plan->entry_slots[i] = (uint8_t)(within % slots_per_sector);
   }
   return FAT32_OK;
 }

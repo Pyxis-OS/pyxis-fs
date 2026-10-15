@@ -6,7 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define FAT32_SECTOR_BYTES 512u
+#define FAT32_SECTOR_MIN_BYTES 512u
+#define FAT32_SECTOR_MAX_BYTES 4096u
 #define FAT32_NAME_MAX 255u
 #define FAT32_ALIAS_MAX 12u
 #define FAT32_ATTR_DIRECTORY 0x10u
@@ -44,6 +45,7 @@ struct fat32_source {
   fat32_read_sectors_fn read;
   void *context;
   uint64_t sectors;
+  /* Device and FAT sectors have the same size: exactly 512 or 4096 bytes. */
   uint32_t sector_bytes, max_read_sectors;
 };
 

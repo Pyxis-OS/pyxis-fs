@@ -30,7 +30,7 @@ enum fat32_write_phase {
 struct fat32_prepared_sector {
   uint64_t sector; /* relative to the admitted partition */
   uint8_t phase;
-  uint8_t bytes[FAT32_SECTOR_BYTES];
+  uint8_t *bytes; /* source.sector_bytes bytes retained in operation workspace */
 };
 
 struct fat32_writer;

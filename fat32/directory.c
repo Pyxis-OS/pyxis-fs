@@ -70,7 +70,7 @@ static enum fat32_status next_slot(struct fat32_context *context,
       FAT32_DIRECTORY_ENTRY_BYTES);
   ++cursor->position;
   *found = true;
-  if (++cursor->slot == FAT32_SECTOR_BYTES / FAT32_DIRECTORY_ENTRY_BYTES) {
+  if (++cursor->slot == context->source->sector_bytes / FAT32_DIRECTORY_ENTRY_BYTES) {
     cursor->slot = 0;
     if (++cursor->sector == context->volume->sectors_per_cluster) {
       cursor->sector = 0;

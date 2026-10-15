@@ -9,9 +9,9 @@
 #define FAT32_BAD UINT32_C(0x0ffffff7)
 #define FAT32_EOC UINT32_C(0x0ffffff8)
 #define FAT32_MIN_CLUSTERS 65525u
-#define FAT32_IO_BYTES 4096u
-#define FAT32_FAT_WINDOW_SECTORS 8u
-#define FAT32_CHECK_FAT_WINDOW_SECTORS 128u
+#define FAT32_IO_BYTES FAT32_SECTOR_MAX_BYTES
+#define FAT32_FAT_WINDOW_BYTES 4096u
+#define FAT32_CHECK_FAT_WINDOW_BYTES 65536u
 #define FAT32_GPT_ARRAY_LIMIT 65536u
 #define FAT32_GPT_ENTRY_LIMIT 256u
 #define FAT32_DIRECTORY_ENTRY_BYTES 32u
@@ -43,8 +43,8 @@ struct fat32_context {
   struct fat32_frame *frames;
   uint32_t frame_limit;
   uint8_t data[FAT32_IO_BYTES];
-  uint8_t fat[FAT32_FAT_WINDOW_SECTORS * FAT32_SECTOR_BYTES];
-  uint8_t mirror[FAT32_FAT_WINDOW_SECTORS * FAT32_SECTOR_BYTES];
+  uint8_t fat[FAT32_FAT_WINDOW_BYTES];
+  uint8_t mirror[FAT32_FAT_WINDOW_BYTES];
   uint16_t long_units[260];
   uint64_t data_sector, fat_sector;
   uint32_t fat_sector_count;
@@ -72,6 +72,7 @@ void fat32_zero(void *bytes, size_t length);
 bool fat32_equal(const void *left, const void *right, size_t length);
 bool fat32_all_zero(const void *bytes, size_t length);
 uint32_t fat32_crc(const uint8_t *bytes, size_t length);
+bool fat32_sector_bytes_supported(uint32_t bytes);
 size_t fat32_context_size(void);
 enum fat32_status fat32_context_open(const struct fat32_source *source,
                                     struct fat32_workspace *workspace,

@@ -83,10 +83,15 @@ size_t fat32_open_workspace_size(void)
   return fat32_context_size() + FAT32_GPT_ARRAY_LIMIT;
 }
 
+bool fat32_sector_bytes_supported(uint32_t bytes)
+{
+  return bytes == FAT32_SECTOR_MIN_BYTES || bytes == FAT32_SECTOR_MAX_BYTES;
+}
+
 static uint32_t check_window_sectors(const struct fat32_volume *volume)
 {
-  return volume->source.max_read_sectors < FAT32_CHECK_FAT_WINDOW_SECTORS ?
-      volume->source.max_read_sectors : FAT32_CHECK_FAT_WINDOW_SECTORS;
+  uint32_t limit = FAT32_CHECK_FAT_WINDOW_BYTES / volume->source.sector_bytes;
+  return volume->source.max_read_sectors < limit ? volume->source.max_read_sectors : limit;
 }
 
 enum fat32_status fat32_workspace_size(const struct fat32_volume *volume,
@@ -96,6 +101,9 @@ enum fat32_status fat32_workspace_size(const struct fat32_volume *volume,
       volume->cluster_count > FAT32_RESERVED_MIN - 2) {
     return FAT32_INVALID;
   }
+  if (!fat32_sector_bytes_supported(volume->source.sector_bytes)) {
+    return FAT32_UNSUPPORTED;
+  }
   size_t bitmap = ((size_t)volume->cluster_count + 2 + 7) / 8;
   size_t fixed = fat32_context_size() + align_size(bitmap);
   if (directory_depth_limit > (SIZE_MAX - fixed) / sizeof(struct fat32_frame)) {
@@ -103,8 +111,8 @@ enum fat32_status fat32_workspace_size(const struct fat32_volume *volume,
   }
   size_t required = fixed + (size_t)directory_depth_limit * sizeof(struct fat32_frame);
   uint32_t window = check_window_sectors(volume);
-  if (window > FAT32_FAT_WINDOW_SECTORS) {
-    size_t windows = (size_t)window * FAT32_SECTOR_BYTES * 2;
+  if (window > FAT32_FAT_WINDOW_BYTES / volume->source.sector_bytes) {
+    size_t windows = (size_t)window * volume->source.sector_bytes * 2;
     if (windows > SIZE_MAX - required) {
       return FAT32_LIMIT;
     }
@@ -121,7 +129,7 @@ enum fat32_status fat32_context_open(const struct fat32_source *source,
       !workspace->memory || (uintptr_t)workspace->memory % _Alignof(max_align_t)) {
     return FAT32_INVALID;
   }
-  if (source->sector_bytes != FAT32_SECTOR_BYTES) {
+  if (!fat32_sector_bytes_supported(source->sector_bytes)) {
     return FAT32_UNSUPPORTED;
   }
   if (workspace->bytes < fat32_context_size()) {
@@ -132,7 +140,7 @@ enum fat32_status fat32_context_open(const struct fat32_source *source,
   (*context)->source = source;
   (*context)->fat_bytes = (*context)->fat;
   (*context)->mirror_bytes = (*context)->mirror;
-  (*context)->fat_window_sectors = FAT32_FAT_WINDOW_SECTORS;
+  (*context)->fat_window_sectors = FAT32_FAT_WINDOW_BYTES / source->sector_bytes;
   (*context)->steps = workspace->step_limit;
   (*context)->sectors = workspace->sector_limit;
   (*context)->frame_limit = workspace->directory_depth_limit;
@@ -163,10 +171,10 @@ enum fat32_status fat32_context_volume_prepare(const struct fat32_volume *volume
   (*context)->seen_bytes = ((size_t)volume->cluster_count + 2 + 7) / 8;
   (*context)->frames = (void *)((*context)->seen + align_size((*context)->seen_bytes));
   uint32_t window = check_window_sectors(volume);
-  if (window > FAT32_FAT_WINDOW_SECTORS) {
+  if (window > FAT32_FAT_WINDOW_BYTES / volume->source.sector_bytes) {
     uint8_t *buffers = (uint8_t *)((*context)->frames + (*context)->frame_limit);
     (*context)->fat_bytes = buffers;
-    (*context)->mirror_bytes = buffers + (size_t)window * FAT32_SECTOR_BYTES;
+    (*context)->mirror_bytes = buffers + (size_t)window * volume->source.sector_bytes;
     (*context)->fat_window_sectors = window;
   }
   fat32_zero((*context)->seen, (*context)->seen_bytes);
@@ -208,15 +216,15 @@ void fat32_context_read_windows(struct fat32_context *context,
 {
   uint32_t window = check_window_sectors(context->volume);
   size_t required;
-  if (window <= FAT32_FAT_WINDOW_SECTORS ||
+  if (window <= FAT32_FAT_WINDOW_BYTES / context->source->sector_bytes ||
       fat32_workspace_size(context->volume, workspace->directory_depth_limit, &required) != FAT32_OK ||
       workspace->bytes < required) {
     return;
   }
   uint8_t *buffers = (uint8_t *)workspace->memory + required -
-      (size_t)window * FAT32_SECTOR_BYTES * 2;
+      (size_t)window * context->source->sector_bytes * 2;
   context->fat_bytes = buffers;
-  context->mirror_bytes = buffers + (size_t)window * FAT32_SECTOR_BYTES;
+  context->mirror_bytes = buffers + (size_t)window * context->source->sector_bytes;
   context->fat_window_sectors = window;
   context->fat_cached = false;
 }
@@ -249,7 +257,7 @@ enum fat32_status fat32_disk_read(struct fat32_context *context, uint64_t first,
     if (!context->source->read(context->source->context, first, chunk, destination)) {
       return FAT32_IO;
     }
-    destination += (size_t)chunk * FAT32_SECTOR_BYTES;
+    destination += (size_t)chunk * context->source->sector_bytes;
     first += chunk;
     count -= chunk;
   }

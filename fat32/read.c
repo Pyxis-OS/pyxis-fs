@@ -85,10 +85,10 @@ enum fat32_status fat32_read(const struct fat32_volume *volume, const char *path
     uint32_t sector = 0;
     while (remaining && sector < volume->sectors_per_cluster) {
       uint32_t sectors = volume->sectors_per_cluster - sector;
-      if (sectors > FAT32_IO_BYTES / FAT32_SECTOR_BYTES) {
-        sectors = FAT32_IO_BYTES / FAT32_SECTOR_BYTES;
+      if (sectors > FAT32_IO_BYTES / volume->source.sector_bytes) {
+        sectors = FAT32_IO_BYTES / volume->source.sector_bytes;
       }
-      uint64_t needed = (remaining + FAT32_SECTOR_BYTES - 1) / FAT32_SECTOR_BYTES;
+      uint64_t needed = (remaining + volume->source.sector_bytes - 1) / volume->source.sector_bytes;
       if (sectors > needed) {
         sectors = (uint32_t)needed;
       }
@@ -98,7 +98,7 @@ enum fat32_status fat32_read(const struct fat32_volume *volume, const char *path
       if (status != FAT32_OK) {
         return status;
       }
-      size_t bytes = (size_t)sectors * FAT32_SECTOR_BYTES;
+      size_t bytes = (size_t)sectors * volume->source.sector_bytes;
       if (bytes > remaining) {
         bytes = (size_t)remaining;
       }
@@ -411,7 +411,7 @@ enum fat32_status fat32_read_range(const struct fat32_volume *volume,
   if (remaining > length) {
     remaining = length;
   }
-  uint64_t cluster_bytes = (uint64_t)volume->sectors_per_cluster * FAT32_SECTOR_BYTES;
+  uint64_t cluster_bytes = (uint64_t)volume->sectors_per_cluster * volume->source.sector_bytes;
   uint32_t cluster = entry.first_cluster;
   while (offset >= cluster_bytes) {
     status = fat32_fat_entry(context, cluster, &cluster);
@@ -420,14 +420,14 @@ enum fat32_status fat32_read_range(const struct fat32_volume *volume,
     }
     offset -= cluster_bytes;
   }
-  uint32_t sector = (uint32_t)(offset / FAT32_SECTOR_BYTES);
-  size_t skip = (size_t)(offset % FAT32_SECTOR_BYTES);
+  uint32_t sector = (uint32_t)(offset / volume->source.sector_bytes);
+  size_t skip = (size_t)(offset % volume->source.sector_bytes);
   while (remaining) {
     uint32_t sectors = volume->sectors_per_cluster - sector;
-    if (sectors > FAT32_IO_BYTES / FAT32_SECTOR_BYTES) {
-      sectors = FAT32_IO_BYTES / FAT32_SECTOR_BYTES;
+    if (sectors > FAT32_IO_BYTES / volume->source.sector_bytes) {
+      sectors = FAT32_IO_BYTES / volume->source.sector_bytes;
     }
-    uint64_t needed = (remaining + skip + FAT32_SECTOR_BYTES - 1) / FAT32_SECTOR_BYTES;
+    uint64_t needed = (remaining + skip + volume->source.sector_bytes - 1) / volume->source.sector_bytes;
     if (sectors > needed) {
       sectors = (uint32_t)needed;
     }
@@ -437,7 +437,7 @@ enum fat32_status fat32_read_range(const struct fat32_volume *volume,
     if (status != FAT32_OK) {
       return status;
     }
-    size_t bytes = (size_t)sectors * FAT32_SECTOR_BYTES - skip;
+    size_t bytes = (size_t)sectors * volume->source.sector_bytes - skip;
     if (bytes > remaining) {
       bytes = (size_t)remaining;
     }

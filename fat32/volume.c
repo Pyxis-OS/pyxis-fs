@@ -29,7 +29,7 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
     return FAT32_CORRUPT;
   }
   uint64_t offset = (uint64_t)cluster * 4;
-  uint64_t sector = offset / FAT32_SECTOR_BYTES;
+  uint64_t sector = offset / context->source->sector_bytes;
   if (sector >= volume->fat_sectors) {
     return FAT32_CORRUPT;
   }
@@ -54,8 +54,8 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
       if (status != FAT32_OK) {
         return status;
       }
-      uint64_t first = sector * (FAT32_SECTOR_BYTES / 4);
-      uint32_t entries = count * (FAT32_SECTOR_BYTES / 4);
+      uint64_t first = sector * (context->source->sector_bytes / 4);
+      uint32_t entries = count * (context->source->sector_bytes / 4);
       for (uint32_t i = 0; i < entries && first + i <= (uint64_t)volume->cluster_count + 1; ++i) {
         if ((fat32_get32(context->fat_bytes + 4 * i) & FAT32_MASK) !=
             (fat32_get32(context->mirror_bytes + 4 * i) & FAT32_MASK)) {
@@ -65,7 +65,7 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
           }
           mirrors->mismatch_seen = true;
           if (mirrors->bound) {
-            uint64_t different = (first + i) / (FAT32_SECTOR_BYTES / 4);
+            uint64_t different = (first + i) / (context->source->sector_bytes / 4);
             if (different >= mirrors->sector_count) {
               return FAT32_CORRUPT;
             }
@@ -82,8 +82,8 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
     context->fat_sector_count = count;
     context->fat_cached = true;
   }
-  size_t within = (size_t)(sector - context->fat_sector) * FAT32_SECTOR_BYTES +
-      offset % FAT32_SECTOR_BYTES;
+  size_t within = (size_t)(sector - context->fat_sector) * context->source->sector_bytes +
+      offset % context->source->sector_bytes;
   *value = fat32_get32(context->fat_bytes + within) & FAT32_MASK;
   return FAT32_OK;
 }
@@ -116,7 +116,7 @@ enum fat32_status fat32_geometry(struct fat32_context *context, struct fat32_vol
   if (status != FAT32_OK) {
     return status;
   }
-  uint8_t boot[FAT32_SECTOR_BYTES];
+  uint8_t boot[FAT32_SECTOR_MIN_BYTES];
   fat32_copy(boot, context->data, sizeof(boot));
   uint32_t reserved = fat32_get16(boot + 14);
   uint32_t fat_sectors = fat32_get32(boot + 36), total = fat32_get32(boot + 32);
@@ -127,7 +127,7 @@ enum fat32_status fat32_geometry(struct fat32_context *context, struct fat32_vol
       fat32_get16(boot + 19) || fat32_get16(boot + 22)) {
     return FAT32_CORRUPT;
   }
-  if (fat32_get16(boot + 11) != FAT32_SECTOR_BYTES ||
+  if (fat32_get16(boot + 11) != context->source->sector_bytes ||
       !cluster_sectors || cluster_sectors > 128 || (cluster_sectors & (cluster_sectors - 1)) ||
       (fat_count != 1 && fat_count != 2) || fat32_get16(boot + 40) ||
       fat32_get16(boot + 42) || !fat32_all_zero(boot + 52, 12)) {
@@ -144,7 +144,8 @@ enum fat32_status fat32_geometry(struct fat32_context *context, struct fat32_vol
   if (clusters < FAT32_MIN_CLUSTERS) {
     return FAT32_UNSUPPORTED;
   }
-  if (clusters > FAT32_RESERVED_MIN - 2 || (clusters + 2) * 4 > (uint64_t)fat_sectors * 512) {
+  if (clusters > FAT32_RESERVED_MIN - 2 ||
+      (clusters + 2) * 4 > (uint64_t)fat_sectors * context->source->sector_bytes) {
     return FAT32_CORRUPT;
   }
   volume->fat_first = reserved;
@@ -284,7 +285,11 @@ enum fat32_status fat32_mirror_size(const struct fat32_volume *volume, size_t *b
       (volume->fat_count != 1 && volume->fat_count != 2)) {
     return FAT32_INVALID;
   }
-  uint64_t sectors = ((uint64_t)volume->cluster_count + 2 + 127) / 128;
+  if (!fat32_sector_bytes_supported(volume->source.sector_bytes)) {
+    return FAT32_UNSUPPORTED;
+  }
+  uint32_t entries = volume->source.sector_bytes / 4;
+  uint64_t sectors = ((uint64_t)volume->cluster_count + 2 + entries - 1) / entries;
   if (sectors > volume->fat_sectors) {
     return FAT32_CORRUPT;
   }
@@ -315,8 +320,9 @@ enum fat32_status fat32_mirror_bind(const struct fat32_volume *volume,
   }
   mirrors->pending = required ? pending : NULL;
   mirrors->pending_bytes = required;
+  uint32_t entries = volume->source.sector_bytes / 4;
   mirrors->sector_count = volume->fat_count == 2 ?
-      (uint32_t)(((uint64_t)volume->cluster_count + 2 + 127) / 128) : 0;
+      (uint32_t)(((uint64_t)volume->cluster_count + 2 + entries - 1) / entries) : 0;
   mirrors->bound = true;
   return FAT32_OK;
 }
@@ -338,8 +344,8 @@ static enum fat32_status claim_chain(struct fat32_context *context, uint32_t fir
     return compare && chain_count ? FAT32_STALE : FAT32_OK;
   }
   uint64_t expected = ((uint64_t)file_bytes +
-      (uint64_t)context->volume->sectors_per_cluster * FAT32_SECTOR_BYTES - 1) /
-      ((uint64_t)context->volume->sectors_per_cluster * FAT32_SECTOR_BYTES);
+      (uint64_t)context->volume->sectors_per_cluster * context->source->sector_bytes - 1) /
+      ((uint64_t)context->volume->sectors_per_cluster * context->source->sector_bytes);
   bool matches = true;
   uint32_t cluster = first;
   uint32_t checkpoint = first;

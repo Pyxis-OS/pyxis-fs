@@ -6,7 +6,7 @@
 
 #define GPT_HEADER_BYTES 92u
 #define GPT_ENTRY_BYTES 128u
-#define GPT_ARRAY_RESERVE_SECTORS 32u
+#define GPT_ARRAY_RESERVE_BYTES 16384u
 #define GPT_REVISION UINT32_C(0x00010000)
 #define GPT_RESERVED_ATTRIBUTES UINT64_C(0x0000fffffffffff8)
 
@@ -47,6 +47,7 @@ static enum fat32_status protective_mbr(struct fat32_context *context)
 static enum fat32_status read_header(struct fat32_context *context, bool backup,
     struct gpt_header *header)
 {
+  uint32_t sector_bytes = context->source->sector_bytes;
   uint64_t last = context->source->sectors - 1;
   enum fat32_status status = fat32_disk_read(context, backup ? last : 1, 1, context->data);
   if (status != FAT32_OK) {
@@ -55,7 +56,7 @@ static enum fat32_status read_header(struct fat32_context *context, bool backup,
   uint8_t *bytes = context->data;
   uint32_t header_bytes = fat32_get32(bytes + 12), expected_crc = fat32_get32(bytes + 16);
   if (!fat32_equal(bytes, "EFI PART", 8) ||
-      header_bytes < GPT_HEADER_BYTES || header_bytes > FAT32_SECTOR_BYTES) {
+      header_bytes < GPT_HEADER_BYTES || header_bytes > sector_bytes) {
     return FAT32_CORRUPT;
   }
   fat32_zero(bytes + 16, 4);
@@ -66,7 +67,7 @@ static enum fat32_status read_header(struct fat32_context *context, bool backup,
     return FAT32_UNSUPPORTED;
   }
   if (fat32_get32(bytes + 20) ||
-      !fat32_all_zero(bytes + GPT_HEADER_BYTES, FAT32_SECTOR_BYTES - GPT_HEADER_BYTES) ||
+      !fat32_all_zero(bytes + GPT_HEADER_BYTES, sector_bytes - GPT_HEADER_BYTES) ||
       fat32_get64(bytes + 24) != (backup ? last : 1) ||
       fat32_get64(bytes + 32) != (backup ? 1 : last)) {
     return FAT32_CORRUPT;
@@ -89,9 +90,9 @@ static enum fat32_status read_header(struct fat32_context *context, bool backup,
     return FAT32_UNSUPPORTED;
   }
   header->array_bytes = (uint32_t)array_bytes;
-  uint64_t array_sectors = (array_bytes + FAT32_SECTOR_BYTES - 1) / FAT32_SECTOR_BYTES;
-  uint64_t reserved = array_sectors > GPT_ARRAY_RESERVE_SECTORS ?
-      array_sectors : GPT_ARRAY_RESERVE_SECTORS;
+  uint64_t array_sectors = (array_bytes + sector_bytes - 1) / sector_bytes;
+  uint64_t reserve_sectors = GPT_ARRAY_RESERVE_BYTES / sector_bytes;
+  uint64_t reserved = array_sectors > reserve_sectors ? array_sectors : reserve_sectors;
   if (reserved >= last || header->first_usable < 2 + reserved ||
       header->first_usable > header->last_usable || header->last_usable >= last - reserved ||
       header->array_first >= last || array_sectors > last - header->array_first ||
@@ -147,7 +148,9 @@ static enum fat32_status validate_entries(struct fat32_context *context,
 enum fat32_status fat32_gpt_select(struct fat32_context *context, uint32_t entry,
     uint8_t *array, struct fat32_volume *volume)
 {
-  if (context->source->sectors < 68 || !entry) {
+  uint32_t sector_bytes = context->source->sector_bytes;
+  if (context->source->sectors <
+      2 * (GPT_ARRAY_RESERVE_BYTES / sector_bytes) + 4 || !entry) {
     return FAT32_INVALID;
   }
   enum fat32_status status = protective_mbr(context);
@@ -160,7 +163,7 @@ enum fat32_status fat32_gpt_select(struct fat32_context *context, uint32_t entry
     return status;
   }
   status = fat32_disk_read(context, primary.array_first,
-      (primary.array_bytes + FAT32_SECTOR_BYTES - 1) / FAT32_SECTOR_BYTES, array);
+      (primary.array_bytes + sector_bytes - 1) / sector_bytes, array);
   if (status != FAT32_OK) {
     return status;
   }
@@ -178,15 +181,15 @@ enum fat32_status fat32_gpt_select(struct fat32_context *context, uint32_t entry
       primary.array_crc != backup.array_crc || !fat32_equal(primary.disk_guid, backup.disk_guid, 16)) {
     return FAT32_CORRUPT;
   }
-  for (uint32_t offset = 0; offset < primary.array_bytes; offset += FAT32_SECTOR_BYTES) {
-    status = fat32_disk_read(context, backup.array_first + offset / FAT32_SECTOR_BYTES,
+  for (uint32_t offset = 0; offset < primary.array_bytes; offset += sector_bytes) {
+    status = fat32_disk_read(context, backup.array_first + offset / sector_bytes,
         1, context->data);
     if (status != FAT32_OK) {
       return status;
     }
     size_t length = primary.array_bytes - offset;
-    if (length > FAT32_SECTOR_BYTES) {
-      length = FAT32_SECTOR_BYTES;
+    if (length > sector_bytes) {
+      length = sector_bytes;
     }
     if (!fat32_equal(array + offset, context->data, length)) {
       return FAT32_CORRUPT;
