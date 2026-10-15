@@ -134,6 +134,15 @@ enum fat32_status fat32_mounted_enumerate(struct fat32_mounted_object *directory
 enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
     uint64_t offset, size_t bytes, struct fat32_workspace *workspace,
     fat32_bytes_sink_fn sink, void *context);
+/* At most FAT32_MOUNTED_PAYLOAD_MAX bytes into caller-owned private backing,
+ * stable and disjoint from workspace, records and outputs throughout this call.
+ * Backing has at least bytes capacity; full sectors read directly into it.
+ * read_bytes changes only on success, clipped at EOF. A failure may change any
+ * destination prefix, including partial failed-read bytes; publish only success.
+ * Uses the same read proof and invalidation rules as read_range. No allocation. */
+enum fat32_status fat32_mounted_read_into(struct fat32_mounted_object *object,
+    uint64_t offset, size_t bytes, struct fat32_workspace *workspace,
+    void *destination, size_t *read_bytes);
 /* All writes return only after ordered flushes. No atomic rename or rollback.
  * Content mutation of a detached file uses its retained chain, never its old
  * reusable slot. New files are empty; directories contain only dot entries.

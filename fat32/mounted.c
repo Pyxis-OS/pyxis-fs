@@ -1741,6 +1741,104 @@ enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
   return FAT32_OK;
 }
 
+static enum fat32_status read_chain_sector(struct fat32_mounted_object *object,
+    struct fat32_context *context, uint64_t offset, uint64_t *sector)
+{
+  enum fat32_status status = fat32_step(context);
+  if (status != FAT32_OK) {
+    return status;
+  }
+  struct fat32_mounted *mounted = object->mounted;
+  const struct fat32_volume *volume = &mounted->volume;
+  uint32_t cluster_bytes = (uint32_t)volume->sectors_per_cluster * volume->source.sector_bytes;
+  uint32_t index = (uint32_t)(offset / cluster_bytes);
+  if (index >= object->chain_count || !fat32_valid_cluster(volume, object->chain[index]) ||
+      (mounted->allocation_valid && cluster_free(mounted, object->chain[index]))) {
+    mounted->allocation_valid = false;
+    return FAT32_STALE;
+  }
+  *sector = cluster_sector(volume, object->chain[index]) +
+      offset % cluster_bytes / volume->source.sector_bytes;
+  return FAT32_OK;
+}
+
+enum fat32_status fat32_mounted_read_into(struct fat32_mounted_object *object,
+    uint64_t offset, size_t bytes, struct fat32_workspace *workspace,
+    void *destination, size_t *read_bytes)
+{
+  struct fat32_mounted *mounted = object ? object->mounted : NULL;
+  if (!read_bytes || (bytes && !destination)) {
+    return mounted_result(mounted, FAT32_INVALID);
+  }
+  if (bytes > FAT32_MOUNTED_PAYLOAD_MAX) {
+    return mounted_result(mounted, FAT32_LIMIT);
+  }
+  struct fat32_context *context;
+  enum fat32_status status = read_object_context(object, workspace, &context, true);
+  if (status != FAT32_OK) {
+    return mounted_result(mounted, status);
+  }
+  if (object->entry.attributes & FAT32_ATTR_DIRECTORY) {
+    return mounted_result(mounted, FAT32_IS_DIRECTORY);
+  }
+  size_t count = 0;
+  if (offset < object->entry.file_bytes) {
+    uint64_t available = object->entry.file_bytes - offset;
+    count = available < bytes ? (size_t)available : bytes;
+  }
+  uint8_t *output = destination;
+  size_t remaining = count;
+  uint32_t sector_bytes = mounted->volume.source.sector_bytes;
+  while (remaining) {
+    uint64_t sector;
+    status = read_chain_sector(object, context, offset, &sector);
+    if (status != FAT32_OK) {
+      return mounted_result(mounted, status);
+    }
+    size_t skip = (size_t)(offset % sector_bytes);
+    size_t amount;
+    if (skip || remaining < sector_bytes) {
+      amount = sector_bytes - skip;
+      if (amount > remaining) {
+        amount = remaining;
+      }
+      status = fat32_partition_read(context, sector, 1, context->data);
+      context->data_cached = false;
+      if (status == FAT32_OK) {
+        fat32_copy(output, context->data + skip, amount);
+      }
+    } else {
+      uint32_t limit = (uint32_t)(remaining / sector_bytes);
+      if (limit > context->source->max_read_sectors) {
+        limit = context->source->max_read_sectors;
+      }
+      uint32_t sectors = 1;
+      while (sectors < limit) {
+        uint64_t next_sector;
+        status = read_chain_sector(object, context,
+            offset + (uint64_t)sectors * sector_bytes, &next_sector);
+        if (status != FAT32_OK) {
+          return mounted_result(mounted, status);
+        }
+        if (next_sector != sector + sectors) {
+          break;
+        }
+        ++sectors;
+      }
+      amount = (size_t)sectors * sector_bytes;
+      status = fat32_partition_read(context, sector, sectors, output);
+    }
+    if (status != FAT32_OK) {
+      return mounted_result(mounted, status);
+    }
+    offset += amount;
+    output += amount;
+    remaining -= amount;
+  }
+  *read_bytes = count;
+  return FAT32_OK;
+}
+
 static enum fat32_status mutable_file(struct fat32_mounted_object *object)
 {
   enum fat32_status status = object_valid(object);

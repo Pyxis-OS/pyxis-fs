@@ -180,6 +180,18 @@ batch physically consecutive payload sectors, including consecutive clusters,
 through the existing 4-KiB data buffer. Partition bounds, callback limits, EOF
 clipping, operation budgets and prefix-on-failure rules still apply.
 
+The bounded `fat32_mounted_read_into` alternative reads at most 1 MiB into stable,
+disjoint caller-owned private backing. It uses the same regular-file validation,
+read proof and error invalidation as the sink API. Consecutive full sectors,
+including consecutive retained clusters, read directly into that backing in runs
+bounded by the source callback limit; only partial-sector head/tail edges use the
+4-KiB context buffer. Every selected/candidate sector and backing read consumes
+the existing work budget, and backing sectors retain their sector-budget charge.
+It adds no allocation or proof lifetime. The caller supplies capacity for the
+requested range and publishes only after success: `read_bytes` changes only on
+success and clips at EOF, while a failed read can leave partial destination data.
+The ordinary sink API retains its existing 4-KiB batching and prefix behavior.
+
 Content mutation requires an ASCII name and alias but permits unrelated valid
 Unicode siblings. Namespace edits require every ordinary sibling name/alias in
 both changed directories to fit ASCII folding. New components preserve spelling
