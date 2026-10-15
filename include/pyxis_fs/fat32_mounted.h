@@ -29,13 +29,14 @@ struct fat32_mounted_object {
   struct fat32_locator locator;
   uint32_t *chain;
   uint32_t chain_capacity, chain_count;
-  uint64_t read_epoch;
+  uint64_t read_epoch, append_epoch;
   bool attached;
 };
 struct fat32_mounted_recovery {
   enum fat32_status failure;
   uint8_t phase;
   uint64_t failed_sector;
+  uint32_t failed_sector_count; /* Any prefix of this write may have taken effect. */
   struct fat32_mounted_object *source, *victim, *target_parent;
   char source_name[FAT32_NAME_MAX + 1], target_name[FAT32_NAME_MAX + 1];
   const struct fat32_prepared_sector *prepared_sectors;
@@ -53,7 +54,7 @@ struct fat32_mounted {
   uint8_t *allocation;
   size_t allocation_bytes;
   uint32_t free_count, next_free;
-  uint64_t read_epoch; /* Zero permanently disables proof reuse after wrap. */
+  uint64_t read_epoch, append_epoch; /* Zero permanently disables proof reuse after wrap. */
   bool allocation_valid, dirty_owned, mutated, stopped;
   struct fat32_mounted_recovery recovery;
 };
@@ -81,9 +82,13 @@ enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume
 enum fat32_status fat32_mounted_allocation_size(const struct fat32_volume *volume, size_t *bytes);
 /* Serialized under the same exclusive ownership as other mounted operations.
  * Ends regular-file read-proof reuse without I/O, allocation, changing allocation
- * proof or resetting a stopped writer. Adapters call before bound mutation/CHECK
- * attempts and on bound errors that occur before entering an engine operation. */
+ * proof or resetting a stopped writer. Adapters call before WRITE attempts;
+ * the engine consumes append eligibility. Other attempts/errors use both below. */
 void fat32_mounted_invalidate_reads(struct fat32_mounted *mounted);
+/* Also ends strict-EOF append proof. Use for other mutation/lifecycle attempts
+ * and every bound error, including adapter errors outside engine operations.
+ * Before WRITE, invalidate reads only; the engine owns append eligibility. */
+void fat32_mounted_invalidate_proofs(struct fat32_mounted *mounted);
 /* OPEN requires a fresh zero-initialized record; it never reopens/reset one. */
 enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,
     const struct fat32_volume *volume, const struct fat32_write_io *io,
@@ -113,7 +118,8 @@ enum fat32_status fat32_mounted_object_forget(struct fat32_mounted_object *objec
 /* Regular files retain geometry/metadata/complete-chain proof in an unchanged
  * exclusive mount epoch while allocation proof is valid; payload is never cached.
  * Mutation/CHECK/sync/forget attempts and mounted-operation errors invalidate it.
- * Directory and mutation validation remain strict. Epoch wrap disables reuse. */
+ * Directory validation remains strict. Append reuse is separate. Epoch wrap
+ * disables reuse. */
 enum fat32_status fat32_mounted_locate(struct fat32_mounted_object *object,
     struct fat32_workspace *workspace, struct fat32_entry *entry);
 enum fat32_status fat32_mounted_lookup(struct fat32_mounted_object *directory,
@@ -127,7 +133,11 @@ enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
     fat32_bytes_sink_fn sink, void *context);
 /* All writes return only after ordered flushes. No atomic rename or rollback.
  * Content mutation of a detached file uses its retained chain, never its old
- * reusable slot. New files are empty; directories contain only dot entries. */
+ * reusable slot. New files are empty; directories contain only dot entries.
+ * A strict positive-length EOF append retains its fully validated prefix only
+ * through confirmed appends. Recheck geometry, parent, selected metadata and
+ * old tail on each reuse. Other mutations, CHECK, lifecycle attempts and errors
+ * end reuse; overwrite/gap/resize use full validation. No payload is cached. */
 enum fat32_status fat32_mounted_write(struct fat32_mounted_object *object,
     uint64_t offset, const void *payload, size_t bytes, struct fat32_workspace *workspace);
 enum fat32_status fat32_mounted_resize(struct fat32_mounted_object *object,

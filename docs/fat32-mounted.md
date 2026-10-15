@@ -134,7 +134,7 @@ but different canonical chain reports stale state. Selected metadata mismatch
 uses the original complete selected-entry validator before reporting stale state.
 Detached files validate their retained chain without consulting the reusable slot.
 Binding still validates/collects the chain separately; it does not stamp a read
-proof. Directory reads and all mutation validators retain their strict behavior.
+proof. Directory reads remain strict; strict-EOF append proof is separate below.
 
 A nonzero matching mount/object epoch and valid allocation proof permit reuse.
 Each call still checks stopped state, object membership, workspace capacity and
@@ -156,9 +156,11 @@ proof invalidation: ordinary refusals still preserve the allocation map/proof.
 Invalid allocation proof disables read reuse. CHECK cannot revive an earlier
 object proof, and epoch wrap permanently disables reuse for that mount. Pure
 sizing helpers have no mount argument or proof state. Adapters call
-`fat32_mounted_invalidate_reads(mounted)` before bound mutation/CHECK attempts and
-on bound errors occurring before an engine operation, including sizing,
-authority and admission refusals. The hook shares the engine's serialized,
+`fat32_mounted_invalidate_reads(mounted)` before WRITE attempts, leaving append
+eligibility to the engine. They call `fat32_mounted_invalidate_proofs(mounted)`
+before other bound mutation/CHECK/lifecycle attempts and on every bound error,
+including sizing, authority, admission and late reply-copy failures. Pending
+cross-CPU error notifications must be consumed before the next append. The hook shares the engine's serialized,
 exclusive-ownership contract, performs no I/O or allocation, preserves allocation
 proof and never restores read proof or resets a stopped writer.
 
@@ -207,13 +209,33 @@ There is no directory move, cross-volume move or crash-atomic rename.
 ## Finite preparation and effects
 
 Mutations and detached reclamation require valid retained allocation proof and
-check the affected complete chains, parent directories, names and held records.
+check the affected complete chains, parent directories, names and held records,
+with the strict-EOF append exception below.
 Attached file updates also revalidate a canonical held parent when present. Locally
 traversed chains cannot contain clusters recorded free; new candidates are checked
 against their FAT entries before effects. Searches visit at most the volume's
 cluster count and consume the finite step budget. Local chain loop detection uses
 constant storage, without a whole-volume bitmap clear per held object. Detached
 directories must remain empty before reads or reclamation.
+
+Owner-accepted append-proof lifetime (2026-10-15): a positive-length write at
+exact EOF performs one complete cold selected-file validation, then retains the
+validated canonical prefix across its own confirmed appends. Each reuse still
+revalidates geometry, the held parent, selected slot/name/metadata, chain shape
+and the old tail's allocation and EOC entry, including mirror checks. Detached
+files use their held entry/vector, never their former slot. Allocation candidates,
+touched tail/new clusters, zeroing, size publication and all effectful durability
+barriers are unchanged. Pending mirror repair uses complete validation.
+
+Each write attempt advances a separate mount append epoch, invalidating all
+other objects' append proofs. Only a confirmed strict append stamps the source
+object after its canonical vector/count/size updates. Other mutations, CHECK,
+forget/reclamation, sync/seal and every error invalidate it; zero-length writes,
+overwrite, gap growth and resize neither reuse nor seed it. Epoch wrap permanently
+disables reuse. Replacing workspace or successfully reserving identical chain
+storage does not invalidate it. Read-proof invalidation on every mutation remains
+unchanged. No payload cache, cross-call writeback or uncertain-write retry is added.
+Silent damage to an untouched prefix can wait for cold validation or CHECK.
 
 Local checks do not reprove allocation ownership across unrelated objects. Silent
 in-session corruption, including a coherent cross-link to an unrelated allocated
@@ -303,8 +325,17 @@ reads can leave that buffer partial. `recovery.phase` is MIRROR, and the failed
 sector is absolute; a flush failure uses UINT64_MAX. Later refused calls never
 overwrite this backing. No retry or rollback is supplied.
 
-Each non-mark phase flushes even when empty. The raw writer still preserves all
-clean/error bits. Timestamps stay preserved during mounted updates/rename; new
+Prepared writes batch only adjacent sectors in phase order, bounded by the
+explicit nonzero `fat32_write_io.max_write_sectors` callback limit and the existing
+4 KiB disjoint context buffer. Images are packed into that buffer; retained
+prepared records are not contiguous payload. A phase flushes only if it wrote;
+MARK/data/FAT/directory/reclaim/FSInfo order, dirty-mark/repair barriers and explicit
+sync/seal flushes are preserved. No batching crosses phases or calls. Any batch
+failure stops immediately without splitting or retry: `recovery.failed_sector`
+is the batch start and `failed_sector_count` is the entire uncertain range (any
+prefix may have taken effect); flush failures use UINT64_MAX and zero count.
+All prepared images and failed workspace remain retained. The raw writer still
+preserves all clean/error bits. Timestamps stay preserved during mounted updates/rename; new
 entries use DOS minimum dates and zero times without claiming UTC validity.
 
 ## Sync, sealing and uncertainty

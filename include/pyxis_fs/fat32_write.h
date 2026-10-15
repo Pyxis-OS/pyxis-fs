@@ -16,6 +16,7 @@ struct fat32_write_io {
   fat32_write_sectors_fn write;
   fat32_flush_fn flush;
   void *context;
+  uint32_t max_write_sectors; /* Nonzero callback bound; mounted batches also fit 4 KiB. */
 };
 
 enum fat32_write_phase {
