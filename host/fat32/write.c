@@ -318,7 +318,7 @@ int main(int argc, char **argv)
     receipts[i].chain_capacity = capacity;
   }
   struct fat32_write_io io = { .write = source_write, .flush = source_flush, .context = &source,
-    .max_write_sectors = 128 };
+    .max_write_sectors = HOST_IO_MAX_BYTES / source.sector_bytes };
   struct fat32_writer writer;
   status = fat32_writer_open(&writer, &volume, &io, &workspace, HOST_FILE_BYTES,
       receipts, HOST_RECEIPTS);

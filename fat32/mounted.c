@@ -1030,12 +1030,12 @@ static enum fat32_status run_plan(struct write_plan *plan,
         continue;
       }
       uint32_t count = 1;
-      uint32_t limit = sizeof(plan->context->data) / FAT32_SECTOR_BYTES;
+      uint32_t limit = sizeof(plan->context->data) / plan->context->source->sector_bytes;
       if (limit > mounted->io.max_write_sectors) {
         limit = mounted->io.max_write_sectors;
       }
       plan->context->data_cached = false;
-      fat32_copy(plan->context->data, record->bytes, FAT32_SECTOR_BYTES);
+      fat32_copy(plan->context->data, record->bytes, plan->context->source->sector_bytes);
       for (size_t next = i + 1; next < plan->count && count < limit; ++next) {
         const struct fat32_prepared_sector *following = &plan->sectors[next];
         if (following->phase != phase) {
@@ -1045,8 +1045,8 @@ static enum fat32_status run_plan(struct write_plan *plan,
             (repair && phase == FAT32_MOUNTED_MARK)) {
           break;
         }
-        fat32_copy(plan->context->data + (size_t)count * FAT32_SECTOR_BYTES,
-            following->bytes, FAT32_SECTOR_BYTES);
+        fat32_copy(plan->context->data + (size_t)count * plan->context->source->sector_bytes,
+            following->bytes, plan->context->source->sector_bytes);
         ++count;
         i = next;
       }
