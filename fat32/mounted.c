@@ -1193,13 +1193,16 @@ enum fat32_status fat32_mounted_object_reserve(struct fat32_mounted_object *obje
 }
 
 static enum fat32_status read_object_context(struct fat32_mounted_object *object,
-    struct fat32_workspace *workspace, struct fat32_context **context)
+    struct fat32_workspace *workspace, struct fat32_context **context, bool read_windows)
 {
   enum fat32_status status = object_valid(object);
   if (status != FAT32_OK) {
     return status;
   }
   status = mounted_context(object->mounted, workspace, context);
+  if (status == FAT32_OK && read_windows && !(object->entry.attributes & FAT32_ATTR_DIRECTORY)) {
+    fat32_context_read_windows(*context, workspace);
+  }
   return status == FAT32_OK ? validate_object(*context, object) : status;
 }
 
@@ -1211,7 +1214,7 @@ enum fat32_status fat32_mounted_locate(struct fat32_mounted_object *object,
     return FAT32_INVALID;
   }
   struct fat32_context *context;
-  enum fat32_status status = read_object_context(object, workspace, &context);
+  enum fat32_status status = read_object_context(object, workspace, &context, true);
   if (status == FAT32_OK) {
     fat32_copy(entry, &object->entry, sizeof(*entry));
   }
@@ -1247,7 +1250,7 @@ static enum fat32_status component_valid(const char *name, size_t bytes, bool mu
 static enum fat32_status directory_context(struct fat32_mounted_object *directory,
     struct fat32_workspace *workspace, struct fat32_context **context)
 {
-  enum fat32_status status = read_object_context(directory, workspace, context);
+  enum fat32_status status = read_object_context(directory, workspace, context, false);
   if (status == FAT32_OK && !(directory->entry.attributes & FAT32_ATTR_DIRECTORY)) {
     return FAT32_NOT_DIRECTORY;
   }
@@ -1373,7 +1376,7 @@ enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
     return FAT32_INVALID;
   }
   struct fat32_context *context;
-  enum fat32_status status = read_object_context(object, workspace, &context);
+  enum fat32_status status = read_object_context(object, workspace, &context, true);
   if (status != FAT32_OK) {
     return mounted_result(mounted, status);
   }
@@ -1393,11 +1396,23 @@ enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
     uint64_t sector = cluster_sector(&object->mounted->volume, object->chain[index]) +
         offset % cluster_bytes / FAT32_SECTOR_BYTES;
     size_t skip = (size_t)(offset % FAT32_SECTOR_BYTES);
-    size_t amount = FAT32_SECTOR_BYTES - skip;
+    uint32_t sectors = 1;
+    while (sectors < FAT32_IO_BYTES / FAT32_SECTOR_BYTES &&
+        (uint64_t)sectors * FAT32_SECTOR_BYTES < remaining + skip) {
+      uint64_t next = offset - skip + (uint64_t)sectors * FAT32_SECTOR_BYTES;
+      uint32_t next_index = (uint32_t)(next / cluster_bytes);
+      uint64_t next_sector = cluster_sector(&object->mounted->volume, object->chain[next_index]) +
+          next % cluster_bytes / FAT32_SECTOR_BYTES;
+      if (next_sector != sector + sectors) {
+        break;
+      }
+      ++sectors;
+    }
+    size_t amount = (size_t)sectors * FAT32_SECTOR_BYTES - skip;
     if (amount > remaining) {
       amount = (size_t)remaining;
     }
-    status = fat32_partition_read(context, sector, 1, context->data);
+    status = fat32_partition_read(context, sector, sectors, context->data);
     context->data_cached = false;
     if (status != FAT32_OK) {
       return mounted_result(mounted, status);
@@ -1555,7 +1570,7 @@ static enum fat32_status file_update(struct fat32_mounted_object *object,
   uint32_t old_size = object->entry.file_bytes;
   if (!payload_bytes && final == old_size) {
     struct fat32_context *context;
-    return read_object_context(object, workspace, &context);
+    return read_object_context(object, workspace, &context, false);
   }
   uint32_t total = clusters_for(&object->mounted->volume, final);
   if (total > object->chain_capacity) {

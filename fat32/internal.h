@@ -85,6 +85,9 @@ enum fat32_status fat32_context_volume_prepare(const struct fat32_volume *volume
 enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
                                             struct fat32_workspace *workspace,
                                             struct fat32_context **context);
+/* Borrows full-check FAT buffers only when the supplied workspace contains them. */
+void fat32_context_read_windows(struct fat32_context *context,
+    struct fat32_workspace *workspace);
 enum fat32_status fat32_step(struct fat32_context *context);
 enum fat32_status fat32_disk_read(struct fat32_context *context, uint64_t first,
                                 uint32_t count, void *bytes);

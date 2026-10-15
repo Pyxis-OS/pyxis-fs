@@ -124,6 +124,21 @@ may emit a prefix on a later I/O/budget/sink failure; a native adapter must stag
 bytes when its protocol requires no partial publication. Enumeration retains the
 reader's opaque continuation/end and success-only output rules.
 
+Regular-file locate and range reads borrow the full-check FAT windows when the
+supplied workspace already contains the complete full-check allocation. Windows
+remain bounded by 128 sectors per copy and the source callback limit; smaller
+workspaces retain the existing local windows. Geometry, selected metadata and
+complete relevant chains are still revalidated on every operation. Directories
+and mutations retain their existing eight-sector windows. No proof or media bytes
+survive between read operations, and no allocation, workspace growth or ownership
+bitmap clearing is added.
+
+Range reads batch only physically consecutive payload sectors, including
+consecutive clusters, through the existing 4-KiB data buffer. Partition bounds,
+callback limits, EOF clipping, operation budgets and prefix-on-failure rules still
+apply. The engine still validates the whole file chain for each bounded read, so
+sequential small reads remain proportional to file size times request count.
+
 Content mutation requires an ASCII name and alias but permits unrelated valid
 Unicode siblings. Namespace edits require every ordinary sibling name/alias in
 both changed directories to fit ASCII folding. New components preserve spelling

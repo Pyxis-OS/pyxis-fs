@@ -196,6 +196,24 @@ enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
   return fat32_revalidate(*context);
 }
 
+void fat32_context_read_windows(struct fat32_context *context,
+    struct fat32_workspace *workspace)
+{
+  uint32_t window = check_window_sectors(context->volume);
+  size_t required;
+  if (window <= FAT32_FAT_WINDOW_SECTORS ||
+      fat32_workspace_size(context->volume, workspace->directory_depth_limit, &required) != FAT32_OK ||
+      workspace->bytes < required) {
+    return;
+  }
+  uint8_t *buffers = (uint8_t *)workspace->memory + required -
+      (size_t)window * FAT32_SECTOR_BYTES * 2;
+  context->fat_bytes = buffers;
+  context->mirror_bytes = buffers + (size_t)window * FAT32_SECTOR_BYTES;
+  context->fat_window_sectors = window;
+  context->fat_cached = false;
+}
+
 enum fat32_status fat32_step(struct fat32_context *context)
 {
   if (!context->steps) {
