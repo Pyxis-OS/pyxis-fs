@@ -131,8 +131,8 @@ static enum fat32_status validate_entry_chain(struct fat32_context *context,
   return fat32_validate_directory(context, entry->first_cluster, parent);
 }
 
-enum fat32_status fat32_locate_entry(struct fat32_context *context,
-    const struct fat32_locator *locator, struct fat32_entry *entry)
+static enum fat32_status locate_entry(struct fat32_context *context,
+    const struct fat32_locator *locator, struct fat32_entry *entry, bool validate_chain)
 {
   if (!locator) {
     return FAT32_INVALID;
@@ -148,7 +148,7 @@ enum fat32_status fat32_locate_entry(struct fat32_context *context,
     fat32_zero(entry, sizeof(*entry));
     entry->attributes = FAT32_ATTR_DIRECTORY;
     entry->first_cluster = volume->root_cluster;
-    return validate_entry_chain(context, entry, 0);
+    return validate_chain ? validate_entry_chain(context, entry, 0) : FAT32_OK;
   }
   if (!fat32_valid_cluster(volume, locator->parent_cluster) ||
       (locator->parent_cluster == volume->root_cluster ? locator->parent_parent_cluster != 0 :
@@ -182,9 +182,21 @@ enum fat32_status fat32_locate_entry(struct fat32_context *context,
       if (!fat32_ordinary_entry(entry)) {
         return FAT32_STALE;
       }
-      return validate_entry_chain(context, entry, locator->parent_cluster);
+      return validate_chain ? validate_entry_chain(context, entry, locator->parent_cluster) : FAT32_OK;
     }
   }
+}
+
+enum fat32_status fat32_locate_entry(struct fat32_context *context,
+    const struct fat32_locator *locator, struct fat32_entry *entry)
+{
+  return locate_entry(context, locator, entry, true);
+}
+
+enum fat32_status fat32_locate_entry_metadata(struct fat32_context *context,
+    const struct fat32_locator *locator, struct fat32_entry *entry)
+{
+  return locate_entry(context, locator, entry, false);
 }
 
 enum fat32_status fat32_root(const struct fat32_volume *volume,

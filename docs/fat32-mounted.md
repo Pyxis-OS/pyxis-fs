@@ -117,27 +117,66 @@ retaining the record. Forgetting and background/retirement cleanup never repair.
 ## Reads and mutation profile
 
 Locate, component lookup, one-entry enumeration and offset reads accept retained
-objects. They revalidate geometry, selected metadata and complete relevant chains;
-reads do not require full-volume checking. Unicode LFNs enumerate intact and an
-unambiguous ASCII alias can select their content. Ranged reads clip at EOF and
-may emit a prefix on a later I/O/budget/sink failure; a native adapter must stage
-bytes when its protocol requires no partial publication. Enumeration retains the
-reader's opaque continuation/end and success-only output rules.
+objects. Unicode LFNs enumerate intact and an unambiguous ASCII alias can select
+their content. Ranged reads clip at EOF and may emit a prefix on a later
+I/O/budget/sink failure; a native adapter must stage bytes when its protocol
+requires no partial publication. Enumeration retains the reader's opaque
+continuation/end and success-only output rules.
 
-Regular-file locate and range reads borrow the full-check FAT windows when the
-supplied workspace already contains the complete full-check allocation. Windows
-remain bounded by 128 sectors per copy and the source callback limit; smaller
-workspaces retain the existing local windows. Geometry, selected metadata and
-complete relevant chains are still revalidated on every operation. Directories
-and mutations retain their existing eight-sector windows. No proof or media bytes
-survive between read operations, and no allocation, workspace growth or ownership
-bitmap clearing is added.
+Owner-accepted read-proof lifetime (2026-10-15): regular-file locate and range
+reads retain their geometry, selected metadata and complete-chain proof during an
+unchanged, exclusively owned mount epoch. The first operation on a file in an
+epoch revalidates geometry and parent/slot metadata, then validates the actual
+complete file chain while comparing it with the retained canonical vector in one
+walk. The shared walker retains bounds, allocation, exact-length, loop and
+end-of-chain checks. A malformed actual chain still reports corruption; a valid
+but different canonical chain reports stale state. Selected metadata mismatch
+uses the original complete selected-entry validator before reporting stale state.
+Detached files validate their retained chain without consulting the reusable slot.
+Binding still validates/collects the chain separately; it does not stamp a read
+proof. Directory reads and all mutation validators retain their strict behavior.
 
-Range reads batch only physically consecutive payload sectors, including
-consecutive clusters, through the existing 4-KiB data buffer. Partition bounds,
-callback limits, EOF clipping, operation budgets and prefix-on-failure rules still
-apply. The engine still validates the whole file chain for each bounded read, so
-sequential small reads remain proportional to file size times request count.
+A nonzero matching mount/object epoch and valid allocation proof permit reuse.
+Each call still checks stopped state, object membership, workspace capacity and
+chain shape; payload reads check selected vector indices, cluster bounds and
+retained allocation bits. The already-retained chain vector selects a cluster
+directly as `offset / cluster_bytes`, without walking or searching from the first
+cluster for each chunk. There is no media data cache: every requested payload is
+read through the backing callback. Sequential reads in an unchanged epoch cost
+one complete validation plus requested payload work, rather than a whole-chain
+walk for every bounded request.
+
+Every write, resize, create, remove, rename, forget/reclamation, CHECK, sync and
+seal attempt invalidates read proofs before validation, including no-ops and
+pre-effect refusals. Mirror repair runs only inside an already invalidated
+mutation. Every non-success returned by a mounted operation with a mount/object
+argument also invalidates read proofs, including argument/capacity, missing-name
+and output failures. This read-proof invalidation is separate from allocation
+proof invalidation: ordinary refusals still preserve the allocation map/proof.
+Invalid allocation proof disables read reuse. CHECK cannot revive an earlier
+object proof, and epoch wrap permanently disables reuse for that mount. Pure
+sizing helpers have no mount argument or proof state. Adapters call
+`fat32_mounted_invalidate_reads(mounted)` before bound mutation/CHECK attempts and
+on bound errors occurring before an engine operation, including sizing,
+authority and admission refusals. The hook shares the engine's serialized,
+exclusive-ownership contract, performs no I/O or allocation, preserves allocation
+proof and never restores read proof or resets a stopped writer.
+
+This relies on exclusive extent ownership and correct serialized Pyxis
+transitions. Silent metadata corruption after a successful validation may remain
+undetected during reused reads until the next invalidation and validation,
+explicit CHECK or remount; payload read errors still fail and invalidate proofs
+immediately. External concurrent modification remains unsupported. No automatic
+repair, retry, lease extension or reset is introduced.
+
+Cold regular-file validation borrows full-check FAT windows when the existing
+workspace contains the complete full-check allocation. Windows are bounded by
+128 sectors per copy and the source callback limit; smaller workspaces retain
+local windows. Directories and mutations retain their eight-sector windows. No
+allocation, workspace growth or ownership bitmap clearing is added. Range reads
+batch physically consecutive payload sectors, including consecutive clusters,
+through the existing 4-KiB data buffer. Partition bounds, callback limits, EOF
+clipping, operation budgets and prefix-on-failure rules still apply.
 
 Content mutation requires an ASCII name and alias but permits unrelated valid
 Unicode siblings. Namespace edits require every ordinary sibling name/alias in

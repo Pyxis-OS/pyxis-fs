@@ -60,6 +60,9 @@ enum fat32_status fat32_check_context_extra(struct fat32_context *context,
     struct fat32_check_report *report, fat32_check_extra_fn extra, void *extra_context);
 enum fat32_status fat32_locate_entry(struct fat32_context *context,
     const struct fat32_locator *locator, struct fat32_entry *entry);
+/* Checks the same parent/slot metadata; caller must validate the selected chain. */
+enum fat32_status fat32_locate_entry_metadata(struct fat32_context *context,
+    const struct fat32_locator *locator, struct fat32_entry *entry);
 
 uint16_t fat32_get16(const uint8_t *bytes);
 uint32_t fat32_get32(const uint8_t *bytes);
@@ -80,6 +83,9 @@ enum fat32_status fat32_context_volume(const struct fat32_volume *volume,
 enum fat32_status fat32_context_volume_prepare(const struct fat32_volume *volume,
                                               struct fat32_workspace *workspace,
                                               struct fat32_context **context);
+/* Prepares local backing without media I/O; caller owns a valid geometry proof. */
+enum fat32_status fat32_context_volume_local_prepare(const struct fat32_volume *volume,
+    struct fat32_workspace *workspace, struct fat32_context **context);
 /* Uses only fat32_context_size() backing and validates individual chains,
  * without the checker's ownership bitmap or directory traversal frames. */
 enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
@@ -102,6 +108,9 @@ enum fat32_status fat32_fat_entry(struct fat32_context *context, uint32_t cluste
                                 uint32_t *value);
 enum fat32_status fat32_claim_chain(struct fat32_context *context, uint32_t first,
                                   uint32_t file_bytes, bool directory, uint64_t *clusters);
+/* Validates the actual complete file chain before returning a canonical mismatch. */
+enum fat32_status fat32_match_file_chain(struct fat32_context *context, uint32_t first,
+    uint32_t file_bytes, const uint32_t *chain, uint32_t chain_count);
 void fat32_cursor_start(struct fat32_cursor *cursor, uint32_t first);
 enum fat32_status fat32_next_entry(struct fat32_context *context,
                                  struct fat32_cursor *cursor, uint32_t parent,

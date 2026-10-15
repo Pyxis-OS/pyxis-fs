@@ -180,7 +180,7 @@ enum fat32_status fat32_context_volume(const struct fat32_volume *volume,
   return status == FAT32_OK ? fat32_revalidate(*context) : status;
 }
 
-enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
+enum fat32_status fat32_context_volume_local_prepare(const struct fat32_volume *volume,
     struct fat32_workspace *workspace, struct fat32_context **context)
 {
   if (!volume || (volume->mirrors && !volume->mirrors->bound) ||
@@ -193,7 +193,14 @@ enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
     return status;
   }
   (*context)->volume = volume;
-  return fat32_revalidate(*context);
+  return FAT32_OK;
+}
+
+enum fat32_status fat32_context_volume_local(const struct fat32_volume *volume,
+    struct fat32_workspace *workspace, struct fat32_context **context)
+{
+  enum fat32_status status = fat32_context_volume_local_prepare(volume, workspace, context);
+  return status == FAT32_OK ? fat32_revalidate(*context) : status;
 }
 
 void fat32_context_read_windows(struct fat32_context *context,

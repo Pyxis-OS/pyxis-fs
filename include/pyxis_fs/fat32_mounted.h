@@ -29,6 +29,7 @@ struct fat32_mounted_object {
   struct fat32_locator locator;
   uint32_t *chain;
   uint32_t chain_capacity, chain_count;
+  uint64_t read_epoch;
   bool attached;
 };
 struct fat32_mounted_recovery {
@@ -52,6 +53,7 @@ struct fat32_mounted {
   uint8_t *allocation;
   size_t allocation_bytes;
   uint32_t free_count, next_free;
+  uint64_t read_epoch; /* Zero permanently disables proof reuse after wrap. */
   bool allocation_valid, dirty_owned, mutated, stopped;
   struct fat32_mounted_recovery recovery;
 };
@@ -77,6 +79,11 @@ enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume
  * preserves proof. Validation failure leaves proof invalid and allocation bytes
  * unchanged. Neither CHECK nor reopening may reset an uncertain stopped writer. */
 enum fat32_status fat32_mounted_allocation_size(const struct fat32_volume *volume, size_t *bytes);
+/* Serialized under the same exclusive ownership as other mounted operations.
+ * Ends regular-file read-proof reuse without I/O, allocation, changing allocation
+ * proof or resetting a stopped writer. Adapters call before bound mutation/CHECK
+ * attempts and on bound errors that occur before entering an engine operation. */
+void fat32_mounted_invalidate_reads(struct fat32_mounted *mounted);
 /* OPEN requires a fresh zero-initialized record; it never reopens/reset one. */
 enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,
     const struct fat32_volume *volume, const struct fat32_write_io *io,
@@ -103,6 +110,10 @@ enum fat32_status fat32_mounted_object_reserve(struct fat32_mounted_object *obje
  * refuses detached reclamation with READ_ONLY; forgetting never repairs. */
 enum fat32_status fat32_mounted_object_forget(struct fat32_mounted_object *object,
     struct fat32_workspace *workspace);
+/* Regular files retain geometry/metadata/complete-chain proof in an unchanged
+ * exclusive mount epoch while allocation proof is valid; payload is never cached.
+ * Mutation/CHECK/sync/forget attempts and mounted-operation errors invalidate it.
+ * Directory and mutation validation remain strict. Epoch wrap disables reuse. */
 enum fat32_status fat32_mounted_locate(struct fat32_mounted_object *object,
     struct fat32_workspace *workspace, struct fat32_entry *entry);
 enum fat32_status fat32_mounted_lookup(struct fat32_mounted_object *directory,

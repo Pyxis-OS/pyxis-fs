@@ -326,16 +326,21 @@ uint32_t fat32_mirror_pending(const struct fat32_volume *volume)
   return volume && volume->mirrors ? volume->mirrors->pending_sectors : 0;
 }
 
-enum fat32_status fat32_claim_chain(struct fat32_context *context, uint32_t first,
-    uint32_t file_bytes, bool directory, uint64_t *clusters)
+static enum fat32_status claim_chain(struct fat32_context *context, uint32_t first,
+    uint32_t file_bytes, bool directory, uint64_t *clusters,
+    const uint32_t *chain, uint32_t chain_count, bool compare)
 {
   *clusters = 0;
   if (!directory && !file_bytes) {
-    return first ? FAT32_CORRUPT : FAT32_OK;
+    if (first) {
+      return FAT32_CORRUPT;
+    }
+    return compare && chain_count ? FAT32_STALE : FAT32_OK;
   }
   uint64_t expected = ((uint64_t)file_bytes +
       (uint64_t)context->volume->sectors_per_cluster * FAT32_SECTOR_BYTES - 1) /
       ((uint64_t)context->volume->sectors_per_cluster * FAT32_SECTOR_BYTES);
+  bool matches = true;
   uint32_t cluster = first;
   uint32_t checkpoint = first;
   uint64_t power = 1, distance = 0;
@@ -353,6 +358,9 @@ enum fat32_status fat32_claim_chain(struct fat32_context *context, uint32_t firs
       }
       context->seen[cluster / 8] |= 1u << (cluster % 8);
     }
+    if (compare && (*clusters >= chain_count || !chain || chain[*clusters] != cluster)) {
+      matches = false;
+    }
     ++*clusters;
     uint32_t next;
     enum fat32_status status = fat32_fat_entry(context, cluster, &next);
@@ -360,7 +368,10 @@ enum fat32_status fat32_claim_chain(struct fat32_context *context, uint32_t firs
       return status;
     }
     if (next >= FAT32_EOC) {
-      return directory || *clusters == expected ? FAT32_OK : FAT32_CORRUPT;
+      if (!directory && *clusters != expected) {
+        return FAT32_CORRUPT;
+      }
+      return compare && (!matches || *clusters != chain_count) ? FAT32_STALE : FAT32_OK;
     }
     if (!directory && *clusters >= expected) {
       return FAT32_CORRUPT;
@@ -379,4 +390,17 @@ enum fat32_status fat32_claim_chain(struct fat32_context *context, uint32_t firs
     }
     cluster = next;
   }
+}
+
+enum fat32_status fat32_claim_chain(struct fat32_context *context, uint32_t first,
+    uint32_t file_bytes, bool directory, uint64_t *clusters)
+{
+  return claim_chain(context, first, file_bytes, directory, clusters, NULL, 0, false);
+}
+
+enum fat32_status fat32_match_file_chain(struct fat32_context *context, uint32_t first,
+    uint32_t file_bytes, const uint32_t *chain, uint32_t chain_count)
+{
+  uint64_t clusters;
+  return claim_chain(context, first, file_bytes, false, &clusters, chain, chain_count, true);
 }
