@@ -46,6 +46,15 @@ struct fat32_mounted_recovery {
   bool uncertain;
   const uint8_t *mirror_image; /* Retained repair buffer; failed reads may be partial. */
 };
+struct fat32_mounted_batch {
+  struct fat32_source backing;
+  void *memory, *context;
+  struct fat32_prepared_sector *sectors;
+  uint8_t *images, *run, *quarantine;
+  size_t *index, *order;
+  size_t count, capacity, slots, quarantine_bytes;
+  uint32_t quarantined;
+};
 struct fat32_mounted {
   struct fat32_volume volume;
   struct fat32_write_io io;
@@ -57,11 +66,13 @@ struct fat32_mounted {
   uint64_t read_epoch, append_epoch; /* Zero permanently disables proof reuse after wrap. */
   bool allocation_valid, dirty_owned, mutated, stopped;
   struct fat32_mounted_recovery recovery;
+  struct fat32_mounted_batch batch;
 };
 
 /* Serialized, nonreentrant calls; caller excludes all competing media writers.
  * All storage and callback contexts remain alive through calls and held objects.
- * If stopped, retain the failed operation workspace unchanged with this mount;
+ * If stopped, retain the first recovery record's backing unchanged with this mount
+ * (operation workspace or persistent batch backing);
  * no operation, retry, reclamation or rebinding is then permitted. No heap.
  * changed_bytes bounds content images (gap and cluster slack included);
  * allocated_clusters bounds new candidate storage and changed_clusters bounds
@@ -83,6 +94,14 @@ enum fat32_status fat32_mounted_workspace_size(const struct fat32_volume *volume
  * preserves proof. Validation failure leaves proof invalid and allocation bytes
  * unchanged. Neither CHECK nor reopening may reset an uncertain stopped writer. */
 enum fat32_status fat32_mounted_allocation_size(const struct fat32_volume *volume, size_t *bytes);
+/* Includes image/descriptor/index backing, a separate checkpoint run buffer and
+ * scratch context, and quarantine bits. image_bytes is a tunable target, not a
+ * file limit: an individually larger operation checkpoints synchronously.
+ * The caller retains this disjoint, max_align_t-aligned backing for the whole
+ * mounted lifetime, including indefinitely after uncertain I/O. */
+enum fat32_status fat32_mounted_batch_size(const struct fat32_volume *volume,
+    size_t image_bytes, uint32_t max_write_sectors, size_t *bytes);
+bool fat32_mounted_pending(const struct fat32_mounted *mounted);
 /* Serialized under the same exclusive ownership as other mounted operations.
  * Ends regular-file read-proof reuse without I/O, allocation, changing allocation
  * proof or resetting a stopped writer. Adapters call before WRITE attempts;
@@ -95,7 +114,8 @@ void fat32_mounted_invalidate_proofs(struct fat32_mounted *mounted);
 /* OPEN requires a fresh zero-initialized record; it never reopens/reset one. */
 enum fat32_status fat32_mounted_open(struct fat32_mounted *mounted,
     const struct fat32_volume *volume, const struct fat32_write_io *io,
-    uint8_t *allocation, size_t allocation_bytes, struct fat32_workspace *workspace);
+    uint8_t *allocation, size_t allocation_bytes, void *batch_memory,
+    size_t batch_bytes, size_t image_bytes, struct fat32_workspace *workspace);
 enum fat32_status fat32_mounted_check(struct fat32_mounted *mounted,
     uint8_t *allocation, size_t allocation_bytes, struct fat32_workspace *workspace,
     struct fat32_check_report *report);
@@ -113,13 +133,15 @@ enum fat32_status fat32_mounted_object_bind(struct fat32_mounted *mounted,
 enum fat32_status fat32_mounted_object_reserve(struct fat32_mounted_object *object,
     uint32_t *chain, uint32_t capacity);
 /* Forget only after final caller reference drains. Attached records need no
- * media effects; detached chains are durably freed before the record unlinks.
+ * media effects; detached reclamation transfers its images/quarantine into the
+ * mount-owned batch before the record unlinks.
  * A failure leaves this record and its chain retained. Pending mirror repair
  * refuses detached reclamation with READ_ONLY; forgetting never repairs. */
 enum fat32_status fat32_mounted_object_forget(struct fat32_mounted_object *object,
     struct fat32_workspace *workspace);
 /* Regular files retain geometry/metadata/complete-chain proof in an unchanged
- * exclusive mount epoch while allocation proof is valid; payload is never cached.
+ * exclusive mount epoch while allocation proof is valid. Reads use pending images
+ * where present, otherwise the backing source; read proofs cache no payload.
  * Mutation/CHECK/sync/forget attempts and mounted-operation errors invalidate it.
  * Directory validation remains strict. Append reuse is separate. Epoch wrap
  * disables reuse. */
@@ -143,13 +165,16 @@ enum fat32_status fat32_mounted_read_range(struct fat32_mounted_object *object,
 enum fat32_status fat32_mounted_read_into(struct fat32_mounted_object *object,
     uint64_t offset, size_t bytes, struct fat32_workspace *workspace,
     void *destination, size_t *read_bytes);
-/* All writes return only after ordered flushes. No atomic rename or rollback.
+/* Mutations publish into the mount-owned pending view before returning. They
+ * may checkpoint for capacity or ordering dependencies; SYNC is the durability
+ * point. No atomic rename or rollback across power loss.
  * Content mutation of a detached file uses its retained chain, never its old
  * reusable slot. New files are empty; directories contain only dot entries.
  * A strict positive-length EOF append retains its fully validated prefix only
  * through confirmed appends. Recheck geometry, parent, selected metadata and
  * old tail on each reuse. Other mutations, CHECK, lifecycle attempts and errors
- * end reuse; overwrite/gap/resize use full validation. No payload is cached. */
+ * end reuse; overwrite/gap/resize use full validation. Pending images own copies
+ * of producer bytes, independently of this append proof. */
 enum fat32_status fat32_mounted_write(struct fat32_mounted_object *object,
     uint64_t offset, const void *payload, size_t bytes, struct fat32_workspace *workspace);
 enum fat32_status fat32_mounted_resize(struct fat32_mounted_object *object,

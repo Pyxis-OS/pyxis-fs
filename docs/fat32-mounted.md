@@ -13,8 +13,8 @@ keeps source/I/O callbacks, mount state, object records and backing alive. There
 is no heap, kernel ABI, ID/refcount allocator, capability authority, scheduling,
 publication lease, mount registry or retirement controller here. These belong
 to the native adapter. Caller data pointers must remain stable and all argument,
-object, chain, output and workspace storage must be disjoint. Callbacks cannot
-mutate or reenter the engine. The library confines filesystem I/O to the admitted
+object, chain, output, batch and workspace storage must be disjoint. Callbacks
+cannot mutate or reenter the engine. The library confines filesystem I/O to the admitted
 partition and never infers existing-file authority from raw creation receipts.
 
 ## Admission and retained objects
@@ -22,8 +22,15 @@ partition and never infers existing-file authority from raw creation receipts.
 Admit GPT/geometry through `fat32_open` for strict mirror validation or
 `fat32_open_mounted_view` for native FAT1 authority, then call
 `fat32_mounted_open` with a fresh zero-initialized mount record, separate allocation
-backing and full-check workspace. `fat32_mounted_allocation_size` gives the retained
-bitmap size. Admission performs one complete mounted-volume check, refusing dirty,
+and batch backing, and full-check workspace. `fat32_mounted_allocation_size` gives
+the retained bitmap size. `fat32_mounted_batch_size(volume, image_bytes,
+max_write_sectors, bytes)` gives the required batch backing size for the chosen
+sector-image target and callback bound. This mandatory, max_align_t-aligned backing
+holds images, descriptors, indexes, a checkpoint context/run buffer and quarantine
+bits; the target bounds images, not total backing or file size. Retain it for the
+mount lifetime, including after uncertain I/O. The mount's source callback points
+back to its final record, so do not move or copy an opened mount.
+Admission performs one complete mounted-volume check, refusing dirty,
 error, corrupt and unsupported media, and builds the exact free bitmap/count.
 FSInfo is a hint, never allocation authority. Full checks use FAT windows of up to 64 KiB per copy (128 sectors at 512 bytes
 or 16 at 4096), reduced to the callback's read limit, with at most 128 KiB of
@@ -51,21 +58,31 @@ No logging, authority or callback is added here. Mounted RO views never repair;
 the standalone inspector and raw writer remain strict, and the raw writer
 rejects mounted-view volumes.
 
-The retained allocation map borrows caller storage for the mount lifetime. Confirmed
-mutation/reclamation transitions update it only after all ordered phases flush.
-Detached held chains remain allocated through durable final-reference reclamation.
+The retained allocation map borrows caller storage for the mount lifetime. Successful
+mutations publish their coherent mounted result and update the logical allocation
+map/count and object records before returning. Batched mutations retain complete
+sector images in the mount-owned pending view. Reads,
+validation and subsequent mutations use that coherent view. New clusters are
+allocated at each call; allocation is not deferred or grouped per file at checkpoint.
+Detached held chains remain allocated until successful final-reference reclamation.
+Reclamation makes clusters logically free but quarantines them from allocation
+until the complete batch is durable. The allocator excludes quarantined clusters
+even though they contribute to the logical free count.
 The caller excludes every other media writer throughout this lifetime. Opening a
 fresh record does not accept another instance's dirty mark or held chains, and
 opening an existing or stopped record never resets it.
 
 `fat32_mounted_check(mounted, allocation, allocation_bytes, workspace, report)`
 explicitly revalidates the complete namespace, allocation, held objects and detached
-roots using the mount's current owned dirty snapshot. It needs full-check workspace
-from `fat32_workspace_size` and caller-owned allocation backing disjoint from the
+roots using the mount's current owned dirty snapshot and pending sector overlay.
+It needs full-check workspace from `fat32_workspace_size` and caller-owned
+allocation backing disjoint from the
 workspace. CHECK converts its reachability scratch into free bits after each
 cluster's final validation, then copies the completed map only after held-object
 validation also succeeds. The destination may be the retained map; no third
-bitmap is required. Success publishes map/count and restores valid proof.
+reachability bitmap is required. Success also verifies that every quarantined
+cluster is logically free, preserves the quarantine and its count, publishes
+map/count and restores valid proof. CHECK does not drain the pending batch.
 Backing/capacity refusal before validation preserves existing proof; any failure
 after validation starts leaves proof invalid and allocation bytes unchanged.
 Recovery backing remains retained. CHECK never
@@ -106,11 +123,13 @@ it refuse. Root removal is impossible. Rename supports regular files only.
 Self/alias rename is a successful no-op retaining current spelling.
 
 `object_forget` is for the final caller reference only. Attached records unlink
-from memory without media changes. A detached allocated chain is freed with
-ordered durable reclamation before its record unlinks. Any failure leaves the
-record/chain retained. Final close is not a sync or retirement promise. The caller
-must keep a detached record alive until successful reclamation and keep every
-record alive after terminal uncertainty.
+from memory without media changes. Detached reclamation transfers its complete
+sector images and quarantine into the mount-owned batch before the record unlinks;
+an operation larger than the batch target completes reclamation synchronously.
+After successful forget the caller may release the record and chain without
+waiting for a checkpoint. Any failure leaves the record/chain retained. Final
+close is not a sync or retirement promise. Keep all still-held records alive after
+terminal uncertainty; previously forgotten records are not borrowed by a batch.
 Pending mirror repair refuses detached reclamation with `FAT32_READ_ONLY`,
 retaining the record. Forgetting and background/retirement cleanup never repair.
 
@@ -141,9 +160,10 @@ Each call still checks stopped state, object membership, workspace capacity and
 chain shape; payload reads check selected vector indices, cluster bounds and
 retained allocation bits. The already-retained chain vector selects a cluster
 directly as `offset / cluster_bytes`, without walking or searching from the first
-cluster for each chunk. There is no media data cache: every requested payload is
-read through the backing callback. Sequential reads in an unchanged epoch cost
-one complete validation plus requested payload work, rather than a whole-chain
+cluster for each chunk. There is no cache of clean payload: requested sectors come
+from the latest pending image when present and otherwise from the backing callback.
+Sequential reads in an unchanged epoch cost one complete validation plus requested
+payload work, rather than a whole-chain
 walk for every bounded request.
 
 Every write, resize, create, remove, rename, forget/reclamation, CHECK, sync and
@@ -206,8 +226,9 @@ New regular files start empty. Newly created directories get real dot entries.
 Writes accept at most 1 MiB of caller bytes and enforce FAT's 32-bit file-length
 limit. Overwrites preserve untouched bytes. Growth zeroes old slack and all newly
 allocated clusters, including beyond-EOF gaps and new slack. Shrink zeroes the
-retained tail slack, durably publishes the smaller directory length, then cuts
-and frees the discarded tail. Regrowth cannot expose discarded content. A
+retained tail slack and stages the smaller directory length and tail reclamation.
+At checkpoint the smaller length becomes durable before the discarded tail is
+cut/freed. Regrowth cannot expose discarded content. A
 zero-length write validates state, attributes, names and the selected object but
 does not grow, dirty or publish metadata.
 
@@ -216,6 +237,9 @@ destination the victim must be NULL; with a distinct destination REPLACE and its
 retained record are required. Both source and victim stay held throughout the
 operation, even if no public handle currently names the victim. Prepared namespace
 images can reuse deleted source/victim slots without reusing their identities.
+An effective replacement checkpoints the mount's existing pending batch before
+staging the rename, making the source contents durable first. Non-replacing and
+self/alias renames do not pay this replacement checkpoint.
 There is no directory move, cross-volume move or crash-atomic rename.
 
 ## Finite preparation and effects
@@ -236,8 +260,8 @@ validated canonical prefix across its own confirmed appends. Each reuse still
 revalidates geometry, the held parent, selected slot/name/metadata, chain shape
 and the old tail's allocation and EOC entry, including mirror checks. Detached
 files use their held entry/vector, never their former slot. Allocation candidates,
-touched tail/new clusters, zeroing, size publication and all effectful durability
-barriers are unchanged. Pending mirror repair uses complete validation.
+touched tail/new clusters, zeroing and size publication keep their checks and use
+the checkpoint ordering below. Pending mirror repair uses complete validation.
 
 Each write attempt advances a separate mount append epoch, invalidating all
 other objects' append proofs. Only a confirmed strict append stamps the source
@@ -246,7 +270,8 @@ forget/reclamation, sync/seal and every error invalidate it; zero-length writes,
 overwrite, gap growth and resize neither reuse nor seed it. Epoch wrap permanently
 disables reuse. Replacing workspace or successfully reserving identical chain
 storage does not invalidate it. Read-proof invalidation on every mutation remains
-unchanged. No payload cache, cross-call writeback or uncertain-write retry is added.
+unchanged. Append proof adds no separate payload cache or uncertain-write retry;
+accepted writes use the shared pending batch described below.
 Silent damage to an untouched prefix can wait for cold validation or CHECK.
 
 Local checks do not reprove allocation ownership across unrelated objects. Silent
@@ -270,8 +295,10 @@ free vector or conservative image of every FAT sector is reserved for a tiny wri
 Before effects the engine checks namespace, FAT space, record capacities and finite
 work/sector budgets, and reserves every backing write/flush. No payload
 callbacks or allocations occur during effects. Pending mirror repair alone uses
-bounded streamed backing reads during effects, as described below. Preflight refusal leaves media and
-object records unchanged, although detected corruption invalidates proof.
+bounded streamed backing reads during effects, as described below. A call can
+checkpoint previously accepted work before returning a refusal, including when
+quarantine prevents satisfying its candidate reservation. A refused operation does
+not publish its own object changes; detected corruption invalidates proof.
 
 `fat32_mounted_workspace_size(volume, changed_bytes, allocated_clusters,
 changed_clusters, max_write_sectors)` reserves local context, candidate and
@@ -303,24 +330,38 @@ use the zero-change mounted workspace; admission/CHECK require the full checker
 bitmap and traversal frames instead. Keep a nonzero directory depth limit for
 locator operations and enough traversal depth for full CHECK.
 
-The caller charges allocation backing, operation workspace, held records/chains and
-retained failed workspace under its aggregate mount budget. Allocation backing stays
+The caller charges allocation/batch backing, operation workspace, held records/chains
+and retained failed workspace under its aggregate mount budget. Allocation backing stays
 separate from replaceable operation workspace. Reserve and charge old/new overlap
 before replacing either; failed allocation preserves existing storage. Size helpers
 calculate requirements without allocating or imposing an independent budget.
 
 Prepared sector images are indexed by phase and LBA; FAT allocation changes are
 indexed by cluster. Open-addressed tables have more than twice as many slots as
-their respective record capacities. Every probe consumes the finite step budget;
-unfavorable collisions can refuse with LIMIT before any effect. Looking for an
+their respective record capacities. Operation-plan probes consume the finite step
+budget; unfavorable collisions can refuse with LIMIT before any effect. Looking for an
 earlier image checks only the fixed set of preceding phases. Preparation no
 longer scans every earlier sector image or FAT change for each lookup. Once all
 images are complete, a budgeted heapsort reuses the sector index as a phase/LBA
 ordering array, costing O(n log n) comparisons for n prepared images. Prepared
 records and image storage stay at their original addresses. None of these indexes
-or ordering state survive a successful operation as reusable validation proof.
+or ordering state serve as reusable validation proof.
 
-The mounted phases are distinct from the raw writer phases:
+Batched mutations copy their DATA through FSINFO images into the retained batch;
+later calls replace images at the same phase/LBA using the coherent pending view.
+Before insertion, the engine checkpoints if the new images exceed remaining
+capacity or a new lower-phase image shares an LBA with an older higher-phase image.
+The latter prevents a pending RECLAIM image from undoing a later FAT link, for
+example. Pending mirror repair also drains the existing batch before repair.
+If candidate allocation needs quarantined frees, the engine checkpoints before
+preparing the new operation. An operation whose own images exceed the target
+drains the existing batch and runs synchronously through the same physical phase
+writer; the target introduces no smaller file or operation limit.
+`fat32_mounted_pending` reports whether images await checkpoint. The library has
+no timer or memory-pressure controller; callers invoke sync for those policies.
+
+The mounted phases are distinct from the raw writer phases. MARK is durable before
+the first mutation is staged; DATA through FSINFO run once per checkpoint:
 
 1. MARK clears the owned clean-shutdown flag in every FAT copy, then flushes before
    the first mutation effect. Prepared later FAT images carry that dirty bit.
@@ -354,24 +395,32 @@ overwrite this backing. No retry or rollback is supplied.
 
 Prepared writes use increasing LBA order within each phase and batch adjacent
 sectors up to the explicit nonzero `fat32_write_io.max_write_sectors` callback
-limit. Images are packed into the disjoint operation-workspace run buffer using
+limit. Images are packed into a disjoint run buffer using
 the actual logical sector size; retained prepared records are not contiguous
 payload. A 64-KiB callback bound therefore permits 64-KiB writes on both 512-byte
 and 4096-byte sectors. The caller supplies and charges this buffer before effects;
-the engine allocates no memory. A phase flushes only if it wrote;
+the engine allocates no memory. Checkpoints use the retained batch's own context,
+ordering array and run buffer, so the operation workspace may be reused or replaced
+after successful staging. Synchronous operations use their operation-workspace run
+buffer. A phase flushes only if it wrote;
 MARK/data/FAT/directory/reclaim/FSInfo order, dirty-mark/repair barriers and explicit
-sync/seal flushes are preserved. No batching crosses phases or calls. Any batch
-failure stops immediately without splitting or retry: `recovery.failed_sector`
-is the batch start and `failed_sector_count` is the entire uncertain range (any
+sync/seal flushes are preserved. Pending images span calls; physical write runs
+never cross phases. Any write-run failure stops immediately without splitting or
+retry: `recovery.failed_sector`
+is the run start and `failed_sector_count` is the entire uncertain range (any
 prefix may have taken effect); flush failures use UINT64_MAX and zero count.
-All prepared images and failed workspace remain retained. The raw writer still
-preserves all clean/error bits. Timestamps stay preserved during mounted updates/rename; new
+All pending images and quarantine remain retained after a failed checkpoint;
+failed synchronous operations retain their prepared images and workspace.
+The raw writer still preserves all clean/error bits. Timestamps stay preserved
+during mounted updates/rename; new
 entries use DOS minimum dates and zero times without claiming UTC validity.
 
 ## Sync, sealing and uncertainty
 
-Sync flushes the instance without clearing its owned dirty mark. Seal flushes,
-then clears/flushes the owned mark only when allocation proof is valid and no
+Sync checkpoints all pending images and then flushes the instance without clearing
+its owned dirty mark. Only a complete successful checkpoint releases quarantined
+clusters for reuse. Seal first syncs, then clears/flushes the owned mark only when
+allocation proof is valid and no
 detached allocated chains or pending mirror repairs remain.
 Held attached objects/views and publication intervals remain caller-owned and
 intact. Detached chains or invalid proof leave the mark dirty after flush and do not
@@ -385,16 +434,25 @@ Pre-existing dirty/error bits are never admitted or cleared.
 
 Any unconfirmed write or flush returns IO, sets `stopped` permanently and freezes
 all data/check/bind/rebind/forget/sync/seal operations. The first recovery record
-retains phase, absolute failed sector (UINT64_MAX for flush), source/victim and
-target-parent records, affected component names, complete prepared sector images
-and the allocated-chain vector. These pointers borrow failed operation workspace:
-the caller must retain it unchanged, along with records/chains and extent
-exclusion. There is no automatic replay, rollback, repair or reopening route.
+retains phase, absolute failed sector (UINT64_MAX for flush) and complete prepared
+sector images. A batch checkpoint can span calls and previously forgotten objects:
+its recovery borrows the mount-owned batch backing and retains no operation names,
+source/victim/target-parent pointers or allocated-chain vector. Keep the batch backing,
+logical allocation map and quarantine intact. A failure during synchronous MARK,
+mirror repair or an oversized operation instead retains the operation's
+source/victim/target-parent records, names and allocated-chain vector as applicable;
+those pointers borrow the failed operation workspace and held records/chains.
+The caller must retain all failed backing unchanged and keep extent exclusion.
+There is no automatic replay, rollback, repair or reopening route.
 Observation/recovery diagnostics read the retained struct directly. FAT does not
 promise untorn sectors, atomic namespace publication across power loss or a
 multi-call transaction; interrupted operations may need external host repair.
 
 ## Validation
+
+The results below qualify the earlier synchronous mounted engine; they predate
+cross-call batching and do not establish the new checkpoint behavior. Batched
+native-adapter qualification belongs to the parent integration record.
 
 The retained-map change and its three local-validation corrections were built with
 ordinary `make -j16`, including host tools and all FAT archives using freestanding
@@ -471,8 +529,9 @@ keep their format-defined offsets within the first 512 bytes. Other sector
 sizes are unsupported.
 
 Prepared-sector descriptors borrow actual-sector-sized images in the caller's
-operation workspace. The size helpers charge both descriptor and image storage,
+operation workspace; staged copies occupy the retained batch backing. The size
+helpers charge both descriptor and image storage,
 with checked arithmetic. On 64-bit hosts this is 536 bytes per prepared 512-byte
 image (formerly 528), or 4120 bytes for 4096-byte images; the ordinary windows
-remain 4 KiB. Failure recovery retains those same workspace bytes and pointers
-until the caller has recorded the outcome.
+remain 4 KiB. Failure recovery retains the corresponding operation or batch backing
+for the stopped mount's lifetime.
