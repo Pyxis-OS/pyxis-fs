@@ -181,6 +181,12 @@ enum npfs_status npfs_features_check_supported(const struct npfs_header *header,
                                              bool writable, uint64_t writable_features);
 enum npfs_status npfs_header_encode(const struct npfs_header *header, void *block);
 enum npfs_status npfs_header_decode(const void *block, struct npfs_header *header);
+/* Add feature bits to a validated raw header, preserving all other encoded
+ * bytes except CRC. current and updated are disjoint complete blocks. This is
+ * encoding only: admission and ordered two-copy publication belong to the writer. */
+enum npfs_status npfs_header_gain_features(const void *current, uint64_t compatible,
+                                         uint64_t read_only_compatible, uint64_t required,
+                                         void *updated);
 /* Two full header blocks, with geometry checked against the source. Select the
  * strict componentwise feature superset only when every other byte (except CRC)
  * agrees. feature_gain permits a writable admitted caller to repair the lagging

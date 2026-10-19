@@ -88,6 +88,28 @@ npfs_header_layout(uint64_t blocks, uint64_t journal_blocks,
   return NPFS_OK;
 }
 
+enum npfs_status
+npfs_header_gain_features(const void *current, uint64_t compatible,
+                          uint64_t read_only_compatible, uint64_t required, void *updated)
+{
+  if (current == NULL || updated == NULL) {
+    return NPFS_INVALID;
+  }
+  struct npfs_header header;
+  enum npfs_status status = npfs_header_decode(current, &header);
+  if (status != NPFS_OK) {
+    return status;
+  }
+  uint8_t bytes[NPFS_BLOCK_SIZE];
+  npfs_memory_copy(bytes, current, sizeof(bytes));
+  npfs_put_u64(bytes + 80, header.compatible | compatible);
+  npfs_put_u64(bytes + 88, header.read_only_compatible | read_only_compatible);
+  npfs_put_u64(bytes + 96, header.required | required);
+  npfs_put_u32(bytes + HEADER_CHECKSUM_OFFSET, npfs_block_crc(bytes, HEADER_CHECKSUM_OFFSET));
+  npfs_memory_copy(updated, bytes, sizeof(bytes));
+  return NPFS_OK;
+}
+
 static bool
 feature_superset(const struct npfs_header *larger, const struct npfs_header *smaller)
 {

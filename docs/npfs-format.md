@@ -95,6 +95,11 @@ resolves to feature-present; an older kernel that rejects unequal valid headers
 cannot open that intermediate pool. The bit stays set after aliases disappear.
 The format/host foundation does not yet implement native LINK or activation.
 
+`npfs_header_gain_features` constructs an additive feature transition from a
+validated raw block. It preserves ignored bytes and refreshes the CRC instead
+of re-encoding a decoded header, which would zero reserves. It performs no I/O or
+feature admission; the native writer owns publication and its two flushes.
+
 Decoding and mutating admission are separate. `npfs_features_check` permits no
 read-only-compatible writes. Audited consumers call
 `npfs_features_check_supported` with their explicit writable-feature mask; host
