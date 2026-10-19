@@ -210,7 +210,7 @@ static void node_attributes(const struct mount_state *mount, const struct mount_
   attributes->st_ino = 2 + (uint64_t)node->volume + (node->number - 1) * NPFS_VOLUME_COUNT;
   bool directory = node->inode.kind == NPFS_INODE_DIRECTORY;
   attributes->st_mode = directory ? S_IFDIR | 0555 : S_IFREG | 0444;
-  attributes->st_nlink = directory ? 2 : 1;
+  attributes->st_nlink = directory ? 2 : node->inode.link_count;
   attributes->st_size = (off_t)node->inode.size;
   if (node->inode.flags & NPFS_TIME_MODIFIED_VALID) {
     attributes->st_mtim = linux_time(node->inode.modified_ns);

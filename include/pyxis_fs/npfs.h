@@ -15,6 +15,7 @@
 #define NPFS_INODE_SIZE 256u
 #define NPFS_INODE_FIELD_SIZE 72u
 #define NPFS_INODE_RESERVE_SIZE 64u
+#define NPFS_INODE_LINK_COUNT_OFFSET 192u
 #define NPFS_POINTER_COUNT 15u
 #define NPFS_DIRECT_COUNT 12u
 #define NPFS_INDIRECT_COUNT 512u
@@ -45,6 +46,7 @@
 #define NPFS_METADATA_INODES 3u
 #define NPFS_METADATA_DIRECTORY 4u
 #define NPFS_METADATA_INDIRECT 5u
+#define NPFS_FEATURE_RO_HARD_LINKS (UINT64_C(1) << 0)
 
 /* This library is format-only. Providers define these symbols at link time.
  * Buffers are disjoint; copy/zero do not allocate or retain storage. */
@@ -78,6 +80,13 @@ struct npfs_header {
   uint64_t required;
 };
 
+struct npfs_header_selection {
+  struct npfs_header header;
+  unsigned slot;
+  bool degraded;
+  bool feature_gain;
+};
+
 struct npfs_volume {
   uint8_t id[NPFS_ID_SIZE];
   uint32_t state;
@@ -102,6 +111,9 @@ struct npfs_inode {
   int64_t created_ns;
   int64_t modified_ns;
   uint64_t parent;
+  /* Effective regular-file name count, zero for FREE/DETACHED/directories.
+   * Decode expands the legacy zero reserve to one for attached files. */
+  uint32_t link_count;
   uint64_t pointers[NPFS_POINTER_COUNT];
 };
 
@@ -163,8 +175,19 @@ enum npfs_status npfs_header_layout(uint64_t blocks, uint64_t journal_blocks,
                                  const uint8_t id[NPFS_ID_SIZE], struct npfs_header *header);
 enum npfs_status npfs_header_validate(const struct npfs_header *header);
 enum npfs_status npfs_features_check(const struct npfs_header *header, bool writable);
+/* Audited mutating consumers opt in explicitly. The ordinary check admits no
+ * read-only-compatible writes, even when the codecs understand the feature. */
+enum npfs_status npfs_features_check_supported(const struct npfs_header *header,
+                                             bool writable, uint64_t writable_features);
 enum npfs_status npfs_header_encode(const struct npfs_header *header, void *block);
 enum npfs_status npfs_header_decode(const void *block, struct npfs_header *header);
+/* Two full header blocks, with geometry checked against the source. Select the
+ * strict componentwise feature superset only when every other byte (except CRC)
+ * agrees. feature_gain permits a writable admitted caller to repair the lagging
+ * copy using the selected raw block; degraded alone does not authorize repair.
+ * Selection neither admits features nor performs I/O; failure publishes nothing. */
+enum npfs_status npfs_header_select(const void *first, const void *last,
+                                  uint64_t blocks, struct npfs_header_selection *selection);
 enum npfs_status npfs_volume_encode(const struct npfs_header *header,
                                  const struct npfs_volume *volume, void *record);
 enum npfs_status npfs_volume_decode(const struct npfs_header *header, const void *record,

@@ -49,6 +49,7 @@ inode_initialize(struct mkfs_context *context, struct npfs_inode *inode,
 {
   memset(inode, 0, sizeof(*inode));
   inode->kind = kind;
+  inode->link_count = kind == NPFS_INODE_FILE ? 1 : 0;
   inode->mapping = NPFS_MAPPING_POINTERS;
   inode->parent = parent;
   if (context->created_valid) {

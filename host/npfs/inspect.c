@@ -2,6 +2,7 @@
 #include "host.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -198,6 +199,8 @@ print_stat(uint64_t number, const struct npfs_inode *inode)
          (unsigned long long)inode->size);
   if (inode->kind == NPFS_INODE_DIRECTORY)
     printf("parent %llu\n", (unsigned long long)inode->parent);
+  else
+    printf("links %" PRIu32 "\n", inode->link_count);
   if (inode->flags & NPFS_TIME_CREATED_VALID)
     printf("created_ns %lld\n", (long long)inode->created_ns);
   else

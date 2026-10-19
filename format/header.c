@@ -43,10 +43,18 @@ npfs_header_validate(const struct npfs_header *header)
 enum npfs_status
 npfs_features_check(const struct npfs_header *header, bool writable)
 {
+  return npfs_features_check_supported(header, writable, 0);
+}
+
+enum npfs_status
+npfs_features_check_supported(const struct npfs_header *header, bool writable,
+                              uint64_t writable_features)
+{
   if (header == NULL) {
     return NPFS_INVALID;
   }
-  if (header->required != 0 || (writable && header->read_only_compatible != 0)) {
+  if (header->required != 0 ||
+      (writable && (header->read_only_compatible & ~writable_features) != 0)) {
     return NPFS_UNSUPPORTED;
   }
   return NPFS_OK;
@@ -77,6 +85,63 @@ npfs_header_layout(uint64_t blocks, uint64_t journal_blocks,
     return NPFS_NO_SPACE;
   }
   npfs_memory_copy(header, &result, sizeof(result));
+  return NPFS_OK;
+}
+
+static bool
+feature_superset(const struct npfs_header *larger, const struct npfs_header *smaller)
+{
+  return (larger->compatible & smaller->compatible) == smaller->compatible &&
+         (larger->read_only_compatible & smaller->read_only_compatible) == smaller->read_only_compatible &&
+         (larger->required & smaller->required) == smaller->required &&
+         (larger->compatible != smaller->compatible ||
+          larger->read_only_compatible != smaller->read_only_compatible ||
+          larger->required != smaller->required);
+}
+
+enum npfs_status
+npfs_header_select(const void *first, const void *last, uint64_t blocks,
+                   struct npfs_header_selection *selection)
+{
+  if (first == NULL || last == NULL || selection == NULL || blocks < 2) {
+    return NPFS_INVALID;
+  }
+  struct npfs_header headers[2];
+  const uint8_t *bytes[2] = {first, last};
+  enum npfs_status states[2];
+  for (unsigned i = 0; i < 2; ++i) {
+    states[i] = npfs_header_decode(bytes[i], &headers[i]);
+    if (states[i] == NPFS_UNSUPPORTED) {
+      return states[i];
+    }
+    if (states[i] == NPFS_OK && headers[i].pool_blocks != blocks) {
+      states[i] = NPFS_CORRUPT;
+    }
+  }
+  if (states[0] != NPFS_OK && states[1] != NPFS_OK) {
+    return NPFS_CORRUPT;
+  }
+  struct npfs_header_selection result = {
+    .slot = states[0] == NPFS_OK ? 0 : 1,
+    .degraded = states[0] != NPFS_OK || states[1] != NPFS_OK,
+  };
+  if (!result.degraded && !npfs_bytes_equal(first, last, NPFS_BLOCK_SIZE)) {
+    if (!npfs_bytes_equal(bytes[0], bytes[1], 80) ||
+        !npfs_bytes_equal(bytes[0] + 104, bytes[1] + 104, 4) ||
+        !npfs_bytes_equal(bytes[0] + 112, bytes[1] + 112, NPFS_BLOCK_SIZE - 112)) {
+      return NPFS_CORRUPT;
+    }
+    if (feature_superset(&headers[0], &headers[1])) {
+      result.slot = 0;
+    } else if (feature_superset(&headers[1], &headers[0])) {
+      result.slot = 1;
+    } else {
+      return NPFS_CORRUPT;
+    }
+    result.feature_gain = true;
+  }
+  result.header = headers[result.slot];
+  npfs_memory_copy(selection, &result, sizeof(result));
   return NPFS_OK;
 }
 

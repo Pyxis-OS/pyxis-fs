@@ -218,8 +218,9 @@ read_directory_block(void *context, uint64_t logical, uint64_t physical)
     struct npfs_inode *target = &volume->inodes[entry.inode];
     if (target->cleanup & NPFS_CLEANUP_DETACHED)
       return check_error(image, "directory references detached inode");
-    if (++volume->references[entry.inode] != 1)
-      return check_error(image, "inode has more than one directory entry");
+    uint64_t limit = target->kind == NPFS_INODE_FILE ? target->link_count : 1;
+    if (++volume->references[entry.inode] > limit)
+      return check_error(image, "inode has more names than its link count");
     if (target->kind == NPFS_INODE_DIRECTORY && target->parent != directory->number)
       return check_error(image, "directory parent backlink disagrees");
     if (directory->count == directory->capacity) {
@@ -325,7 +326,8 @@ check_one_volume(struct check_state *state, struct npfs_volume *record)
     }
     if (inode->kind == NPFS_INODE_FREE)
       continue;
-    uint64_t expected = number == 1 || (inode->cleanup & NPFS_CLEANUP_DETACHED) ? 0 : 1;
+    uint64_t expected = number == 1 || (inode->cleanup & NPFS_CLEANUP_DETACHED) ? 0 :
+                        inode->kind == NPFS_INODE_FILE ? inode->link_count : 1;
     if (volume.references[number] != expected) {
       status = check_error(image, "inode reachability disagrees with cleanup state");
       goto done;

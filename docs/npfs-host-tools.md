@@ -44,7 +44,11 @@ Sources must remain unchanged. Traversal uses descriptor-relative no-follow open
 and before/after identity, size and timestamp checks; these are best-effort race
 checks, not a host snapshot. Directories and regular files only; symlinks, special
 files and invalid UTF-8 components fail. Hard-linked regular files are copied
-independently. Directory ordering follows host traversal; metadata is deterministic
+independently, including with `--hard-links`; source alias preservation is not
+part of this formatter. `--hard-links` optionally sets the feature bit at format
+time and emits explicit initial file counts. It is not required for existing
+pools: the native writer will activate it on first LINK in a later task.
+Directory ordering follows host traversal; metadata is deterministic
 only apart from that ordering, random identities and creation times.
 
 Traversal is iterative, holding a directory descriptor and block buffer per depth;
@@ -64,11 +68,18 @@ Pending cleanup can be structurally valid; fsck does not reclaim it.
 
 `fsck.npfs --image PATH --replay` opens writable and permits COMMITTED.
 It validates the entire staged journal before home writes, checkpoints and clears
-it durably, then runs structural checking. An EMPTY pool receives no replay writes.
+it durably, then runs structural checking. An EMPTY pool receives no journal replay writes. After validating headers,
+feature admission, controls and opening policy, a writable open repairs a valid
+lagging feature-subset header by copying the selected raw block and flushing.
+Read-only opening never repairs; unknown read-only-compatible bits prohibit
+repair/replay, and unknown required bits prohibit all opening.
 Fsck warns on stderr when only one header is valid, including on a writable
 opening. A structurally valid pool still exits zero with that warning, following
-the one-valid-copy opening rule. No arbitrary repair, rollback, header-copy repair
-or content verification exists.
+the one-valid-copy opening rule; an invalid copy is not repaired. Apart from a
+valid feature-subset header, no repair, rollback or content verification exists.
+File aliases are checked against their effective inode name count, with one
+mapping ownership walk per inode. Directory aliases/cycles, cross-inode block
+sharing, linked DETACHED inodes and count disagreement still fail.
 A structural error after replay remains an error, even though recovery writes have
 already happened. Replay memory holds the full payload, a target bitset and
 selected descriptors; checking holds a pool ownership bitset and decoded inode/
@@ -83,7 +94,8 @@ root`; use `--path directory/file` rather than `--path /directory/file`.
 Empty components, leading/trailing slash and `..` are invalid. `extract` copies
 one regular file into a new output, without replacement; it does not extract
 a whole directory. Names print with byte escapes. `stat` prints signed nanoseconds
-or `unknown`, including cleanup fields. Inspector verifies the records traversed
+or `unknown`, including cleanup fields and the effective regular-file `links`
+count (legacy attached files report one). Inspector verifies the records traversed
 and rejects duplicate lookup names/backlink errors; it does not run whole-pool
 fsck on each command. Run fsck separately for global consistency.
 
@@ -186,8 +198,9 @@ one sorted metadata snapshot, rejects duplicate names and holds it until close;
 array-index cookies support resumed listings. Memory use scales with open
 directories, not file contents. Callbacks are serialized because the host reader
 owns a shared diagnostic buffer. Linux may cache unchanged file data.
-The mount is not whole-pool fsck: global allocation ownership, duplicate inode
-references and disconnected cycles still require `fsck.npfs`. Allocation-block
+Regular-file aliases have the same Linux inode identity and effective `st_nlink`.
+The mount is not whole-pool fsck: global allocation ownership, file count
+agreement, directory aliases and disconnected cycles still require `fsck.npfs`. Allocation-block
 counts are not synthesized from logical size, so `du` is not a disk-usage report.
 
 ## Task-2 validation
@@ -229,3 +242,31 @@ also passed checking (0.15 s wall time, 1,612 KiB peak RSS), inspection and writ
 cleanup were reviewed by inspection; no new writer yet produces those states.
 No crash injection, synthetic fixtures, new tests, CI changes or physical-media
 claims accompany this work. Kernel mounting of the new format belongs to task 3.
+
+## Hard-link foundation qualification (2026-10-19)
+
+On host x86-64 Linux, `make -j16` built the codecs, tools and optional FUSE mount.
+The pre-change baseline was fs `25337999`: it rejected two aliases, unequal valid
+headers, and writable opening of a feature-enabled pool. Disposable 32 MiB
+images with a 1 MiB journal exercised the new behavior through the existing tools:
+
+- Legacy images, ignored legacy reserve bytes, feature-enabled formatting and
+  untouched legacy zero-count inodes passed checking and inspection.
+- Two names of one regular inode reported count two and identical bytes. Count
+  disagreement, aliases without the feature, directory aliases, linked DETACHED
+  inodes, counts on FREE/directories and cross-inode block sharing were rejected.
+- Either header could be the feature superset. Read-only checks preserved source
+  hashes; writable `--replay` repaired the subset byte-for-byte, including ignored
+  reserves. Changed IDs/reserves and incomparable masks were rejected. Unknown
+  RO features refused writable opening without changes; unknown required bits
+  refused read-only opening too. A committed journal refused ordinary opening
+  without repairing its subset header.
+- Counted inode/directory redo replay passed and a malformed counted inode image
+  refused before writes. Read-only FUSE presented ordinary and RAM-replayed aliases
+  with equal inode identities, `st_nlink=2` and matching contents, without changing
+  the source. GDB inspected the selected feature header and effective count two.
+
+The manual commands, disposable fixture construction and transcripts are in
+`/shared/present/npfs-hard-links-task1/`. These are host-tool observations; no native
+LINK, first-use activation, power-loss durability or physical-media qualification
+is claimed. Those remain later native-writer tasks.

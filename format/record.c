@@ -44,6 +44,15 @@ inode_validate(const struct npfs_header *header, const struct npfs_inode *inode)
   if (header == NULL || inode == NULL) {
     return NPFS_INVALID;
   }
+  bool linked_file = inode->kind == NPFS_INODE_FILE &&
+                     (inode->cleanup & NPFS_CLEANUP_DETACHED) == 0;
+  if ((header->read_only_compatible & NPFS_FEATURE_RO_HARD_LINKS) != 0) {
+    if (linked_file ? inode->link_count == 0 : inode->link_count != 0) {
+      return NPFS_CORRUPT;
+    }
+  } else if (inode->link_count > 1) {
+    return NPFS_CORRUPT;
+  }
   if (inode->kind == NPFS_INODE_FREE) {
     return inode->mapping == 0 && inode->flags == 0 && inode->size == 0 &&
            inode->cleanup_next == 0 && inode->shrink_target == 0 && inode->cleanup == 0 &&
@@ -152,6 +161,9 @@ npfs_inode_encode(const struct npfs_header *header, const struct npfs_inode *ino
   for (unsigned i = 0; i < NPFS_POINTER_COUNT; ++i) {
     npfs_put_u64(bytes + NPFS_INODE_FIELD_SIZE + i * 8, inode->pointers[i]);
   }
+  if ((header->read_only_compatible & NPFS_FEATURE_RO_HARD_LINKS) != 0) {
+    npfs_put_u32(bytes + NPFS_INODE_LINK_COUNT_OFFSET, inode->link_count);
+  }
   npfs_memory_copy(record, bytes, sizeof(bytes));
   return NPFS_OK;
 }
@@ -176,6 +188,12 @@ npfs_inode_decode(const struct npfs_header *header, const void *record,
   result.created_ns = (int64_t)npfs_get_u64(bytes + 36);
   result.modified_ns = (int64_t)npfs_get_u64(bytes + 44);
   result.parent = npfs_get_u64(bytes + 52);
+  bool counted = (header->read_only_compatible & NPFS_FEATURE_RO_HARD_LINKS) != 0;
+  result.link_count = counted ? npfs_get_u32(bytes + NPFS_INODE_LINK_COUNT_OFFSET) : 0;
+  if (result.link_count == 0 && result.kind == NPFS_INODE_FILE &&
+      (result.cleanup & NPFS_CLEANUP_DETACHED) == 0) {
+    result.link_count = 1;
+  }
   for (unsigned i = 0; i < NPFS_POINTER_COUNT; ++i) {
     result.pointers[i] = npfs_get_u64(bytes + NPFS_INODE_FIELD_SIZE + i * 8);
   }

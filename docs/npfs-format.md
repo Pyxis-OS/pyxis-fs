@@ -17,8 +17,9 @@ Blocks are 4,096 bytes. Integers are little-endian; 64-bit block pointers are
 relative to the pool. Zero is the absent pointer. Pool and volume IDs are nonzero
 16-byte values, not access authority. No users, permissions or grants are encoded.
 
-Block zero and the last complete block hold identical headers, immutable while
-mounted. A trailing partial block is unused. The bitmap has one bit per pool
+Block zero and the last complete block hold redundant headers. They are immutable
+except for the first-use feature-gaining transition below. A trailing partial
+block is unused. The bitmap has one bit per pool
 block, least-significant bit first, rounded to whole blocks. One means allocated;
 fixed regions and out-of-pool padding bits stay allocated. The table is 64 records
 of 512 bytes, eight blocks. Header, bitmap, table and journal cannot overlap.
@@ -27,7 +28,8 @@ Ordinary storage follows, shared among all volumes.
 
 The three feature masks are 64 bits each. Unknown compatible bits are ignored;
 unknown read-only-compatible bits prohibit writes, including replay; unknown
-required bits prohibit opening. V1 defines no extension bits. Reserved bytes are
+required bits prohibit opening. Read-only-compatible bit 0
+(`NPFS_FEATURE_RO_HARD_LINKS`) enables regular-file name counts. Reserved bytes are
 written zero and ignored by decoders. New semantics require a feature bit whose
 class accounts for both reading and updates. Codec output creates fresh records;
 it does not preserve opaque extension bytes for future read/modify/write consumers.
@@ -72,9 +74,32 @@ destination unchanged. Directory callers supply at least the entry's encoded len
 | 112 | 16 | Unassigned current fields |
 | 128 | 3968 | Future-feature reserve |
 
-One valid header copy suffices; two valid copies differing anywhere in their full
-blocks are rejected. No valid copy is an error. Unsupported checked encodings
-are rejected. The host also verifies block count against the opened regular file.
+One valid header copy suffices; no valid copy is an error. Two valid copies must
+be identical, except that one may have a strict componentwise superset of the
+other's three feature masks. Every other encoded byte, excluding the CRC, must
+match, including ignored reserves. Crossed gains or other differences are corrupt.
+`npfs_header_select` checks source block count and returns the superset slot before
+feature admission; it never merges masks or falls back to a weaker copy to avoid
+an unsupported feature. Unsupported checked encodings are rejected.
+
+A writable opener admitted for the selected features repairs a valid lagging
+subset by copying the selected raw block and flushing before ordinary mutation.
+Read-only opening never repairs; the one-valid-copy rule does not itself authorize
+repair of an invalid copy. Host opening validates controls and the requested open
+policy before repairing. Repair preserves ignored bytes rather than re-encoding.
+
+The native writer's first eligible LINK will activate the hard-links bit only
+after validation and before staging the link: write one header, flush, write the
+other, flush, then stage LINK. It never activates at mount. A crash in that window
+resolves to feature-present; an older kernel that rejects unequal valid headers
+cannot open that intermediate pool. The bit stays set after aliases disappear.
+The format/host foundation does not yet implement native LINK or activation.
+
+Decoding and mutating admission are separate. `npfs_features_check` permits no
+read-only-compatible writes. Audited consumers call
+`npfs_features_check_supported` with their explicit writable-feature mask; host
+redo replay and header repair admit only the hard-links bit. Merely updating the
+codec must not admit an unaudited native namespace writer.
 
 ### Volume record
 
@@ -106,7 +131,8 @@ partition. No runtime volume-management API or quotas are supplied.
 | 52 | 8 | Directory parent inode |
 | 60 | 12 | Unassigned current fields |
 | 72 | 120 | Twelve direct and three indirect pointers |
-| 192 | 64 | Separate future-feature reserve |
+| 192 | 4 | Regular-file name count, with hard-links feature; otherwise reserve |
+| 196 | 60 | Remaining future-feature reserve |
 
 Kind 0 is free, 1 regular file, 2 directory. Free inodes have zero current fields.
 Inode-file slot 0 is reserved/free; slot 1 is the root directory. Mapping type 1
@@ -132,8 +158,22 @@ moves must update both entries and parent atomically and preserve acyclic ancest
 Cleanup bit 0 is DETACHED, bit 1 SHRINK; both may coexist. SHRINK target equals
 the current smaller size; otherwise target is zero. Non-cleanup inodes have next
 zero. Each cleanup inode appears exactly once in its volume's persistent list.
-Unlinked inodes have no namespace reference; every other live nonroot inode has
-exactly one. Only completed reclamation with no surviving references permits reuse.
+Without the hard-links bit, reserve bytes are ignored and attached regular files
+have one implicit name; FREE, DETACHED and directories have no file count.
+With the bit, offset 192 is an unsigned LE32 count, at most `UINT32_MAX`.
+FREE/DETACHED/directories require stored zero. Attached files with stored zero
+retain the legacy meaning one: first-use activation must not rewrite every old
+inode or invalidate old journal images. Decoding publishes the effective count;
+feature-aware encoding emits it explicitly and refuses zero for an attached file.
+Legacy encoders accept zero or one and leave the reserve zero; they refuse larger
+counts. This legacy-zero sentinel is unambiguous because an attached file cannot
+have zero names. Count overflow must refuse before effects.
+
+Fsck counts incoming names against each file's effective count and walks its
+mapping once. Directories keep exactly one incoming name, except root (zero);
+aliases and cycles remain corrupt. Cross-inode block sharing stays corrupt.
+Only the last unlink makes a file DETACHED with count zero; reclamation also
+waits for surviving object references. No guessed count repair is provided.
 
 ### Directory entry
 
@@ -150,7 +190,10 @@ Records cover each directory block, never cross a block boundary, are at least
 1–255 UTF-8 bytes, excluding NUL, slash, `.` and `..`; overlong sequences,
 surrogates and values above U+10FFFF are invalid. Names compare exact bytes with
 no normalization and are unique within a directory. Lists are unsorted; lookup is
-linear. There are no symbolic links or hard links.
+linear. Multiple names may identify one regular inode in the same volume when
+the hard-links feature is present. Symbolic links and directory hard links do not
+exist. The native operation is a later task; these codecs and host tools can
+already interpret counted-link images.
 
 ## Journal encoding and recovery
 

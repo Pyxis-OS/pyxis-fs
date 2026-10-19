@@ -172,35 +172,29 @@ open_source(struct npfs_image *image, const char *path,
   }
   image->block_count = bytes / NPFS_BLOCK_SIZE;
   uint8_t blocks[2][NPFS_BLOCK_SIZE];
-  struct npfs_header headers[2];
   enum npfs_status states[2];
   for (unsigned i = 0; i < 2; ++i) {
     status = npfs_read_blocks(image, i == 0 ? 0 : image->block_count - 1, 1, blocks[i]);
     if (status != NPFS_OK) {
       goto fail;
     }
-    states[i] = npfs_header_decode(blocks[i], &headers[i]);
-    if (states[i] == NPFS_UNSUPPORTED) {
-      status = states[i];
-      goto fail;
-    }
-    if (states[i] == NPFS_OK && headers[i].pool_blocks != image->block_count) {
-      states[i] = NPFS_CORRUPT;
-    }
   }
-  if (states[0] != NPFS_OK && states[1] != NPFS_OK) {
-    status = NPFS_CORRUPT;
-    goto fail;
-  }
-  if (states[0] == NPFS_OK && states[1] == NPFS_OK && memcmp(blocks[0], blocks[1], NPFS_BLOCK_SIZE) != 0) {
-    status = NPFS_CORRUPT;
-    goto fail;
-  }
-  image->degraded_header = states[0] != NPFS_OK || states[1] != NPFS_OK;
-  image->header = headers[states[0] == NPFS_OK ? 0 : 1];
-  status = npfs_features_check(&image->header, writable);
+  struct npfs_header_selection selection;
+  status = npfs_header_select(blocks[0], blocks[1], image->block_count, &selection);
   if (status != NPFS_OK) {
     goto fail;
+  }
+  image->degraded_header = selection.degraded;
+  image->header = selection.header;
+  status = npfs_features_check_supported(&image->header, writable, NPFS_FEATURE_RO_HARD_LINKS);
+  if (status != NPFS_OK) {
+    goto fail;
+  }
+  /* Preserve every selected byte, including ignored reserves, for repair only
+   * after controls and the requested opening policy have also been validated. */
+  uint8_t repair[NPFS_BLOCK_SIZE];
+  if (writable && selection.feature_gain) {
+    memcpy(repair, blocks[selection.slot], sizeof(repair));
   }
   struct npfs_control controls[2];
   for (unsigned i = 0; i < 2; ++i) {
@@ -235,6 +229,15 @@ open_source(struct npfs_image *image, const char *path,
   if (image->control.state == NPFS_JOURNAL_COMMITTED && !allow_committed) {
     status = NPFS_RECOVERY_REQUIRED;
     goto fail;
+  }
+  if (writable && selection.feature_gain) {
+    status = npfs_write_blocks(image, selection.slot == 0 ? image->block_count - 1 : 0, 1, repair);
+    if (status == NPFS_OK) {
+      status = npfs_flush(image);
+    }
+    if (status != NPFS_OK) {
+      goto fail;
+    }
   }
   return NPFS_OK;
 

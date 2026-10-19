@@ -16,7 +16,7 @@ static void
 usage(FILE *stream)
 {
   fputs("usage: mkfs.npfs --image PATH --size SIZE --journal SIZE\n"
-        "       --volume NAME [--source DIRECTORY] [--volume NAME ...]\n"
+        "       --volume NAME [--source DIRECTORY] [--volume NAME ...] [--hard-links]\n"
         "SIZE accepts bytes or binary KiB, MiB, GiB and TiB suffixes.\n"
         "The image must be new; --source binds to the preceding volume.\n", stream);
 }
@@ -190,10 +190,15 @@ write_metadata(struct mkfs_context *context, struct mkfs_volume *volumes,
 
 static bool
 parse_options(int argc, char **argv, const char **image_path, uint64_t *size,
-               uint64_t *journal, struct mkfs_volume *volumes, unsigned *count)
+               uint64_t *journal, struct mkfs_volume *volumes, unsigned *count,
+               bool *hard_links)
 {
   for (int index = 1; index < argc; index++) {
     const char *option = argv[index];
+    if (strcmp(option, "--hard-links") == 0 && !*hard_links) {
+      *hard_links = true;
+      continue;
+    }
     if (index + 1 == argc) {
       return false;
     }
@@ -243,7 +248,8 @@ main(int argc, char **argv)
   uint64_t journal = 0;
   struct mkfs_volume volumes[NPFS_VOLUME_COUNT] = {0};
   unsigned count = 0;
-  if (!parse_options(argc, argv, &image_path, &size, &journal, volumes, &count) ||
+  bool hard_links = false;
+  if (!parse_options(argc, argv, &image_path, &size, &journal, volumes, &count, &hard_links) ||
       size > INT64_MAX) {
     usage(stderr);
     return EXIT_FAILURE;
@@ -258,6 +264,9 @@ main(int argc, char **argv)
   }
   if (status != NPFS_OK) {
     return npfs_report("format geometry", status, NULL);
+  }
+  if (hard_links) {
+    context.image.header.read_only_compatible |= NPFS_FEATURE_RO_HARD_LINKS;
   }
   context.image.block_count = context.image.header.pool_blocks;
   context.created_valid = npfs_time_now(&context.created_ns);
